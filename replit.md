@@ -24,6 +24,11 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 - **Mode 0 - Single Speaker (No Tags)**: Clean text only, without adding speaker tags
 - **Mode 1 - Format Conversion**: Convert existing multi-speaker text to standardized format
 - **Mode 2 - Intelligent Parsing**: AI-powered speaker detection and dialogue extraction
+  - **Character Extraction**: Extract character names from a text sample using LLM
+  - **Customizable Sample Size**: Choose 5-100 sentences for character analysis
+  - **Narrator Toggle**: Option to include narrator as a separate speaker
+  - **Character Management**: View, remove, and renumber extracted characters
+  - **Consistent Mapping**: Character-to-speaker assignments enforced throughout processing
 - **Configurable Output**: Choose between "Speaker 1:" or "[1]:" label formats
 - **Multiple Speakers**: Support for 1-20 speakers
 
@@ -34,6 +39,11 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 - **Real-time Progress**: Live progress bar and chunk-by-chunk updates
 
 ### Advanced Features
+- **Character Extraction (Intelligent Mode)**: AI-powered extraction of character names from text sample
+  - Configurable sample size (5-100 sentences)
+  - Optional narrator inclusion as separate speaker
+  - Character-to-speaker mapping for consistency
+  - Remove and renumber characters as needed
 - **Custom Instructions**: Add custom instructions for the LLM to follow during processing
 - **Prompt Preview**: View the exact prompts being sent to the LLM for both processing stages
 - **Test Mode**: Process a single chunk to preview results before full processing
@@ -74,13 +84,18 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 
 1. **Upload a File**: Drag and drop a .txt or .epub file
 2. **Configure Options**: Select text cleaning options and speaker settings
-3. **Add Custom Instructions** (optional): Provide additional instructions for the LLM
-4. **Preview Prompts** (optional): Click "Load Preview" to see the exact prompts
-5. **Test First** (optional): Click "Test One Chunk" to preview processing results
-6. **Adjust Settings**: Set batch size and optionally change the LLM model
-7. **Start Processing**: Click "Start Processing" to begin full processing
-8. **Monitor Progress**: Watch real-time progress and activity logs
-9. **Export Results**: Copy or download the processed text
+3. **Extract Characters** (Intelligent Mode only, optional):
+   - Set sample size for character analysis
+   - Toggle narrator inclusion
+   - Click "Extract Characters" to identify speakers
+   - Review and manage extracted character mappings
+4. **Add Custom Instructions** (optional): Provide additional instructions for the LLM
+5. **Preview Prompts** (optional): Click "Load Preview" to see the exact prompts
+6. **Test First** (optional): Click "Test One Chunk" to preview processing results
+7. **Adjust Settings**: Set batch size and optionally change the LLM model
+8. **Start Processing**: Click "Start Processing" to begin full processing
+9. **Monitor Progress**: Watch real-time progress and activity logs
+10. **Export Results**: Copy or download the processed text
 
 ## Project Structure
 
@@ -102,6 +117,12 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 ## Recent Changes
 
 ### Latest Updates (October 2025)
+- **Character Extraction**: AI-powered character name extraction for intelligent mode
+  - Customizable sample size (5-100 sentences)
+  - Narrator toggle option for including narrator as separate speaker
+  - Character-to-speaker mapping with strict enforcement during processing
+  - Character management (view, remove, renumber)
+  - Activity log integration for extraction feedback
 - **Single Speaker Mode**: Added "none" mode option for single-speaker text processing without tags
 - **Custom Instructions**: Users can now add custom instructions for the LLM to follow
 - **Prompt Preview**: New collapsible component to view exact LLM prompts before processing
