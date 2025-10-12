@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { FileUpload } from "@/components/file-upload";
 import { CleaningOptionsPanel } from "@/components/cleaning-options";
 import { SpeakerConfigPanel } from "@/components/speaker-config";
+import { CharacterExtraction } from "@/components/character-extraction";
 import { ProcessingControls } from "@/components/processing-controls";
 import { CustomInstructions } from "@/components/custom-instructions";
 import { PromptPreview } from "@/components/prompt-preview";
@@ -39,6 +40,10 @@ export default function Home() {
     mode: "format",
     speakerCount: 2,
     labelFormat: "speaker",
+    extractCharacters: false,
+    sampleSize: 20,
+    includeNarrator: false,
+    characterMapping: [],
   });
 
   const [batchSize, setBatchSize] = useState(10);
@@ -336,6 +341,26 @@ export default function Home() {
               onChange={setSpeakerConfig}
               disabled={isProcessing}
             />
+
+            {speakerConfig.mode === "intelligent" && (
+              <CharacterExtraction
+                text={originalText}
+                modelName={modelName}
+                characterMapping={speakerConfig.characterMapping}
+                sampleSize={speakerConfig.sampleSize}
+                includeNarrator={speakerConfig.includeNarrator}
+                onSampleSizeChange={(size) =>
+                  setSpeakerConfig({ ...speakerConfig, sampleSize: size })
+                }
+                onIncludeNarratorChange={(include) =>
+                  setSpeakerConfig({ ...speakerConfig, includeNarrator: include })
+                }
+                onCharactersExtracted={(characters) =>
+                  setSpeakerConfig({ ...speakerConfig, characterMapping: characters })
+                }
+                disabled={isProcessing}
+              />
+            )}
 
             <CustomInstructions
               value={customInstructions}
