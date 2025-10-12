@@ -2,7 +2,16 @@ import { HfInference } from "@huggingface/inference";
 import type { CleaningOptions, SpeakerConfig, ModelSource } from "@shared/schema";
 import { LocalModelService } from "./local-model-service";
 
-const hf = new HfInference(process.env.HUGGINGFACE_API_TOKEN);
+// Check if HuggingFace API token is available
+const apiToken = process.env.HUGGINGFACE_API_TOKEN;
+if (!apiToken) {
+  console.warn("⚠️  HUGGINGFACE_API_TOKEN not found in environment variables!");
+  console.warn("   API mode will not work. Please either:");
+  console.warn("   1. Add HUGGINGFACE_API_TOKEN to Replit Secrets");
+  console.warn("   2. Use Local Models instead (no API token required)");
+}
+
+const hf = new HfInference(apiToken);
 
 export interface ProcessChunkOptions {
   text: string;
@@ -155,19 +164,39 @@ IMPORTANT: Only extract dialogue from the characters listed above. Ignore dialog
       }
       return await LocalModelService.generateText(localModelName, prompt);
     } else {
-      const response = await hf.chatCompletion({
-        model: modelName,
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        max_tokens: 2000,
-        temperature: 0.3,
-      });
+      // Check if API token is available
+      if (!apiToken) {
+        throw new Error(
+          'HuggingFace API token not found. Please add HUGGINGFACE_API_TOKEN to your Replit Secrets, or switch to Local Models (no API token required).'
+        );
+      }
 
-      return response.choices[0]?.message?.content || '';
+      try {
+        const response = await hf.chatCompletion({
+          model: modelName,
+          messages: [
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          max_tokens: 2000,
+          temperature: 0.3,
+        });
+
+        return response.choices[0]?.message?.content || '';
+      } catch (error) {
+        // Provide more helpful error messages
+        if (error instanceof Error) {
+          if (error.message.includes('401') || error.message.includes('unauthorized') || 
+              error.message.includes('authentication') || error.message.includes('token')) {
+            throw new Error(
+              'HuggingFace API authentication failed. Your API token may be invalid or expired. Please check your HUGGINGFACE_API_TOKEN in Replit Secrets, or switch to Local Models.'
+            );
+          }
+        }
+        throw error;
+      }
     }
   }
 
@@ -279,18 +308,38 @@ Character names (JSON array only):`;
       }
       content = await LocalModelService.generateText(localModelName, prompt);
     } else {
-      const response = await hf.chatCompletion({
-        model: modelName,
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        max_tokens: 500,
-        temperature: 0.2,
-      });
-      content = response.choices[0]?.message?.content || "[]";
+      // Check if API token is available
+      if (!apiToken) {
+        throw new Error(
+          'HuggingFace API token not found. Please add HUGGINGFACE_API_TOKEN to your Replit Secrets, or switch to Local Models (no API token required).'
+        );
+      }
+
+      try {
+        const response = await hf.chatCompletion({
+          model: modelName,
+          messages: [
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          max_tokens: 500,
+          temperature: 0.2,
+        });
+        content = response.choices[0]?.message?.content || "[]";
+      } catch (error) {
+        // Provide more helpful error messages
+        if (error instanceof Error) {
+          if (error.message.includes('401') || error.message.includes('unauthorized') || 
+              error.message.includes('authentication') || error.message.includes('token')) {
+            throw new Error(
+              'HuggingFace API authentication failed. Your API token may be invalid or expired. Please check your HUGGINGFACE_API_TOKEN in Replit Secrets, or switch to Local Models.'
+            );
+          }
+        }
+        throw error;
+      }
     }
     
     // Extract JSON array from response

@@ -193,27 +193,49 @@ npm start
 
 ### "Need to log in or provide a token" Error (Published Apps)
 
-**Issue**: Published/deployed version shows HuggingFace authentication error
+**Issue**: Published/deployed version shows HuggingFace authentication error like:
+- "need to log in or provide a token for HF"
+- "HuggingFace API authentication failed"
 
-**Solutions**:
+**Important**: You do NOT need to log in with your HuggingFace account! The API token should work automatically. This error means the token isn't being recognized.
 
-1. **Verify Secret Configuration** (Replit):
-   - Open Secrets tool in your workspace
+**Solutions** (try in order):
+
+1. **Verify Secret Exists** (Replit):
+   - Open the **Secrets** tool (🔒 icon) in your workspace
    - Check that `HUGGINGFACE_API_TOKEN` exists
-   - Verify the token value is correct
-   - Secret names are case-sensitive!
+   - Secret names are **case-sensitive** - must be exactly: `HUGGINGFACE_API_TOKEN`
+   - Click the eye icon to verify the token value is correct (starts with `hf_...`)
 
-2. **Redeploy After Adding Secret**:
+2. **Check Token is Valid**:
+   - Go to https://huggingface.co/settings/tokens
+   - Verify your token exists and is not expired
+   - If needed, create a new token and update your secret
+
+3. **Redeploy Your App**:
    - After adding or updating the secret
-   - Stop your current deployment
-   - Click "Publish" or "Deploy" again
-   - Secrets should sync automatically
+   - **Stop your current deployment** (if running)
+   - Click **"Publish"** again to redeploy
+   - Replit should automatically sync the secret to your deployment
+   - Wait for deployment to complete
 
-3. **Use Local Models Instead**:
-   - Switch to "Local Model" option
-   - Select a model (downloads automatically)
-   - No API token required
-   - Works completely offline
+4. **Check Deployment Logs**:
+   - In your published app, check the deployment logs
+   - Look for the warning: "⚠️ HUGGINGFACE_API_TOKEN not found"
+   - If you see this warning, the secret isn't syncing properly
+
+5. **Alternative: Use Local Models** (No token needed!):
+   - In your app, switch to **"Local Model"** option
+   - Select any model (Flan-T5 Small is fastest)
+   - Model downloads automatically on first use
+   - Works completely offline - no API token required
+   - **This is the easiest solution if you have deployment issues!**
+
+**Why This Happens**:
+- Replit Secrets are environment-specific
+- Published deployments need secrets to sync from workspace
+- If the secret was added after publishing, you must redeploy
+- Secret names must match exactly (case-sensitive)
 
 ### Local Model Issues
 
