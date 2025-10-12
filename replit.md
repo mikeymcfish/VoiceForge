@@ -21,6 +21,7 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 - Add punctuation for better TTS prosody
 
 ### Multi-Speaker Functionality
+- **Mode 0 - Single Speaker (No Tags)**: Clean text only, without adding speaker tags
 - **Mode 1 - Format Conversion**: Convert existing multi-speaker text to standardized format
 - **Mode 2 - Intelligent Parsing**: AI-powered speaker detection and dialogue extraction
 - **Configurable Output**: Choose between "Speaker 1:" or "[1]:" label formats
@@ -31,6 +32,11 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 - **Stage 2**: Speaker formatting and dialogue structuring
 - **Validation**: Automatic output validation with retry logic
 - **Real-time Progress**: Live progress bar and chunk-by-chunk updates
+
+### Advanced Features
+- **Custom Instructions**: Add custom instructions for the LLM to follow during processing
+- **Prompt Preview**: View the exact prompts being sent to the LLM for both processing stages
+- **Test Mode**: Process a single chunk to preview results before full processing
 
 ### User Interface
 - **Modern Design**: Clean, professional UI with dark/light theme support
@@ -68,10 +74,13 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 
 1. **Upload a File**: Drag and drop a .txt or .epub file
 2. **Configure Options**: Select text cleaning options and speaker settings
-3. **Adjust Settings**: Set batch size and optionally change the LLM model
-4. **Start Processing**: Click "Start Processing" to begin
-5. **Monitor Progress**: Watch real-time progress and activity logs
-6. **Export Results**: Copy or download the processed text
+3. **Add Custom Instructions** (optional): Provide additional instructions for the LLM
+4. **Preview Prompts** (optional): Click "Load Preview" to see the exact prompts
+5. **Test First** (optional): Click "Test One Chunk" to preview processing results
+6. **Adjust Settings**: Set batch size and optionally change the LLM model
+7. **Start Processing**: Click "Start Processing" to begin full processing
+8. **Monitor Progress**: Watch real-time progress and activity logs
+9. **Export Results**: Copy or download the processed text
 
 ## Project Structure
 
@@ -92,6 +101,13 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 
 ## Recent Changes
 
+### Latest Updates (October 2025)
+- **Single Speaker Mode**: Added "none" mode option for single-speaker text processing without tags
+- **Custom Instructions**: Users can now add custom instructions for the LLM to follow
+- **Prompt Preview**: New collapsible component to view exact LLM prompts before processing
+- **Test Button**: One-chunk test functionality to preview processing results
+
+### Previous Updates
 - Implemented complete TTS text preprocessing application
 - Added HuggingFace LLM integration for text repair and dialogue parsing
 - Created beautiful UI with dark/light theme support
