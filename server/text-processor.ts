@@ -55,6 +55,7 @@ export class TextProcessor {
             cleaningOptions: config.cleaningOptions,
             speakerConfig: config.speakerConfig,
             modelName: config.modelName,
+            customInstructions: config.customInstructions,
           });
 
           // Validate output

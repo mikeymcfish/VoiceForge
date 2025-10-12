@@ -32,11 +32,29 @@ export function SpeakerConfigPanel({
           <RadioGroup
             value={config.mode}
             onValueChange={(value) =>
-              onChange({ ...config, mode: value as "format" | "intelligent" })
+              onChange({ ...config, mode: value as "none" | "format" | "intelligent" })
             }
             disabled={disabled}
             className="space-y-3"
           >
+            <div className="flex items-start gap-3">
+              <RadioGroupItem
+                value="none"
+                id="mode-none"
+                data-testid="radio-mode-none"
+              />
+              <div className="space-y-1">
+                <Label
+                  htmlFor="mode-none"
+                  className="text-sm font-medium cursor-pointer"
+                >
+                  Single Speaker (No Tags)
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Clean text only, without adding any speaker tags
+                </p>
+              </div>
+            </div>
             <div className="flex items-start gap-3">
               <RadioGroupItem
                 value="format"
@@ -76,55 +94,59 @@ export function SpeakerConfigPanel({
           </RadioGroup>
         </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="speaker-count" className="text-sm font-medium">
-            Number of Speakers
-          </Label>
-          <Input
-            id="speaker-count"
-            type="number"
-            min={1}
-            max={20}
-            value={config.speakerCount}
-            onChange={(e) =>
-              onChange({
-                ...config,
-                speakerCount: parseInt(e.target.value) || 2,
-              })
-            }
-            disabled={disabled}
-            data-testid="input-speaker-count"
-            className="h-10"
-          />
-        </div>
+        {config.mode !== "none" && (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="speaker-count" className="text-sm font-medium">
+                Number of Speakers
+              </Label>
+              <Input
+                id="speaker-count"
+                type="number"
+                min={1}
+                max={20}
+                value={config.speakerCount}
+                onChange={(e) =>
+                  onChange({
+                    ...config,
+                    speakerCount: parseInt(e.target.value) || 2,
+                  })
+                }
+                disabled={disabled}
+                data-testid="input-speaker-count"
+                className="h-10"
+              />
+            </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="label-format" className="text-sm font-medium">
-            Label Format
-          </Label>
-          <Select
-            value={config.labelFormat}
-            onValueChange={(value) =>
-              onChange({
-                ...config,
-                labelFormat: value as "speaker" | "bracket",
-              })
-            }
-            disabled={disabled}
-          >
-            <SelectTrigger
-              id="label-format"
-              data-testid="select-label-format"
-              className="h-10"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="speaker">Speaker 1:, Speaker 2:, ...</SelectItem>
-              <SelectItem value="bracket">[1]:, [2]:, [3]:, ...</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+            <div className="space-y-2">
+              <Label htmlFor="label-format" className="text-sm font-medium">
+                Label Format
+              </Label>
+              <Select
+                value={config.labelFormat}
+                onValueChange={(value) =>
+                  onChange({
+                    ...config,
+                    labelFormat: value as "speaker" | "bracket",
+                  })
+                }
+                disabled={disabled}
+              >
+                <SelectTrigger
+                  id="label-format"
+                  data-testid="select-label-format"
+                  className="h-10"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="speaker">Speaker 1:, Speaker 2:, ...</SelectItem>
+                  <SelectItem value="bracket">[1]:, [2]:, [3]:, ...</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        )}
       </div>
     </Card>
   );

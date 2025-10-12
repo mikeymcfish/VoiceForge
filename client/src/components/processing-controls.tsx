@@ -1,4 +1,4 @@
-import { Play, Square, Settings } from "lucide-react";
+import { Play, Square, Settings, TestTube } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -17,8 +17,10 @@ interface ProcessingControlsProps {
   onModelNameChange: (name: string) => void;
   onStart: () => void;
   onStop: () => void;
+  onTest: () => void;
   isProcessing: boolean;
   canStart: boolean;
+  isTesting?: boolean;
 }
 
 export function ProcessingControls({
@@ -28,8 +30,10 @@ export function ProcessingControls({
   onModelNameChange,
   onStart,
   onStop,
+  onTest,
   isProcessing,
   canStart,
+  isTesting = false,
 }: ProcessingControlsProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
 
@@ -88,28 +92,41 @@ export function ProcessingControls({
           </CollapsibleContent>
         </Collapsible>
 
-        <div className="flex gap-2 pt-2">
-          {isProcessing ? (
-            <Button
-              onClick={onStop}
-              variant="destructive"
-              className="flex-1"
-              data-testid="button-stop-processing"
-            >
-              <Square className="h-4 w-4 mr-2" />
-              Stop Processing
-            </Button>
-          ) : (
-            <Button
-              onClick={onStart}
-              disabled={!canStart}
-              className="flex-1"
-              data-testid="button-start-processing"
-            >
-              <Play className="h-4 w-4 mr-2" />
-              Start Processing
-            </Button>
-          )}
+        <div className="space-y-2 pt-2">
+          <div className="flex gap-2">
+            {isProcessing ? (
+              <Button
+                onClick={onStop}
+                variant="destructive"
+                className="flex-1"
+                data-testid="button-stop-processing"
+              >
+                <Square className="h-4 w-4 mr-2" />
+                Stop Processing
+              </Button>
+            ) : (
+              <Button
+                onClick={onStart}
+                disabled={!canStart}
+                className="flex-1"
+                data-testid="button-start-processing"
+              >
+                <Play className="h-4 w-4 mr-2" />
+                Start Processing
+              </Button>
+            )}
+          </div>
+          
+          <Button
+            onClick={onTest}
+            disabled={!canStart || isProcessing || isTesting}
+            variant="outline"
+            className="w-full"
+            data-testid="button-test-chunk"
+          >
+            <TestTube className="h-4 w-4 mr-2" />
+            {isTesting ? "Testing..." : "Test One Chunk"}
+          </Button>
         </div>
       </div>
     </Card>

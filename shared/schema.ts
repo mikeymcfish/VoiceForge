@@ -31,7 +31,7 @@ export type CleaningOptions = z.infer<typeof cleaningOptionsSchema>;
 
 // Multi-Speaker Configuration
 export const speakerConfigSchema = z.object({
-  mode: z.enum(["format", "intelligent"]),
+  mode: z.enum(["none", "format", "intelligent"]), // "none" = single speaker, no tags
   speakerCount: z.number().min(1).max(20).default(2),
   labelFormat: z.enum(["speaker", "bracket"]), // "Speaker 1:" or "[1]:"
   speakerMapping: z.record(z.string(), z.string()).optional(), // detected name -> speaker label
@@ -45,6 +45,7 @@ export const processingConfigSchema = z.object({
   cleaningOptions: cleaningOptionsSchema,
   speakerConfig: speakerConfigSchema.optional(),
   modelName: z.string().default("Qwen/Qwen2.5-72B-Instruct"),
+  customInstructions: z.string().optional(), // Custom instructions for the LLM
 });
 
 export type ProcessingConfig = z.infer<typeof processingConfigSchema>;

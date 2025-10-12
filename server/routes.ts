@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import AdmZip from "adm-zip";
 import { parse } from "node-html-parser";
 import { textProcessor } from "./text-processor";
+import { llmService } from "./llm-service";
 import { nanoid } from "nanoid";
 import type { ProcessingConfig, LogEntry, WSMessage } from "@shared/schema";
 
@@ -64,6 +65,71 @@ async function parseEpub(buffer: Buffer): Promise<string> {
 
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
+
+  // Prompt preview endpoint
+  app.post("/api/preview-prompts", async (req, res) => {
+    try {
+      const { sampleText, config } = req.body as {
+        sampleText: string;
+        config: ProcessingConfig;
+      };
+
+      if (!sampleText || !config) {
+        return res.status(400).json({ error: "Missing sample text or configuration" });
+      }
+
+      const prompts = llmService.getPromptPreviews(
+        sampleText,
+        config.cleaningOptions,
+        config.speakerConfig,
+        config.customInstructions
+      );
+
+      res.json(prompts);
+    } catch (error) {
+      console.error("Preview error:", error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to generate preview",
+      });
+    }
+  });
+
+  // Test one chunk endpoint
+  app.post("/api/test-chunk", async (req, res) => {
+    try {
+      const { text, config } = req.body as {
+        text: string;
+        config: ProcessingConfig;
+      };
+
+      if (!text || !config) {
+        return res.status(400).json({ error: "Missing text or configuration" });
+      }
+
+      // Process just the first chunk (up to batchSize sentences)
+      const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+      const testChunk = sentences.slice(0, config.batchSize).join(" ");
+
+      const processedText = await llmService.processChunk({
+        text: testChunk,
+        cleaningOptions: config.cleaningOptions,
+        speakerConfig: config.speakerConfig,
+        modelName: config.modelName,
+        customInstructions: config.customInstructions,
+      });
+
+      res.json({
+        originalChunk: testChunk,
+        processedChunk: processedText,
+        sentenceCount: Math.min(sentences.length, config.batchSize),
+      });
+    } catch (error) {
+      console.error("Test chunk error:", error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to test chunk",
+      });
+    }
+  });
 
   // File upload endpoint
   app.post("/api/upload", upload.single("file"), async (req, res) => {

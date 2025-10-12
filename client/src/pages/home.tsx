@@ -3,6 +3,8 @@ import { FileUpload } from "@/components/file-upload";
 import { CleaningOptionsPanel } from "@/components/cleaning-options";
 import { SpeakerConfigPanel } from "@/components/speaker-config";
 import { ProcessingControls } from "@/components/processing-controls";
+import { CustomInstructions } from "@/components/custom-instructions";
+import { PromptPreview } from "@/components/prompt-preview";
 import { ProgressDisplay } from "@/components/progress-display";
 import { OutputDisplay } from "@/components/output-display";
 import { ActivityLog } from "@/components/activity-log";
@@ -41,6 +43,7 @@ export default function Home() {
 
   const [batchSize, setBatchSize] = useState(10);
   const [modelName, setModelName] = useState("Qwen/Qwen2.5-72B-Instruct");
+  const [customInstructions, setCustomInstructions] = useState("");
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -48,6 +51,7 @@ export default function Home() {
   const [totalChunks, setTotalChunks] = useState(0);
   const [processedText, setProcessedText] = useState("");
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [isTesting, setIsTesting] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -136,6 +140,7 @@ export default function Home() {
             cleaningOptions,
             speakerConfig,
             modelName,
+            customInstructions: customInstructions || undefined,
           },
         })
       );
@@ -235,6 +240,64 @@ export default function Home() {
     setLogs([]);
   };
 
+  const handleTestChunk = async () => {
+    if (!originalText) return;
+
+    setIsTesting(true);
+    addLog("info", "Testing one chunk...");
+
+    try {
+      const response = await fetch("/api/test-chunk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: originalText,
+          config: {
+            batchSize,
+            cleaningOptions,
+            speakerConfig,
+            modelName,
+            customInstructions: customInstructions || undefined,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to test chunk");
+      }
+
+      const data = await response.json();
+      setProcessedText(
+        `=== TEST RESULT (${data.sentenceCount} sentences) ===\n\nOriginal:\n${data.originalChunk}\n\n---\n\nProcessed:\n${data.processedChunk}`
+      );
+
+      addLog(
+        "success",
+        "Test completed",
+        `Processed ${data.sentenceCount} sentences`
+      );
+
+      toast({
+        title: "Test complete",
+        description: "One chunk has been processed successfully",
+      });
+    } catch (error) {
+      addLog(
+        "error",
+        "Test failed",
+        error instanceof Error ? error.message : undefined
+      );
+      toast({
+        title: "Test failed",
+        description:
+          error instanceof Error ? error.message : "Failed to test chunk",
+        variant: "destructive",
+      });
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
   useEffect(() => {
     return () => {
       if (wsRef.current) {
@@ -274,6 +337,20 @@ export default function Home() {
               disabled={isProcessing}
             />
 
+            <CustomInstructions
+              value={customInstructions}
+              onChange={setCustomInstructions}
+              disabled={isProcessing}
+            />
+
+            <PromptPreview
+              sampleText={originalText}
+              cleaningOptions={cleaningOptions}
+              speakerConfig={speakerConfig}
+              customInstructions={customInstructions}
+              disabled={isProcessing}
+            />
+
             <ProcessingControls
               batchSize={batchSize}
               onBatchSizeChange={setBatchSize}
@@ -281,8 +358,10 @@ export default function Home() {
               onModelNameChange={setModelName}
               onStart={handleStartProcessing}
               onStop={handleStopProcessing}
+              onTest={handleTestChunk}
               isProcessing={isProcessing}
               canStart={!!originalText && !isProcessing}
+              isTesting={isTesting}
             />
           </div>
         </div>

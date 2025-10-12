@@ -8,10 +8,15 @@ export interface ProcessChunkOptions {
   cleaningOptions: CleaningOptions;
   speakerConfig?: SpeakerConfig;
   modelName: string;
+  customInstructions?: string;
 }
 
 export class LLMService {
-  private buildCleaningPrompt(text: string, options: CleaningOptions): string {
+  private buildCleaningPrompt(
+    text: string, 
+    options: CleaningOptions,
+    customInstructions?: string
+  ): string {
     const tasks: string[] = [];
 
     if (options.replaceSmartQuotes) {
@@ -33,7 +38,7 @@ export class LLMService {
       tasks.push("- Add appropriate punctuation after headers and loose numbers for better TTS prosody");
     }
 
-    return `You are a text cleaning assistant for TTS (text-to-speech) preprocessing. Your task is to clean and repair the following text.
+    let prompt = `You are a text cleaning assistant for TTS (text-to-speech) preprocessing. Your task is to clean and repair the following text.
 
 Apply these transformations:
 ${tasks.join("\n")}
@@ -42,59 +47,63 @@ Important rules:
 - Preserve the original meaning and content
 - Only fix errors, don't rewrite or rephrase
 - Maintain paragraph structure
-- Return ONLY the cleaned text, no explanations
+- Return ONLY the cleaned text, no explanations`;
 
-Text to clean:
-${text}
+    if (customInstructions) {
+      prompt += `\n\nAdditional custom instructions:\n${customInstructions}`;
+    }
 
-Cleaned text:`;
+    prompt += `\n\nText to clean:\n${text}\n\nCleaned text:`;
+
+    return prompt;
   }
 
   private buildSpeakerPrompt(
     text: string,
-    config: SpeakerConfig
+    config: SpeakerConfig,
+    customInstructions?: string
   ): string {
     const labelExample =
       config.labelFormat === "speaker"
         ? "Speaker 1:, Speaker 2:, etc."
         : "[1]:, [2]:, [3]:, etc.";
 
+    let prompt = "";
+
     if (config.mode === "format") {
-      return `You are a dialogue formatting assistant. Convert the following text to a standardized multi-speaker format.
+      prompt = `You are a dialogue formatting assistant. Convert the following text to a standardized multi-speaker format.
 
 Requirements:
 - Number of speakers: ${config.speakerCount}
 - Label format: ${labelExample}
 - Each speaker's line should start with their label
 - Preserve all dialogue content exactly as written
-- Only change the speaker label format
-
-Text to format:
-${text}
-
-Formatted dialogue:`;
+- Only change the speaker label format`;
     } else {
-      return `You are an intelligent dialogue parsing assistant. Analyze this prose text and extract dialogue between ${config.speakerCount} speakers.
+      prompt = `You are an intelligent dialogue parsing assistant. Analyze this prose text and extract dialogue between ${config.speakerCount} speakers.
 
 Requirements:
 - Detect speaker changes from context clues (said, replied, asked, etc.)
 - Format each line as: ${labelExample} [dialogue text]
 - Assign consistent speaker numbers based on who speaks
 - Extract only the spoken dialogue, not narrative descriptions
-- If a character name is detected, keep it consistent with one speaker number
-
-Text to parse:
-${text}
-
-Structured dialogue:`;
+- If a character name is detected, keep it consistent with one speaker number`;
     }
+
+    if (customInstructions) {
+      prompt += `\n\nAdditional custom instructions:\n${customInstructions}`;
+    }
+
+    prompt += `\n\nText to format:\n${text}\n\nFormatted dialogue:`;
+
+    return prompt;
   }
 
   async processChunk(options: ProcessChunkOptions): Promise<string> {
-    const { text, cleaningOptions, speakerConfig, modelName } = options;
+    const { text, cleaningOptions, speakerConfig, modelName, customInstructions } = options;
 
     // Stage 1: Text cleaning
-    const cleaningPrompt = this.buildCleaningPrompt(text, cleaningOptions);
+    const cleaningPrompt = this.buildCleaningPrompt(text, cleaningOptions, customInstructions);
     
     const stage1Response = await hf.chatCompletion({
       model: modelName,
@@ -110,9 +119,9 @@ Structured dialogue:`;
 
     let processedText = stage1Response.choices[0]?.message?.content || text;
 
-    // Stage 2: Speaker formatting (if configured)
-    if (speakerConfig) {
-      const speakerPrompt = this.buildSpeakerPrompt(processedText, speakerConfig);
+    // Stage 2: Speaker formatting (if configured and mode is not "none")
+    if (speakerConfig && speakerConfig.mode !== "none") {
+      const speakerPrompt = this.buildSpeakerPrompt(processedText, speakerConfig, customInstructions);
       
       const stage2Response = await hf.chatCompletion({
         model: modelName,
@@ -160,6 +169,23 @@ Structured dialogue:`;
       valid: issues.length === 0,
       issues: issues.length > 0 ? issues : undefined,
     };
+  }
+
+  getPromptPreviews(
+    sampleText: string,
+    cleaningOptions: CleaningOptions,
+    speakerConfig?: SpeakerConfig,
+    customInstructions?: string
+  ): { stage1: string; stage2?: string } {
+    const stage1 = this.buildCleaningPrompt(sampleText, cleaningOptions, customInstructions);
+    
+    const result: { stage1: string; stage2?: string } = { stage1 };
+
+    if (speakerConfig && speakerConfig.mode !== "none") {
+      result.stage2 = this.buildSpeakerPrompt(sampleText, speakerConfig, customInstructions);
+    }
+
+    return result;
   }
 }
 
