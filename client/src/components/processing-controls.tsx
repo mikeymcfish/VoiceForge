@@ -38,9 +38,9 @@ export function ProcessingControls({
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
 
   return (
-    <Card className="p-4">
-      <div className="space-y-4">
-        <div className="space-y-2">
+    <Card className="p-3">
+      <div className="space-y-3">
+        <div className="space-y-1.5">
           <Label htmlFor="batch-size" className="text-sm font-medium">
             Batch Size (sentences per LLM request)
           </Label>
@@ -53,7 +53,7 @@ export function ProcessingControls({
             onChange={(e) => onBatchSizeChange(parseInt(e.target.value) || 10)}
             disabled={isProcessing}
             data-testid="input-batch-size"
-            className="h-10"
+            className="h-9"
           />
           <p className="text-xs text-muted-foreground">
             Number of sentences to process in each LLM request
@@ -71,8 +71,8 @@ export function ProcessingControls({
               <span className="text-sm">Advanced Settings</span>
             </Button>
           </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-3 pt-3">
-            <div className="space-y-2">
+          <CollapsibleContent className="space-y-2 pt-2">
+            <div className="space-y-1.5">
               <Label htmlFor="model-name" className="text-sm font-medium">
                 LLM Model
               </Label>
@@ -82,7 +82,7 @@ export function ProcessingControls({
                 onChange={(e) => onModelNameChange(e.target.value)}
                 disabled={isProcessing}
                 data-testid="input-model-name"
-                className="h-10"
+                className="h-9"
                 placeholder="e.g., Qwen/Qwen2.5-72B-Instruct"
               />
               <p className="text-xs text-muted-foreground">
@@ -92,7 +92,7 @@ export function ProcessingControls({
           </CollapsibleContent>
         </Collapsible>
 
-        <div className="space-y-2 pt-2">
+        <div className="space-y-2 pt-1">
           <div className="flex gap-2">
             {isProcessing ? (
               <Button

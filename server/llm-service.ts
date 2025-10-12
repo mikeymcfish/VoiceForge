@@ -80,14 +80,31 @@ Requirements:
 - Preserve all dialogue content exactly as written
 - Only change the speaker label format`;
     } else {
-      prompt = `You are an intelligent dialogue parsing assistant. Analyze this prose text and extract dialogue between ${config.speakerCount} speakers.
+      // Check if narrator is in the character mapping
+      const hasNarrator = config.characterMapping?.some(
+        (char) => char.name.toLowerCase() === "narrator"
+      );
+
+      if (hasNarrator) {
+        prompt = `You are an intelligent dialogue parsing assistant. Analyze this prose text and structure it for multi-speaker TTS.
+
+Requirements:
+- Detect speaker changes from context clues (said, replied, asked, etc.)
+- Format each speaking character's line as: ${labelExample} [dialogue text]
+- Remove dialogue attribution tags (e.g., "he said", "she replied", "Bob asked")
+- Preserve narrative descriptions and non-dialogue text as Narrator lines
+- Assign consistent speaker numbers based on who speaks`;
+      } else {
+        prompt = `You are an intelligent dialogue parsing assistant. Analyze this prose text and extract dialogue between ${config.speakerCount} speakers.
 
 Requirements:
 - Detect speaker changes from context clues (said, replied, asked, etc.)
 - Format each line as: ${labelExample} [dialogue text]
 - Assign consistent speaker numbers based on who speaks
 - Extract only the spoken dialogue, not narrative descriptions
+- Remove dialogue attribution tags (e.g., "he said", "she replied")
 - If a character name is detected, keep it consistent with one speaker number`;
+      }
     }
 
     // Add character mapping if available
@@ -96,10 +113,25 @@ Requirements:
         .map((char) => `  - ${char.name} = Speaker ${char.speakerNumber}`)
         .join("\n");
       
-      prompt += `\n\nCharacter to Speaker Mapping (ONLY extract dialogue from these characters, use these exact assignments):
+      const hasNarrator = config.characterMapping.some(
+        (char) => char.name.toLowerCase() === "narrator"
+      );
+
+      if (hasNarrator) {
+        prompt += `\n\nCharacter to Speaker Mapping (use these exact assignments):
+${mappingList}
+
+IMPORTANT: 
+- Only extract dialogue from the speaking characters listed above
+- Assign narrative descriptions and non-dialogue portions to the Narrator
+- Remove dialogue attribution tags like "he said", "she whispered", "Alice asked"
+- Ignore dialogue from any characters not in this mapping`;
+      } else {
+        prompt += `\n\nCharacter to Speaker Mapping (ONLY extract dialogue from these characters, use these exact assignments):
 ${mappingList}
 
 IMPORTANT: Only extract dialogue from the characters listed above. Ignore dialogue from any other characters not in this mapping.`;
+      }
     }
 
     if (customInstructions) {

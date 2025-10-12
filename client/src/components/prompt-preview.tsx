@@ -61,10 +61,10 @@ export function PromptPreview({
   };
 
   return (
-    <Card className="p-4">
+    <Card className="p-3">
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-medium">LLM Prompt Preview</h3>
+          <h3 className="text-sm font-medium">LLM Prompt Preview</h3>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
@@ -88,20 +88,20 @@ export function PromptPreview({
           </div>
         </div>
 
-        <CollapsibleContent className="mt-4 space-y-4">
+        <CollapsibleContent className="mt-3 space-y-3">
           {prompts && (
             <>
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <h4 className="text-sm font-medium">Stage 1: Text Cleaning</h4>
-                <pre className="text-xs bg-muted p-3 rounded-md overflow-x-auto whitespace-pre-wrap">
+                <pre className="text-xs bg-muted p-2.5 rounded-md overflow-x-auto whitespace-pre-wrap">
                   {prompts.stage1}
                 </pre>
               </div>
 
               {prompts.stage2 && (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <h4 className="text-sm font-medium">Stage 2: Speaker Formatting</h4>
-                  <pre className="text-xs bg-muted p-3 rounded-md overflow-x-auto whitespace-pre-wrap">
+                  <pre className="text-xs bg-muted p-2.5 rounded-md overflow-x-auto whitespace-pre-wrap">
                     {prompts.stage2}
                   </pre>
                 </div>

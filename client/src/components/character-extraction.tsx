@@ -93,7 +93,7 @@ export function CharacterExtraction({
   };
 
   return (
-    <Card className="p-4 space-y-4">
+    <Card className="p-3 space-y-3">
       <div className="flex items-center gap-2">
         <Users className="w-4 h-4" />
         <h4 className="text-sm font-medium">Character Extraction</h4>
@@ -103,8 +103,8 @@ export function CharacterExtraction({
         Extract character names from a sample to maintain consistency throughout processing
       </p>
 
-      <div className="space-y-4">
-        <div className="space-y-2">
+      <div className="space-y-3">
+        <div className="space-y-1.5">
           <Label htmlFor="sample-size" className="text-sm">
             Sample Size (sentences)
           </Label>
@@ -117,7 +117,7 @@ export function CharacterExtraction({
             onChange={(e) => onSampleSizeChange(parseInt(e.target.value) || 20)}
             disabled={disabled || isExtracting}
             data-testid="input-sample-size"
-            className="h-10"
+            className="h-9"
           />
           <p className="text-xs text-muted-foreground">
             Number of sentences to analyze for character names
@@ -154,17 +154,17 @@ export function CharacterExtraction({
         </Button>
 
         {characterMapping.length > 0 && (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label className="text-sm">Extracted Characters</Label>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               {characterMapping.map((char) => (
                 <div
                   key={char.speakerNumber}
-                  className="flex items-center justify-between p-2 border rounded-md"
+                  className="flex items-center justify-between p-1.5 border rounded-md"
                   data-testid={`character-mapping-${char.speakerNumber}`}
                 >
                   <div className="flex items-center gap-2">
-                    <Badge variant="secondary" className="font-mono">
+                    <Badge variant="secondary" className="font-mono text-xs">
                       Speaker {char.speakerNumber}
                     </Badge>
                     <span className="text-sm">{char.name}</span>
@@ -175,8 +175,9 @@ export function CharacterExtraction({
                     onClick={() => handleRemoveCharacter(char.speakerNumber)}
                     disabled={disabled}
                     data-testid={`button-remove-character-${char.speakerNumber}`}
+                    className="h-7 w-7"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="w-3.5 h-3.5" />
                   </Button>
                 </div>
               ))}

@@ -55,11 +55,11 @@ export function CleaningOptionsPanel({
   };
 
   return (
-    <Card className="p-4">
-      <h3 className="text-base font-medium mb-4">Text Cleaning Options</h3>
-      <div className="space-y-4">
+    <Card className="p-3">
+      <h3 className="text-sm font-medium mb-3">Text Cleaning Options</h3>
+      <div className="space-y-2.5">
         {cleaningOptionsList.map((option) => (
-          <div key={option.key} className="flex items-start gap-3">
+          <div key={option.key} className="flex items-start gap-2.5">
             <Checkbox
               id={option.key}
               checked={options[option.key]}
@@ -69,7 +69,7 @@ export function CleaningOptionsPanel({
               disabled={disabled}
               data-testid={`checkbox-${option.key}`}
             />
-            <div className="flex-1 space-y-1">
+            <div className="flex-1 space-y-0.5">
               <Label
                 htmlFor={option.key}
                 className="text-sm font-medium leading-none cursor-pointer"

@@ -23,11 +23,11 @@ export function SpeakerConfigPanel({
   disabled,
 }: SpeakerConfigProps) {
   return (
-    <Card className="p-4">
-      <h3 className="text-base font-medium mb-4">Multi-Speaker Configuration</h3>
+    <Card className="p-3">
+      <h3 className="text-sm font-medium mb-3">Multi-Speaker Configuration</h3>
       
-      <div className="space-y-6">
-        <div className="space-y-3">
+      <div className="space-y-4">
+        <div className="space-y-2">
           <Label className="text-sm font-medium">Processing Mode</Label>
           <RadioGroup
             value={config.mode}
@@ -35,15 +35,15 @@ export function SpeakerConfigPanel({
               onChange({ ...config, mode: value as "none" | "format" | "intelligent" })
             }
             disabled={disabled}
-            className="space-y-3"
+            className="space-y-2.5"
           >
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-2.5">
               <RadioGroupItem
                 value="none"
                 id="mode-none"
                 data-testid="radio-mode-none"
               />
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <Label
                   htmlFor="mode-none"
                   className="text-sm font-medium cursor-pointer"
@@ -55,13 +55,13 @@ export function SpeakerConfigPanel({
                 </p>
               </div>
             </div>
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-2.5">
               <RadioGroupItem
                 value="format"
                 id="mode-format"
                 data-testid="radio-mode-format"
               />
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <Label
                   htmlFor="mode-format"
                   className="text-sm font-medium cursor-pointer"
@@ -73,13 +73,13 @@ export function SpeakerConfigPanel({
                 </p>
               </div>
             </div>
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-2.5">
               <RadioGroupItem
                 value="intelligent"
                 id="mode-intelligent"
                 data-testid="radio-mode-intelligent"
               />
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <Label
                   htmlFor="mode-intelligent"
                   className="text-sm font-medium cursor-pointer"
@@ -96,7 +96,7 @@ export function SpeakerConfigPanel({
 
         {config.mode !== "none" && (
           <>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="speaker-count" className="text-sm font-medium">
                 Number of Speakers
               </Label>
@@ -114,11 +114,11 @@ export function SpeakerConfigPanel({
                 }
                 disabled={disabled}
                 data-testid="input-speaker-count"
-                className="h-10"
+                className="h-9"
               />
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="label-format" className="text-sm font-medium">
                 Label Format
               </Label>

@@ -316,10 +316,10 @@ export default function Home() {
       <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr_384px] h-screen">
         {/* Left Panel - Configuration */}
         <div className="border-r bg-card overflow-y-auto">
-          <div className="p-6 space-y-6">
+          <div className="p-4 space-y-3">
             <div>
-              <h2 className="text-xl font-semibold mb-4">Configuration</h2>
-              <div className="space-y-4">
+              <h2 className="text-lg font-semibold mb-3">Configuration</h2>
+              <div className="space-y-3">
                 <FileUpload
                   onFileSelect={handleFileSelect}
                   selectedFile={selectedFile}
@@ -398,7 +398,7 @@ export default function Home() {
 
         {/* Center Panel - Output */}
         <div className="flex flex-col overflow-hidden">
-          <div className="p-6 pb-4">
+          <div className="p-4 pb-3">
             <ProgressDisplay
               progress={progress}
               currentChunk={currentChunk}
@@ -406,14 +406,14 @@ export default function Home() {
               isProcessing={isProcessing}
             />
           </div>
-          <div className="flex-1 px-6 pb-6 overflow-hidden">
+          <div className="flex-1 px-4 pb-4 overflow-hidden">
             <OutputDisplay text={processedText} fileName={selectedFile?.name} />
           </div>
         </div>
 
         {/* Right Panel - Activity Log */}
         <div className="border-l bg-card overflow-hidden">
-          <div className="h-full p-6">
+          <div className="h-full p-4">
             <ActivityLog logs={logs} onClear={handleClearLogs} />
           </div>
         </div>
