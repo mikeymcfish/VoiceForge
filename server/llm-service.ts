@@ -96,8 +96,10 @@ Requirements:
         .map((char) => `  - ${char.name} = Speaker ${char.speakerNumber}`)
         .join("\n");
       
-      prompt += `\n\nCharacter to Speaker Mapping (use these assignments consistently):
-${mappingList}`;
+      prompt += `\n\nCharacter to Speaker Mapping (ONLY extract dialogue from these characters, use these exact assignments):
+${mappingList}
+
+IMPORTANT: Only extract dialogue from the characters listed above. Ignore dialogue from any other characters not in this mapping.`;
     }
 
     if (customInstructions) {

@@ -355,9 +355,14 @@ export default function Home() {
                 onIncludeNarratorChange={(include) =>
                   setSpeakerConfig({ ...speakerConfig, includeNarrator: include })
                 }
-                onCharactersExtracted={(characters) =>
-                  setSpeakerConfig({ ...speakerConfig, characterMapping: characters })
-                }
+                onCharactersExtracted={(characters) => {
+                  setSpeakerConfig({ ...speakerConfig, characterMapping: characters });
+                  addLog(
+                    "success",
+                    `Characters extracted: ${characters.length} character(s)`,
+                    characters.map(c => `${c.name} = Speaker ${c.speakerNumber}`).join(", ")
+                  );
+                }}
                 disabled={isProcessing}
               />
             )}
