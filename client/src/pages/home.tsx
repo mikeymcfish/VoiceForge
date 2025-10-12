@@ -316,7 +316,7 @@ export default function Home() {
       <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr_384px] h-screen">
         {/* Left Panel - Configuration */}
         <div className="border-r bg-card overflow-y-auto">
-          <div className="p-4 space-y-3">
+          <div className="p-4 pb-20 space-y-3">
             <div>
               <h2 className="text-lg font-semibold mb-3">Configuration</h2>
               <div className="space-y-3">
