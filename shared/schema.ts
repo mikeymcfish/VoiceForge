@@ -35,6 +35,13 @@ export const speakerConfigSchema = z.object({
   speakerCount: z.number().min(1).max(20).default(2),
   labelFormat: z.enum(["speaker", "bracket"]), // "Speaker 1:" or "[1]:"
   speakerMapping: z.record(z.string(), z.string()).optional(), // detected name -> speaker label
+  extractCharacters: z.boolean().default(false), // Whether to extract character names
+  sampleSize: z.number().min(5).max(100).default(20), // Number of sentences for character extraction
+  includeNarrator: z.boolean().default(false), // Include narrator as separate speaker
+  characterMapping: z.array(z.object({ // Extracted character name to speaker number mapping
+    name: z.string(),
+    speakerNumber: z.number(),
+  })).optional(),
 });
 
 export type SpeakerConfig = z.infer<typeof speakerConfigSchema>;

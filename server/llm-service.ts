@@ -90,6 +90,16 @@ Requirements:
 - If a character name is detected, keep it consistent with one speaker number`;
     }
 
+    // Add character mapping if available
+    if (config.characterMapping && config.characterMapping.length > 0) {
+      const mappingList = config.characterMapping
+        .map((char) => `  - ${char.name} = Speaker ${char.speakerNumber}`)
+        .join("\n");
+      
+      prompt += `\n\nCharacter to Speaker Mapping (use these assignments consistently):
+${mappingList}`;
+    }
+
     if (customInstructions) {
       prompt += `\n\nAdditional custom instructions:\n${customInstructions}`;
     }
@@ -186,6 +196,73 @@ Requirements:
     }
 
     return result;
+  }
+
+  async extractCharacters(options: {
+    text: string;
+    includeNarrator: boolean;
+    modelName: string;
+  }): Promise<Array<{ name: string; speakerNumber: number }>> {
+    const { text, includeNarrator, modelName } = options;
+
+    const prompt = `You are a character extraction assistant for multi-speaker TTS systems. Analyze the following text sample and extract all character/speaker names that appear.
+
+Requirements:
+- Extract only actual character names that speak in the text
+- List each unique character only once
+- Return names in order of first appearance
+${includeNarrator ? "- Include 'Narrator' as a character if there is narrative/descriptive text" : "- Do NOT include narrator or descriptive text"}
+- Return ONLY a JSON array of character names, no explanations
+
+Format your response as a JSON array:
+["Character1", "Character2", "Character3"]
+
+Text sample:
+${text}
+
+Character names (JSON array only):`;
+
+    const response = await hf.chatCompletion({
+      model: modelName,
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      max_tokens: 500,
+      temperature: 0.2,
+    });
+
+    const content = response.choices[0]?.message?.content || "[]";
+    
+    // Extract JSON array from response
+    let characterNames: string[] = [];
+    try {
+      // Try to parse directly
+      characterNames = JSON.parse(content.trim());
+    } catch {
+      // Try to extract JSON array from markdown code block or other formatting
+      const jsonMatch = content.match(/\[[\s\S]*?\]/);
+      if (jsonMatch) {
+        try {
+          characterNames = JSON.parse(jsonMatch[0]);
+        } catch {
+          console.error("Failed to parse character names from LLM response:", content);
+        }
+      }
+    }
+
+    // Ensure we have an array
+    if (!Array.isArray(characterNames)) {
+      characterNames = [];
+    }
+
+    // Map character names to speaker numbers (1-indexed)
+    return characterNames.map((name, index) => ({
+      name: String(name).trim(),
+      speakerNumber: index + 1,
+    }));
   }
 }
 

@@ -131,6 +131,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Extract character names endpoint
+  app.post("/api/extract-characters", async (req, res) => {
+    try {
+      const { text, sampleSize, includeNarrator, modelName } = req.body as {
+        text: string;
+        sampleSize: number;
+        includeNarrator: boolean;
+        modelName: string;
+      };
+
+      if (!text || !sampleSize) {
+        return res.status(400).json({ error: "Missing text or sample size" });
+      }
+
+      // Extract sample from text
+      const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+      const sampleText = sentences.slice(0, sampleSize).join(" ");
+
+      // Use LLM to extract character names
+      const characters = await llmService.extractCharacters({
+        text: sampleText,
+        includeNarrator,
+        modelName: modelName || "Qwen/Qwen2.5-72B-Instruct",
+      });
+
+      res.json({
+        characters,
+        sampleSentenceCount: Math.min(sentences.length, sampleSize),
+      });
+    } catch (error) {
+      console.error("Character extraction error:", error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to extract characters",
+      });
+    }
+  });
+
   // File upload endpoint
   app.post("/api/upload", upload.single("file"), async (req, res) => {
     try {
