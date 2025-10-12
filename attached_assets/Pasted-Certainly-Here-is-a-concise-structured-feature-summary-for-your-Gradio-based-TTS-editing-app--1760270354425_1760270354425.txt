@@ -1,0 +1,65 @@
+Certainly. Here is a concise, structured **feature summary** for your Gradio-based TTS editing app (v1):
+
+---
+
+### **Core Overview**
+
+A Gradio-powered local application for editing and preparing text for multi-speaker TTS systems, supporting modular cleaning, formatting, and speaker conversion workflows.
+
+---
+
+### **1. Input & File Handling**
+
+* Accepts **.txt** and **.epub** uploads.
+* Displays **preview with word and character counts**.
+* Prepares input text in manageable **chunks** for LLM processing.
+
+---
+
+### **2. Text Repair via Local LLM**
+
+* Integrates a **local open-source LLM** (e.g., Qwen) for text repair and preprocessing.
+* User-configurable **checkbox options** for:
+
+  * Replacing smart quotes and non-standard punctuation.
+  * Fixing OCR-style spacing and merged-word errors.
+  * Correcting spelling and removing bad characters.
+  * Stripping URLs, footnotes, and extraneous metadata.
+  * Adding punctuation after “loose numbers” or headers to improve TTS prosody.
+* Adjustable **sentence batch size** sent to the LLM per request.
+
+---
+
+### **3. Multi-Speaker Functionality**
+
+* **Configurable speaker count** and **output label format** (e.g., “Speaker 1:” or “[1]:”).
+* **Mode 1 – Format Conversion:** Converts existing multi-speaker text to standardized output format.
+* **Mode 2 – Intelligent Parsing:** Uses the LLM to analyze prose, detect speaker names, prompt user mapping, and produce structured dialogue output.
+
+---
+
+### **4. Two-Stage LLM Processing**
+
+* **Stage 1:** Executes LLM transformation with detailed, task-specific instructions.
+* **Stage 2:** Validates output integrity (format, cleanliness, structure).
+* Automatic **retry once on failure**, then logs any unprocessed segments.
+
+---
+
+### **5. Interface & Feedback**
+
+* **Progress bar** showing live percentage and current chunk.
+* **Detailed logs** with timestamps for LLM requests, retries, and outcomes.
+* Logs can be **exported or cleared** between sessions.
+
+---
+
+### **6. Output Management**
+
+* **Real-time text box** updating as chunks complete.
+* **Copy** and **Save** buttons for easy export (.txt format).
+* Designed for future integration with **TTS engines** for direct audio generation.
+
+---
+
+Would you like me to produce a visual **feature hierarchy diagram** or **Gradio UI layout sketch** based on this summary next?
