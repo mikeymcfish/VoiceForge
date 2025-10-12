@@ -16,7 +16,9 @@ interface CharacterMapping {
 
 interface CharacterExtractionProps {
   text: string;
+  modelSource?: "api" | "local";
   modelName: string;
+  localModelName?: string;
   characterMapping?: CharacterMapping[];
   sampleSize: number;
   includeNarrator: boolean;
@@ -28,7 +30,9 @@ interface CharacterExtractionProps {
 
 export function CharacterExtraction({
   text,
+  modelSource = "api",
   modelName,
+  localModelName,
   characterMapping = [],
   sampleSize,
   includeNarrator,
@@ -56,7 +60,9 @@ export function CharacterExtraction({
         text,
         sampleSize,
         includeNarrator,
+        modelSource,
         modelName,
+        localModelName,
       });
 
       const response = await res.json() as {

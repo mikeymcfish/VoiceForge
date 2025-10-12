@@ -3,6 +3,7 @@ import { FileUpload } from "@/components/file-upload";
 import { CleaningOptionsPanel } from "@/components/cleaning-options";
 import { SpeakerConfigPanel } from "@/components/speaker-config";
 import { CharacterExtraction } from "@/components/character-extraction";
+import { ModelSourceSelector } from "@/components/model-source-selector";
 import { ProcessingControls } from "@/components/processing-controls";
 import { CustomInstructions } from "@/components/custom-instructions";
 import { PromptPreview } from "@/components/prompt-preview";
@@ -47,7 +48,9 @@ export default function Home() {
   });
 
   const [batchSize, setBatchSize] = useState(10);
+  const [modelSource, setModelSource] = useState<"api" | "local">("api");
   const [modelName, setModelName] = useState("Qwen/Qwen2.5-72B-Instruct");
+  const [localModelName, setLocalModelName] = useState<string>();
   const [customInstructions, setCustomInstructions] = useState("");
 
   const [isProcessing, setIsProcessing] = useState(false);
@@ -144,13 +147,18 @@ export default function Home() {
             batchSize,
             cleaningOptions,
             speakerConfig,
+            modelSource,
             modelName,
+            localModelName,
             customInstructions: customInstructions || undefined,
           },
         })
       );
 
-      addLog("info", "Processing started", `Model: ${modelName}, Batch size: ${batchSize}`);
+      const modelInfo = modelSource === 'local' 
+        ? `Local: ${localModelName}` 
+        : `API: ${modelName}`;
+      addLog("info", "Processing started", `Model: ${modelInfo}, Batch size: ${batchSize}`);
     };
 
     ws.onmessage = (event) => {
@@ -261,7 +269,9 @@ export default function Home() {
             batchSize,
             cleaningOptions,
             speakerConfig,
+            modelSource,
             modelName,
+            localModelName,
             customInstructions: customInstructions || undefined,
           },
         }),
@@ -345,7 +355,9 @@ export default function Home() {
             {speakerConfig.mode === "intelligent" && (
               <CharacterExtraction
                 text={originalText}
+                modelSource={modelSource}
                 modelName={modelName}
+                localModelName={localModelName}
                 characterMapping={speakerConfig.characterMapping}
                 sampleSize={speakerConfig.sampleSize}
                 includeNarrator={speakerConfig.includeNarrator}
@@ -366,6 +378,14 @@ export default function Home() {
                 disabled={isProcessing}
               />
             )}
+
+            <ModelSourceSelector
+              modelSource={modelSource}
+              localModelName={localModelName}
+              onModelSourceChange={setModelSource}
+              onLocalModelChange={setLocalModelName}
+              disabled={isProcessing}
+            />
 
             <CustomInstructions
               value={customInstructions}

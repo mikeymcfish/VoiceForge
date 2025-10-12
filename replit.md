@@ -32,6 +32,15 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 - **Configurable Output**: Choose between "Speaker 1:" or "[1]:" label formats
 - **Multiple Speakers**: Support for 1-20 speakers
 
+### Model Options
+- **HuggingFace API**: Use powerful cloud-based models via API (requires API token)
+- **Local Models**: Download and run ONNX models locally on your server
+  - LaMini-Flan-T5-783M (~800MB, best performance)
+  - Flan-T5 Base (~500MB, balanced)
+  - Flan-T5 Small (~300MB, fastest)
+  - Automatic model download and caching on first use
+  - Real-time download progress and status indicators
+
 ### Two-Stage LLM Processing
 - **Stage 1**: Text cleaning and repair using HuggingFace models
 - **Stage 2**: Speaker formatting and dialogue structuring
@@ -65,7 +74,8 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 
 ### Backend
 - Express.js server
-- HuggingFace Inference API
+- HuggingFace Inference API for cloud models
+- Transformers.js for local model execution (ONNX format)
 - WebSocket server for live processing
 - adm-zip for EPUB parsing
 
@@ -89,13 +99,17 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
    - Toggle narrator inclusion
    - Click "Extract Characters" to identify speakers
    - Review and manage extracted character mappings
-4. **Add Custom Instructions** (optional): Provide additional instructions for the LLM
-5. **Preview Prompts** (optional): Click "Load Preview" to see the exact prompts
-6. **Test First** (optional): Click "Test One Chunk" to preview processing results
-7. **Adjust Settings**: Set batch size and optionally change the LLM model
-8. **Start Processing**: Click "Start Processing" to begin full processing
-9. **Monitor Progress**: Watch real-time progress and activity logs
-10. **Export Results**: Copy or download the processed text
+4. **Select Model Source**:
+   - Choose between HuggingFace API (cloud) or Local Model (offline)
+   - If local, select model (downloads automatically on first use)
+   - View real-time download progress and model status
+5. **Add Custom Instructions** (optional): Provide additional instructions for the LLM
+6. **Preview Prompts** (optional): Click "Load Preview" to see the exact prompts
+7. **Test First** (optional): Click "Test One Chunk" to preview processing results
+8. **Adjust Settings**: Set batch size and optionally change the LLM model
+9. **Start Processing**: Click "Start Processing" to begin full processing
+10. **Monitor Progress**: Watch real-time progress and activity logs
+11. **Export Results**: Copy or download the processed text
 
 ## Project Structure
 
@@ -107,7 +121,8 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 │   │   └── lib/           # Utilities
 ├── server/                # Backend application
 │   ├── routes.ts          # API routes and WebSocket
-│   ├── llm-service.ts     # HuggingFace integration
+│   ├── llm-service.ts     # HuggingFace API integration
+│   ├── local-model-service.ts  # Local model execution (transformers.js)
 │   └── text-processor.ts  # Text chunking and processing
 ├── shared/                # Shared TypeScript types
 │   └── schema.ts          # Data models and schemas
@@ -117,6 +132,20 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 ## Recent Changes
 
 ### Latest Updates (October 2025)
+- **Local Model Support**: Download and run models locally on your server
+  - Integrated transformers.js for ONNX model execution
+  - Three pre-configured local models (Flan-T5 variants)
+  - Automatic model download with progress tracking
+  - Model status indicators and cache management
+  - Works offline once models are downloaded
+- **Compact UI**: Reduced spacing throughout application for information-dense layout
+  - Smaller padding, headings, and component sizes
+  - Better use of vertical space
+  - Fixed sidebar scrolling to view all controls
+- **Narrator Extraction Logic**: Improved prompt instructions for narrator mode
+  - Preserves narrative when narrator is included
+  - Removes dialogue attribution tags ("said", "replied")
+  - Context-aware prompt branching based on narrator presence
 - **Character Extraction**: AI-powered character name extraction for intelligent mode
   - Customizable sample size (5-100 sentences)
   - Narrator toggle option for including narrator as separate speaker
@@ -139,7 +168,6 @@ This application helps prepare text for multi-speaker TTS systems by cleaning, f
 
 ## Future Enhancements
 
-- Local model download and execution from HuggingFace Hub
 - Direct TTS engine integration for audio generation
 - Batch processing queue for multiple files
 - Additional export formats (JSON, SRT, custom formats)

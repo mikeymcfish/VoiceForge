@@ -46,12 +46,18 @@ export const speakerConfigSchema = z.object({
 
 export type SpeakerConfig = z.infer<typeof speakerConfigSchema>;
 
+// Model Source
+export const modelSourceSchema = z.enum(["api", "local"]);
+export type ModelSource = z.infer<typeof modelSourceSchema>;
+
 // Processing Configuration
 export const processingConfigSchema = z.object({
   batchSize: z.number().min(1).max(50).default(10),
   cleaningOptions: cleaningOptionsSchema,
   speakerConfig: speakerConfigSchema.optional(),
-  modelName: z.string().default("Qwen/Qwen2.5-72B-Instruct"),
+  modelSource: modelSourceSchema.default("api"), // API or Local
+  modelName: z.string().default("Qwen/Qwen2.5-72B-Instruct"), // For API
+  localModelName: z.string().optional(), // For local models
   customInstructions: z.string().optional(), // Custom instructions for the LLM
 });
 

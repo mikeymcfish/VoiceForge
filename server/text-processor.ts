@@ -54,7 +54,9 @@ export class TextProcessor {
             text: chunk,
             cleaningOptions: config.cleaningOptions,
             speakerConfig: config.speakerConfig,
+            modelSource: config.modelSource,
             modelName: config.modelName,
+            localModelName: config.localModelName,
             customInstructions: config.customInstructions,
           });
 
@@ -62,7 +64,7 @@ export class TextProcessor {
           const validation = await llmService.validateOutput(
             chunk,
             processedText,
-            config.modelName
+            config.modelSource
           );
 
           if (validation.valid) {

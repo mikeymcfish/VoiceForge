@@ -1,5 +1,6 @@
 import { HfInference } from "@huggingface/inference";
-import type { CleaningOptions, SpeakerConfig } from "@shared/schema";
+import type { CleaningOptions, SpeakerConfig, ModelSource } from "@shared/schema";
+import { LocalModelService } from "./local-model-service";
 
 const hf = new HfInference(process.env.HUGGINGFACE_API_TOKEN);
 
@@ -7,7 +8,9 @@ export interface ProcessChunkOptions {
   text: string;
   cleaningOptions: CleaningOptions;
   speakerConfig?: SpeakerConfig;
-  modelName: string;
+  modelSource?: ModelSource;
+  modelName: string; // API model name
+  localModelName?: string; // Local model name
   customInstructions?: string;
 }
 
@@ -143,43 +146,50 @@ IMPORTANT: Only extract dialogue from the characters listed above. Ignore dialog
     return prompt;
   }
 
-  async processChunk(options: ProcessChunkOptions): Promise<string> {
-    const { text, cleaningOptions, speakerConfig, modelName, customInstructions } = options;
+  private async runInference(prompt: string, options: ProcessChunkOptions): Promise<string> {
+    const { modelSource = 'api', modelName, localModelName } = options;
 
-    // Stage 1: Text cleaning
-    const cleaningPrompt = this.buildCleaningPrompt(text, cleaningOptions, customInstructions);
-    
-    const stage1Response = await hf.chatCompletion({
-      model: modelName,
-      messages: [
-        {
-          role: "user",
-          content: cleaningPrompt,
-        },
-      ],
-      max_tokens: 2000,
-      temperature: 0.3,
-    });
-
-    let processedText = stage1Response.choices[0]?.message?.content || text;
-
-    // Stage 2: Speaker formatting (if configured and mode is not "none")
-    if (speakerConfig && speakerConfig.mode !== "none") {
-      const speakerPrompt = this.buildSpeakerPrompt(processedText, speakerConfig, customInstructions);
-      
-      const stage2Response = await hf.chatCompletion({
+    if (modelSource === 'local') {
+      if (!localModelName) {
+        throw new Error('Local model name is required for local inference');
+      }
+      return await LocalModelService.generateText(localModelName, prompt);
+    } else {
+      const response = await hf.chatCompletion({
         model: modelName,
         messages: [
           {
             role: "user",
-            content: speakerPrompt,
+            content: prompt,
           },
         ],
         max_tokens: 2000,
         temperature: 0.3,
       });
 
-      processedText = stage2Response.choices[0]?.message?.content || processedText;
+      return response.choices[0]?.message?.content || '';
+    }
+  }
+
+  async processChunk(options: ProcessChunkOptions): Promise<string> {
+    const { text, cleaningOptions, speakerConfig, customInstructions } = options;
+
+    // Stage 1: Text cleaning
+    const cleaningPrompt = this.buildCleaningPrompt(text, cleaningOptions, customInstructions);
+    let processedText = await this.runInference(cleaningPrompt, options);
+
+    if (!processedText) {
+      processedText = text;
+    }
+
+    // Stage 2: Speaker formatting (if configured and mode is not "none")
+    if (speakerConfig && speakerConfig.mode !== "none") {
+      const speakerPrompt = this.buildSpeakerPrompt(processedText, speakerConfig, customInstructions);
+      const stage2Text = await this.runInference(speakerPrompt, options);
+      
+      if (stage2Text) {
+        processedText = stage2Text;
+      }
     }
 
     return processedText.trim();
@@ -188,7 +198,7 @@ IMPORTANT: Only extract dialogue from the characters listed above. Ignore dialog
   async validateOutput(
     originalText: string,
     processedText: string,
-    modelName: string
+    modelSource?: ModelSource
   ): Promise<{ valid: boolean; issues?: string[] }> {
     // Simple validation: check if output is not empty and has reasonable length
     if (!processedText || processedText.length < originalText.length * 0.5) {
@@ -209,6 +219,9 @@ IMPORTANT: Only extract dialogue from the characters listed above. Ignore dialog
       issues.push("Lost paragraph structure");
     }
 
+    // For local models, use lightweight validation only (no API calls)
+    // For API models, we could add more sophisticated validation if needed
+    
     return {
       valid: issues.length === 0,
       issues: issues.length > 0 ? issues : undefined,
@@ -235,9 +248,11 @@ IMPORTANT: Only extract dialogue from the characters listed above. Ignore dialog
   async extractCharacters(options: {
     text: string;
     includeNarrator: boolean;
+    modelSource?: ModelSource;
     modelName: string;
+    localModelName?: string;
   }): Promise<Array<{ name: string; speakerNumber: number }>> {
-    const { text, includeNarrator, modelName } = options;
+    const { text, includeNarrator, modelSource = 'api', modelName, localModelName } = options;
 
     const prompt = `You are a character extraction assistant for multi-speaker TTS systems. Analyze the following text sample and extract all character/speaker names that appear.
 
@@ -256,19 +271,27 @@ ${text}
 
 Character names (JSON array only):`;
 
-    const response = await hf.chatCompletion({
-      model: modelName,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      max_tokens: 500,
-      temperature: 0.2,
-    });
+    let content: string;
 
-    const content = response.choices[0]?.message?.content || "[]";
+    if (modelSource === 'local') {
+      if (!localModelName) {
+        throw new Error('Local model name is required for local inference');
+      }
+      content = await LocalModelService.generateText(localModelName, prompt);
+    } else {
+      const response = await hf.chatCompletion({
+        model: modelName,
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        max_tokens: 500,
+        temperature: 0.2,
+      });
+      content = response.choices[0]?.message?.content || "[]";
+    }
     
     // Extract JSON array from response
     let characterNames: string[] = [];
