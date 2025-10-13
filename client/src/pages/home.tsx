@@ -53,7 +53,8 @@ export default function Home() {
   const [ollamaModelName, setOllamaModelName] = useState<string>();
   const [customInstructions, setCustomInstructions] = useState("");
   const [singlePass, setSinglePass] = useState(false);
-  const [concisePrompts, setConcisePrompts] = useState(true);
+  const [concisePrompts, setConcisePrompts] = useState(false);
+  const [extendedExamples, setExtendedExamples] = useState(false);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -188,6 +189,7 @@ export default function Home() {
             customInstructions: customInstructions || undefined,
             singlePass,
             concisePrompts,
+            extendedExamples,
           },
         })
       );
@@ -339,6 +341,7 @@ export default function Home() {
             customInstructions: customInstructions || undefined,
             singlePass,
             concisePrompts,
+            extendedExamples,
           },
         }),
       });
@@ -483,6 +486,7 @@ export default function Home() {
               customInstructions={customInstructions}
               singlePass={singlePass}
               concisePrompts={concisePrompts}
+              extendedExamples={extendedExamples}
               disabled={isProcessing}
             />
 
@@ -496,6 +500,8 @@ export default function Home() {
             onSinglePassChange={setSinglePass}
             concisePrompts={concisePrompts}
             onConcisePromptsChange={setConcisePrompts}
+            extendedExamples={extendedExamples}
+            onExtendedExamplesChange={setExtendedExamples}
             onStart={handleStartProcessing}
             onStop={handleStopProcessing}
             onTest={handleTestChunk}

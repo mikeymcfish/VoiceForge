@@ -177,6 +177,7 @@ export interface ProcessChunkOptions {
   customInstructions?: string;
   singlePass?: boolean;
   concisePrompts?: boolean;
+  extendedExamples?: boolean;
 }
 
 type ModelPricing = { inCostPerM?: number; outCostPerM?: number };
@@ -307,7 +308,8 @@ Important rules:
   private buildSpeakerPrompt(
     text: string,
     config: SpeakerConfig,
-    customInstructions?: string
+    customInstructions?: string,
+    extendedExamples?: boolean
   ): string {
     const labelExample =
       config.labelFormat === "speaker"
@@ -343,8 +345,13 @@ Requirements:
 Requirements:
 - Detect speaker changes from context clues (said, replied, asked, etc.)
 - Format each speaking character's line as: ${labelExample} [dialogue text]
-- ${narratorAttr === 'remove' ? 'Remove dialogue attribution tags (e.g., "he said", "she replied", "Bob asked")' : narratorAttr === 'verbatim' ? 'Move dialogue attribution tags (e.g., "he said", "she replied", "Bob asked") into separate Narrator lines immediately following the spoken line (preserve punctuation).' : 'Convert dialogue attribution and action context into a separate Narrator line immediately after the spoken line. Rewrite the tag and any action into a concise descriptive sentence without quotes (e.g., "John passed the book over to Tim."). Prefer explicit names over pronouns when ambiguous.'}
+- ${narratorAttr === 'remove'
+            ? 'Remove dialogue attribution tags (e.g., "he said", "she replied", "Bob asked"). Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these attribution phrases inline as part of the spoken line.'
+            : narratorAttr === 'verbatim'
+              ? 'Move dialogue attribution tags (e.g., "he said", "she replied", "Bob asked") into separate Narrator lines immediately following the spoken line (preserve punctuation). Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these phrases inline in the spoken line (do not move).'
+              : 'Convert dialogue attribution and action context into a separate Narrator line immediately after the spoken line. Rewrite the tag and any action into a concise descriptive sentence without quotes (e.g., "John passed the book over to Tim."). Prefer explicit names over pronouns when ambiguous. Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these attribution phrases inline as part of the spoken line.'}
 - Label narration (non-dialogue) using ${narratorLabel} (do NOT use the literal label "Narrator:")
+ - Narrator speaking rule: When the narrator (Speaker 1) speaks, preserve first‑person speaking cues inline (e.g., "I said", "I asked", "I replied", "I whispered", "I shouted"). Do NOT remove, move, or convert these phrases; keep them attached to the dialogue so TTS switches to the speaking voice.
 - Preserve full content and order from the input. Do not omit or reorder any parts.
 - ${narratorName ? `Narrator identity: The narrator is the character "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Keep narration as Narrator lines but write the narration content in first-person ("I") from that character's perspective. Do not use the narrator's name inside narration.` : 'If the text uses first-person narration ("I") that clearly refers to a speaking character, keep narration as Narrator lines and write from first-person ("I") rather than using the character\'s name. Use Narrator only for narration; use speaker labels for spoken dialogue.'}
 - Assign consistent speaker numbers based on who speaks`;
@@ -401,6 +408,11 @@ IMPORTANT:
 
     if (customInstructions) {
       prompt += `\n\nAdditional custom instructions:\n${customInstructions}`;
+    }
+
+    if (extendedExamples) {
+      const exLabel = narratorLabel;
+      prompt += `\n\nExamples (narrator speech handling):\n1) He was standing outside in the cold waiting for me. I said, "Let's go."\nExpected:\n${exLabel} I said, "Let's go."\n\n2) "Let's go," I said.\nExpected:\n${exLabel} "Let's go," I said.\n\n3) He was standing outside... I asked, "Are you ready?"\nExpected:\n${exLabel} I asked, "Are you ready?"\n\n4) Unknown speaker appears briefly in dialogue\nExpected: Keep the line, attribute to ${exLabel} without modification.`;
     }
 
     prompt += `\n\nText to format:\n${text}\n\nFormatted dialogue:`;
@@ -566,7 +578,8 @@ IMPORTANT:
     text: string,
     cleaning: CleaningOptions,
     config: SpeakerConfig,
-    customInstructions?: string
+    customInstructions?: string,
+    extendedExamples?: boolean
   ): string {
     const labelExample =
       config.labelFormat === "speaker"
@@ -598,11 +611,12 @@ IMPORTANT:
     } else {
       if (hasNarrator) {
         const attrRule = narratorAttr === 'remove'
-          ? 'Remove attribution tags (e.g., "he said").'
+          ? 'Remove attribution tags (e.g., "he said"). Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these phrases inline in the spoken line.'
           : narratorAttr === 'verbatim'
-            ? 'Move attribution tags into a Narrator line immediately after the spoken line.'
-            : 'Convert attribution/action into a concise Narrator line after the spoken line (e.g., "John passed the book to Tim."). Prefer explicit names when ambiguous.';
+            ? 'Move attribution tags into a Narrator line immediately after the spoken line. Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these phrases inline in the spoken line (do not move).'
+            : 'Convert attribution/action into a concise Narrator line after the spoken line (e.g., "John passed the book to Tim."). Prefer explicit names when ambiguous. Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these phrases inline in the spoken line (do not convert).';
         parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines. ${attrRule} Label narration with ${narratorLabel} (do not use the literal label "Narrator:"). ${narratorName ? `Narrator identity: "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Write narration in first-person ("I") from that character's perspective and do not use their name inside narration.` : 'If first-person narration ("I") clearly refers to a speaking character, label narration with ${narratorLabel} and write from first-person ("I").'} Preserve full content and order from the input; do not omit or reorder. Use consistent speaker numbers.`);
+        parts.push(`NARRATOR SPEAKING RULE: When the narrator (Speaker 1) speaks, preserve first-person speaking cues inline (e.g., "I said", "I asked", "I replied", "I whispered", "I shouted"). Do NOT remove, move, or convert these phrases; keep them attached to the dialogue so TTS switches to the speaking voice.`);
       } else {
         parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines only. Remove attribution tags; ${narratorName ? `Narrator identity: "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Write narration (non-dialogue) in first-person ("I").` : 'if first-person narration ("I") clearly refers to a speaking character, write narration in first-person ("I").'} If dialogue appears from an unknown/unmapped character, keep it unmodified and attribute it to ${narratorLabel}. Preserve full content and order from the input; do not omit or reorder. Keep consistent speaker numbering.`);
       }
@@ -620,6 +634,18 @@ IMPORTANT:
     }
 
     if (customInstructions) parts.push(`CUSTOM: ${customInstructions}`);
+    if (extendedExamples) {
+      const ex = [
+        `EXAMPLES:`,
+        `1) He was standing outside in the cold waiting for me. I said, "Let's go."`,
+        `   Output: ${narratorLabel} I said, "Let's go."`,
+        `2) "Let's go," I said.`,
+        `   Output: ${narratorLabel} "Let's go," I said.`,
+        `3) He was standing outside... I asked, "Are you ready?"`,
+        `   Output: ${narratorLabel} I asked, "Are you ready?"`,
+      ];
+      parts.push(ex.join('\n'));
+    }
     parts.push(`Return ONLY the cleaned, formatted output. No explanations.`);
 
     return `${parts.join('\n')}
@@ -636,7 +662,7 @@ IMPORTANT:
       if (DEBUG_ENABLED) {
         console.debug('[LLM DEBUG] Single-pass processing enabled');
       }
-      const singlePrompt = this.buildSinglePassPrompt(text, cleaningOptions, speakerConfig, customInstructions);
+      const singlePrompt = this.buildSinglePassPrompt(text, cleaningOptions, speakerConfig, customInstructions, options.extendedExamples);
       const r = await this.runInference(singlePrompt, options);
       processedText = r.text;
       totalInTokens += r.usage.inputTokens; totalOutTokens += r.usage.outputTokens;
@@ -658,7 +684,7 @@ IMPORTANT:
 
     // Stage 2: Speaker formatting (if configured and mode is not "none")
     if (speakerConfig && speakerConfig.mode !== "none" && !options.singlePass) {
-      const speakerPrompt = this.buildSpeakerPrompt(processedText, speakerConfig, customInstructions);
+      const speakerPrompt = this.buildSpeakerPrompt(processedText, speakerConfig, customInstructions, options.extendedExamples);
       const r2 = await this.runInference(speakerPrompt, options);
       const stage2Text = r2.text;
       totalInTokens += r2.usage.inputTokens; totalOutTokens += r2.usage.outputTokens;
@@ -719,10 +745,11 @@ IMPORTANT:
     speakerConfig?: SpeakerConfig,
     customInstructions?: string,
     singlePass?: boolean,
-    concisePrompts?: boolean
+    concisePrompts?: boolean,
+    extendedExamples?: boolean
   ): { stage1: string; stage2?: string } {
     const stage1 = speakerConfig && speakerConfig.mode !== 'none' && singlePass
-      ? this.buildSinglePassPrompt(sampleText, cleaningOptions, speakerConfig, customInstructions)
+      ? this.buildSinglePassPrompt(sampleText, cleaningOptions, speakerConfig, customInstructions, extendedExamples)
       : (concisePrompts !== false
           ? this.buildCleaningPromptConcise(sampleText, cleaningOptions, customInstructions)
           : this.buildCleaningPrompt(sampleText, cleaningOptions, customInstructions));
@@ -730,7 +757,7 @@ IMPORTANT:
     const result: { stage1: string; stage2?: string } = { stage1 };
 
     if (speakerConfig && speakerConfig.mode !== "none" && !singlePass) {
-      result.stage2 = this.buildSpeakerPrompt(sampleText, speakerConfig, customInstructions);
+      result.stage2 = this.buildSpeakerPrompt(sampleText, speakerConfig, customInstructions, extendedExamples);
     }
 
     return result;

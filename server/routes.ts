@@ -118,7 +118,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         config.speakerConfig,
         config.customInstructions,
         (config as any).singlePass === true,
-        (config as any).concisePrompts !== false
+        (config as any).concisePrompts !== false,
+        (config as any).extendedExamples === true
       );
 
       res.json(prompts);
@@ -154,6 +155,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         modelName: config.modelName,
         ollamaModelName: (config as any).ollamaModelName,
         customInstructions: config.customInstructions,
+        extendedExamples: (config as any).extendedExamples === true,
       });
 
       res.json({
@@ -369,7 +371,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 type: "success",
                 message: `Chunk ${progress.chunkIndex + 1} processed successfully`,
                 details: (typeof progress.inputTokens === 'number')
-                  ? `Chunk tokens in/out: ${progress.inputTokens}/${progress.outputTokens} — cost: $${((progress.inputCost||0)+(progress.outputCost||0)).toFixed(4)} (total: $${(progress.totalCost||0).toFixed(4)})`
+                  ? `Chunk tokens in/out: ${progress.inputTokens}/${progress.outputTokens} â€” cost: $${((progress.inputCost||0)+(progress.outputCost||0)).toFixed(4)} (total: $${(progress.totalCost||0).toFixed(4)})`
                   : undefined,
               };
 

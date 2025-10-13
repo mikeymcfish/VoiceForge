@@ -17,6 +17,7 @@ interface PromptPreviewProps {
   disabled?: boolean;
   singlePass?: boolean;
   concisePrompts?: boolean;
+  extendedExamples?: boolean;
 }
 
 export function PromptPreview({
@@ -27,6 +28,7 @@ export function PromptPreview({
   disabled,
   singlePass,
   concisePrompts,
+  extendedExamples,
 }: PromptPreviewProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [prompts, setPrompts] = useState<{ stage1: string; stage2?: string } | null>(null);
@@ -48,6 +50,7 @@ export function PromptPreview({
             customInstructions: customInstructions || undefined,
             singlePass: singlePass ?? !!(speakerConfig && speakerConfig.mode !== 'none'),
             concisePrompts: concisePrompts ?? true,
+            extendedExamples: extendedExamples ?? false,
           },
         }),
       });

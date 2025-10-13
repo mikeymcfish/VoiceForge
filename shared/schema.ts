@@ -73,7 +73,9 @@ export const processingConfigSchema = z.object({
   // If true, run cleaning + speaker formatting in one LLM call per chunk
   singlePass: z.boolean().default(false),
   // Use shorter instruction prompts to reduce tokens
-  concisePrompts: z.boolean().default(true),
+  concisePrompts: z.boolean().default(false),
+  // Include extended prompt examples/guidance
+  extendedExamples: z.boolean().default(false),
 });
 
 export type ProcessingConfig = z.infer<typeof processingConfigSchema>;

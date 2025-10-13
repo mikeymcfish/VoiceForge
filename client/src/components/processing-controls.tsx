@@ -28,6 +28,8 @@ interface ProcessingControlsProps {
   onSinglePassChange?: (val: boolean) => void;
   concisePrompts?: boolean;
   onConcisePromptsChange?: (val: boolean) => void;
+  extendedExamples?: boolean;
+  onExtendedExamplesChange?: (val: boolean) => void;
   onStart: () => void;
   onStop: () => void;
   onTest: () => void;
@@ -46,6 +48,8 @@ export function ProcessingControls({
   onSinglePassChange,
   concisePrompts = true,
   onConcisePromptsChange,
+  extendedExamples = false,
+  onExtendedExamplesChange,
   onStart,
   onStop,
   onTest,
@@ -141,6 +145,21 @@ export function ProcessingControls({
             onCheckedChange={(val) => onConcisePromptsChange?.(val === true)}
             disabled={isProcessing}
             data-testid="switch-concise-prompts"
+          />
+        </div>
+
+        <div className="flex items-center justify-between py-1">
+          <div className="space-y-0.5">
+            <Label className="text-sm font-medium">Extended Prompt Examples</Label>
+            <p className="text-xs text-muted-foreground">
+              Add concrete examples to guide narrator speech handling
+            </p>
+          </div>
+          <Switch
+            checked={extendedExamples}
+            onCheckedChange={(val) => onExtendedExamplesChange?.(val === true)}
+            disabled={isProcessing}
+            data-testid="switch-extended-examples"
           />
         </div>
 
