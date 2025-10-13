@@ -383,18 +383,24 @@ export default function Home() {
                 sampleSize={speakerConfig.sampleSize}
                 includeNarrator={speakerConfig.includeNarrator}
                 onSampleSizeChange={(size) =>
-                  setSpeakerConfig({ ...speakerConfig, sampleSize: size })
+                  setSpeakerConfig((prev) => ({ ...prev, sampleSize: size }))
                 }
                 onIncludeNarratorChange={(include) =>
-                  setSpeakerConfig({ ...speakerConfig, includeNarrator: include })
+                  setSpeakerConfig((prev) => ({ ...prev, includeNarrator: include }))
                 }
                 onCharactersExtracted={(characters) => {
-                  setSpeakerConfig({ ...speakerConfig, characterMapping: characters });
+                  setSpeakerConfig((prev) => ({ ...prev, characterMapping: characters }));
                   addLog(
                     "success",
                     `Characters extracted: ${characters.length} character(s)`,
                     characters.map(c => `${c.name} = Speaker ${c.speakerNumber}`).join(", ")
                   );
+                }}
+                onNarratorCharacterNameChange={(name) => {
+                  setSpeakerConfig((prev) => ({ ...prev, narratorCharacterName: name || undefined }));
+                  if (name) {
+                    addLog("info", `Narrator identified as: ${name}`);
+                  }
                 }}
                 disabled={isProcessing}
               />

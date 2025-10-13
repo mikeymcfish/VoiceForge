@@ -48,6 +48,9 @@ export const speakerConfigSchema = z.object({
     name: z.string(),
     speakerNumber: z.number(),
   })).optional(),
+  // If the story’s narrator (first-person “I”) is the same as a speaking character,
+  // capture that character’s name here to guide formatting prompts.
+  narratorCharacterName: z.string().optional(),
 });
 
 export type SpeakerConfig = z.infer<typeof speakerConfigSchema>;

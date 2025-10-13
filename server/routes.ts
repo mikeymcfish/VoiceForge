@@ -8,6 +8,8 @@ import { textProcessor } from "./text-processor";
 import { llmService } from "./llm-service";
 import { nanoid } from "nanoid";
 import type { ProcessingConfig, LogEntry, WSMessage } from "@shared/schema";
+import fs from "fs";
+import path from "path";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -66,6 +68,25 @@ async function parseEpub(buffer: Buffer): Promise<string> {
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
 
+  // Good models list from good_models.txt
+  app.get("/api/good-models", async (_req, res) => {
+    try {
+      const filePath = path.resolve(process.cwd(), "good_models.txt");
+      if (!fs.existsSync(filePath)) {
+        return res.json({ models: [] });
+      }
+      const raw = await fs.promises.readFile(filePath, "utf-8");
+      const models = raw
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !l.startsWith("#"));
+      return res.json({ models });
+    } catch (err) {
+      console.error("Failed to read good_models.txt:", err);
+      return res.status(500).json({ error: "Failed to read good models list" });
+    }
+  });
+
   // Prompt preview endpoint
   app.post("/api/preview-prompts", async (req, res) => {
     try {
@@ -109,7 +130,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Process just the first chunk (up to batchSize sentences)
-      const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+      const sentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) || [text];
       const testChunk = sentences.slice(0, config.batchSize).join(" ");
 
       const processedText = await llmService.processChunk({
@@ -152,11 +173,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Extract sample from text
-      const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+      const sentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) || [text];
       const sampleText = sentences.slice(0, sampleSize).join(" ");
 
-      // Use LLM to extract character names
-      const characters = await llmService.extractCharacters({
+      // Use LLM to extract character names and narrator identity
+      const { characters, narratorCharacterName } = await llmService.extractCharacters({
         text: sampleText,
         includeNarrator,
         modelSource: (modelSource as any) || 'api',
@@ -166,6 +187,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({
         characters,
+        narratorCharacterName,
         sampleSentenceCount: Math.min(sentences.length, sampleSize),
       });
     } catch (error) {
@@ -256,7 +278,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         );
 
         // Split text to get total chunks
-        const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+        const sentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) || [text];
         const totalChunks = Math.ceil(sentences.length / config.batchSize);
 
         // Process text with progress updates

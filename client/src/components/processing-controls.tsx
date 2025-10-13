@@ -16,7 +16,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface ProcessingControlsProps {
   batchSize: number;
@@ -52,6 +52,29 @@ export function ProcessingControls({
   isTesting = false,
 }: ProcessingControlsProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+  const [goodModels, setGoodModels] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    // Load known-good models from server (good_models.txt)
+    fetch('/api/good-models')
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Failed to load models (${res.status})`);
+        return res.json();
+      })
+      .then((data: { models?: string[] }) => {
+        if (!isMounted) return;
+        const list = Array.isArray(data?.models) ? data.models.filter(Boolean) : [];
+        setGoodModels(list.length > 0 ? list : []);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setGoodModels([]); // fall back to defaults below
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const normalizeModelId = (value: string) => {
     // Normalize common Llama 3.1 naming differences
@@ -156,15 +179,17 @@ export function ProcessingControls({
                       <SelectValue placeholder="Choose a known-good model" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="meta-llama/Llama-3.1-8B-Instruct">
-                        meta-llama/Llama-3.1-8B-Instruct
-                      </SelectItem>
-                      <SelectItem value="mistralai/Mistral-7B-Instruct-v0.2">
-                        mistralai/Mistral-7B-Instruct-v0.2
-                      </SelectItem>
-                      <SelectItem value="Qwen/Qwen2.5-7B-Instruct">
-                        Qwen/Qwen2.5-7B-Instruct
-                      </SelectItem>
+                      {(goodModels && goodModels.length > 0
+                        ? goodModels
+                        : [
+                            // Fallback defaults if file is missing/empty
+                            'meta-llama/Llama-3.1-8B-Instruct',
+                            'mistralai/Mistral-7B-Instruct-v0.2',
+                            'Qwen/Qwen2.5-7B-Instruct',
+                          ]
+                      ).map((m) => (
+                        <SelectItem key={m} value={m}>{m}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>

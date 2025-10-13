@@ -14,7 +14,8 @@ export interface ProcessingProgress {
 export class TextProcessor {
   private splitIntoChunks(text: string, batchSize: number): string[] {
     // Split by sentences (basic sentence detection)
-    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+    // Include sentences that may not end with punctuation and preserve leading fragments
+    const sentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) || [text];
     
     const chunks: string[] = [];
     let currentChunk: string[] = [];

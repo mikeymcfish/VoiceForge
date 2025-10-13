@@ -25,6 +25,7 @@ interface CharacterExtractionProps {
   onSampleSizeChange: (size: number) => void;
   onIncludeNarratorChange: (include: boolean) => void;
   onCharactersExtracted: (characters: CharacterMapping[]) => void;
+  onNarratorCharacterNameChange?: (name?: string) => void;
   disabled?: boolean;
 }
 
@@ -39,6 +40,7 @@ export function CharacterExtraction({
   onSampleSizeChange,
   onIncludeNarratorChange,
   onCharactersExtracted,
+  onNarratorCharacterNameChange,
   disabled,
 }: CharacterExtractionProps) {
   const [isExtracting, setIsExtracting] = useState(false);
@@ -67,14 +69,18 @@ export function CharacterExtraction({
 
       const response = await res.json() as {
         characters: CharacterMapping[];
+        narratorCharacterName?: string;
         sampleSentenceCount: number;
       };
 
       onCharactersExtracted(response.characters);
+      if (onNarratorCharacterNameChange) {
+        onNarratorCharacterNameChange(response.narratorCharacterName);
+      }
       
       toast({
         title: "Characters Extracted",
-        description: `Found ${response.characters.length} character(s) from ${response.sampleSentenceCount} sentence sample.`,
+        description: `Found ${response.characters.length} character(s) from ${response.sampleSentenceCount} sentence sample.` + (response.narratorCharacterName ? ` Narrator is '${response.narratorCharacterName}'.` : ""),
       });
     } catch (error) {
       console.error("Character extraction error:", error);
