@@ -77,6 +77,7 @@ export class TextProcessor {
             customInstructions: config.customInstructions,
             singlePass: (config as any).singlePass === true,
             concisePrompts: (config as any).concisePrompts !== false,
+            extendedExamples: (config as any).extendedExamples === true,
           });
           processedText = result.text;
           const chunkIn = result.usage.inputTokens || 0;

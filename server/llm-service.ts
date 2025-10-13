@@ -362,19 +362,19 @@ Requirements:
 - Detect speaker changes from context clues (said, replied, asked, etc.)
 - Format each line as: ${labelExample} [dialogue text]
 - Assign consistent speaker numbers based on who speaks
-- Extract spoken dialogue. Keep non-dialogue descriptions as Narrator lines when needed.
+- Extract only spoken dialogue; omit non-dialogue narration/descriptions.
 - Remove dialogue attribution tags (e.g., "he said", "she replied")
 - If a character name is detected, keep it consistent with one speaker number
 - Preserve full content and order from the input. Do not omit or reorder any parts.
 - ${narratorName ? `Narrator identity: The narrator is the character "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Keep narration (non-dialogue) as Narrator lines and write them in first-person ("I"). Do not include the narrator's own name inside narration.` : 'If the story uses first-person narration ("I") clearly from a character\'s perspective, keep narration as Narrator lines and write from first-person ("I").'}
-- If dialogue occurs from characters not in the known set, keep that dialogue unmodified and attribute it to the Narrator.`;
+- If dialogue occurs from characters not in the known set, keep that dialogue unmodified and assign a new speaker number (do not label as narration).`;
       }
     }
 
     // Add character mapping if available (adjust so narration occupies Speaker 1)
     if (config.characterMapping && config.characterMapping.length > 0) {
       const narratorNameLower = ((config as any).narratorCharacterName || '').toString().trim().toLowerCase();
-      const hasAnyNarrator = Boolean(config.includeNarrator || narratorNameLower || config.characterMapping.some(c => c.name.toLowerCase() === 'narrator')); 
+      const hasAnyNarrator = Boolean(config.includeNarrator || config.characterMapping.some(c => c.name.toLowerCase() === 'narrator'));
       const adjusted = (hasAnyNarrator ? config.characterMapping.map(c => ({
         name: c.name,
         speakerNumber: narratorNameLower && c.name.toLowerCase() === narratorNameLower ? 1 : (c.speakerNumber + 1),
@@ -384,7 +384,7 @@ Requirements:
         .join("\n");
       
       const hasNarratorInMapping = config.characterMapping.some((char) => char.name.toLowerCase() === "narrator");
-      const narratorActive = Boolean(config.includeNarrator || hasNarratorInMapping || narratorNameLower);
+      const narratorActive = Boolean(config.includeNarrator || hasNarratorInMapping);
 
       if (narratorActive) {
         const narratorAttr = (config as any).narratorAttribution || 'remove';
@@ -410,7 +410,7 @@ IMPORTANT:
       prompt += `\n\nAdditional custom instructions:\n${customInstructions}`;
     }
 
-    if (extendedExamples) {
+    if (extendedExamples && config.mode === 'intelligent') {
       const exLabel = narratorLabel;
       prompt += `\n\nExamples (narrator speech handling):\n1) He was standing outside in the cold waiting for me. I said, "Let's go."\nExpected:\n${exLabel} I said, "Let's go."\n\n2) "Let's go," I said.\nExpected:\n${exLabel} "Let's go," I said.\n\n3) He was standing outside... I asked, "Are you ready?"\nExpected:\n${exLabel} I asked, "Are you ready?"\n\n4) Unknown speaker appears briefly in dialogue\nExpected: Keep the line, attribute to ${exLabel} without modification.`;
     }
@@ -618,13 +618,13 @@ IMPORTANT:
         parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines. ${attrRule} Label narration with ${narratorLabel} (do not use the literal label "Narrator:"). ${narratorName ? `Narrator identity: "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Write narration in first-person ("I") from that character's perspective and do not use their name inside narration.` : 'If first-person narration ("I") clearly refers to a speaking character, label narration with ${narratorLabel} and write from first-person ("I").'} Preserve full content and order from the input; do not omit or reorder. Use consistent speaker numbers.`);
         parts.push(`NARRATOR SPEAKING RULE: When the narrator (Speaker 1) speaks, preserve first-person speaking cues inline (e.g., "I said", "I asked", "I replied", "I whispered", "I shouted"). Do NOT remove, move, or convert these phrases; keep them attached to the dialogue so TTS switches to the speaking voice.`);
       } else {
-        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines only. Remove attribution tags; ${narratorName ? `Narrator identity: "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Write narration (non-dialogue) in first-person ("I").` : 'if first-person narration ("I") clearly refers to a speaking character, write narration in first-person ("I").'} If dialogue appears from an unknown/unmapped character, keep it unmodified and attribute it to ${narratorLabel}. Preserve full content and order from the input; do not omit or reorder. Keep consistent speaker numbering.`);
+        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines only. Remove attribution tags. If dialogue appears from an unknown/unmapped character, keep it unmodified and assign a new speaker number (do not label as narration). Preserve full content and order from the input; do not omit or reorder. Keep consistent speaker numbering.`);
       }
     }
 
     if (config.characterMapping && config.characterMapping.length > 0) {
       const narratorNameLower = ((config as any).narratorCharacterName || '').toString().trim().toLowerCase();
-      const hasAnyNarrator = Boolean(config.includeNarrator || narratorNameLower || config.characterMapping.some(c => c.name.toLowerCase() === 'narrator')); 
+      const hasAnyNarrator = Boolean(config.includeNarrator || config.characterMapping.some(c => c.name.toLowerCase() === 'narrator'));
       const adjusted = (hasAnyNarrator ? config.characterMapping.map(c => ({
         name: c.name,
         speakerNumber: narratorNameLower && c.name.toLowerCase() === narratorNameLower ? 1 : (c.speakerNumber + 1),
@@ -634,7 +634,7 @@ IMPORTANT:
     }
 
     if (customInstructions) parts.push(`CUSTOM: ${customInstructions}`);
-    if (extendedExamples) {
+    if (extendedExamples && config.mode === 'intelligent') {
       const ex = [
         `EXAMPLES:`,
         `1) He was standing outside in the cold waiting for me. I said, "Let's go."`,
