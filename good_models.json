@@ -4,14 +4,15 @@
       "id": "deepseek-ai/DeepSeek-V3.1",
       "display": "DeepSeek V3.1",
       "inCostPerM": 0.27,
-      "outCostPerM": 1.0
+      "outCostPerM": 1.0,
+      "recommendedChunkSize": 25
     },
     {
       "id": "meta-llama/Llama-3.3-70B-Instruct",
       "display": "Llama 3.3 70B Instruct",
       "inCostPerM": 0.9,
-      "outCostPerM": 1.8
+      "outCostPerM": 1.8,
+      "recommendedChunkSize": 25
     }
   ]
 }
-

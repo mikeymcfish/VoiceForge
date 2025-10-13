@@ -65,11 +65,37 @@ export default function Home() {
   const [totalInputTokens, setTotalInputTokens] = useState<number | undefined>(undefined);
   const [totalOutputTokens, setTotalOutputTokens] = useState<number | undefined>(undefined);
   const [totalCost, setTotalCost] = useState<number | undefined>(undefined);
+  const [estimatedTotalCost, setEstimatedTotalCost] = useState<number | undefined>(undefined);
   const [processedText, setProcessedText] = useState("");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isTesting, setIsTesting] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Auto-select first API model from good_models.json and default batch size
+  useEffect(() => {
+    if (modelSource !== 'api') return;
+    (async () => {
+      try {
+        const res = await fetch('/api/good-models');
+        if (!res.ok) return;
+        const data = await res.json();
+        const models = Array.isArray(data?.models) ? data.models : [];
+        const first = models[0];
+        if (!first) return;
+        const id = typeof first === 'string' ? first : first.id;
+        const rec = typeof first === 'string' ? undefined : first.recommendedChunkSize;
+        // Set default only if still on initial default
+        if (modelName === 'meta-llama/Llama-3.1-8B-Instruct') {
+          setModelName(id);
+        }
+        if (typeof rec === 'number') {
+          setBatchSize(rec);
+        }
+      } catch {}
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addLog = (
     type: LogEntry["type"],
@@ -186,7 +212,14 @@ export default function Home() {
             if (typeof message.payload.avgChunkMs === 'number') setAvgChunkMs(message.payload.avgChunkMs);
             if (typeof message.payload.totalInputTokens === 'number') setTotalInputTokens(message.payload.totalInputTokens);
             if (typeof message.payload.totalOutputTokens === 'number') setTotalOutputTokens(message.payload.totalOutputTokens);
-            if (typeof message.payload.totalCost === 'number') setTotalCost(message.payload.totalCost);
+            if (typeof message.payload.totalCost === 'number') {
+              setTotalCost(message.payload.totalCost);
+              const cc = message.payload.currentChunk;
+              const tc = message.payload.totalChunks;
+              if (typeof cc === 'number' && cc > 0 && typeof tc === 'number' && tc > 0) {
+                setEstimatedTotalCost((message.payload.totalCost / cc) * tc);
+              }
+            }
             break;
 
           case "chunk":
@@ -222,7 +255,10 @@ export default function Home() {
             setAvgChunkMs(undefined);
             if (typeof message.payload.totalInputTokens === 'number') setTotalInputTokens(message.payload.totalInputTokens);
             if (typeof message.payload.totalOutputTokens === 'number') setTotalOutputTokens(message.payload.totalOutputTokens);
-            if (typeof message.payload.totalCost === 'number') setTotalCost(message.payload.totalCost);
+            if (typeof message.payload.totalCost === 'number') {
+              setTotalCost(message.payload.totalCost);
+              setEstimatedTotalCost(message.payload.totalCost);
+            }
             addLog(
               "success",
               "Processing completed",
@@ -312,6 +348,15 @@ export default function Home() {
       }
 
           const data = await response.json();
+          // Estimate total cost based on test chunk usage and total chunks
+          if (data && data.usage) {
+            try {
+              const chunkCost = (data.usage.inputCost || 0) + (data.usage.outputCost || 0);
+              const sentences = originalText.match(/[^.!?]+(?:[.!?]+|$)/g) || [originalText];
+              const totalChunksEstimate = Math.ceil(sentences.length / batchSize);
+              setEstimatedTotalCost(chunkCost * totalChunksEstimate);
+            } catch {}
+          }
           setProcessedText(
         `=== TEST RESULT (${data.sentenceCount} sentences) ===\n\nOriginal:\n${data.originalChunk}\n\n---\n\nProcessed:\n${data.processedChunk}` +
         (data.usage ? `\n\n---\nUsage: in ${data.usage.inputTokens} tok, out ${data.usage.outputTokens} tok — cost: $${(((data.usage.inputCost||0)+(data.usage.outputCost||0)).toFixed(4))}` : '')
@@ -446,6 +491,7 @@ export default function Home() {
             onBatchSizeChange={setBatchSize}
             modelName={modelName}
             onModelNameChange={setModelName}
+            estimatedTotalCost={estimatedTotalCost}
             singlePass={singlePass}
             onSinglePassChange={setSinglePass}
             concisePrompts={concisePrompts}

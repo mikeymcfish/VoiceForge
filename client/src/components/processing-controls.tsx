@@ -23,6 +23,7 @@ interface ProcessingControlsProps {
   onBatchSizeChange: (size: number) => void;
   modelName: string;
   onModelNameChange: (name: string) => void;
+  estimatedTotalCost?: number;
   singlePass?: boolean;
   onSinglePassChange?: (val: boolean) => void;
   concisePrompts?: boolean;
@@ -40,6 +41,7 @@ export function ProcessingControls({
   onBatchSizeChange,
   modelName,
   onModelNameChange,
+  estimatedTotalCost,
   singlePass = false,
   onSinglePassChange,
   concisePrompts = true,
@@ -52,7 +54,7 @@ export function ProcessingControls({
   isTesting = false,
 }: ProcessingControlsProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
-  type GoodModel = { id: string; display?: string };
+  type GoodModel = { id: string; display?: string; inCostPerM?: number; outCostPerM?: number; recommendedChunkSize?: number };
   const [goodModels, setGoodModels] = useState<GoodModel[] | null>(null);
 
   useEffect(() => {
@@ -63,12 +65,12 @@ export function ProcessingControls({
         if (!res.ok) throw new Error(`Failed to load models (${res.status})`);
         return res.json();
       })
-      .then((data: { models?: Array<string | { id: string; display?: string }> }) => {
+      .then((data: { models?: Array<string | { id: string; display?: string; inCostPerM?: number; outCostPerM?: number; recommendedChunkSize?: number }> }) => {
         if (!isMounted) return;
         const list = Array.isArray(data?.models)
           ? data.models
-              .filter((m): m is string | { id: string; display?: string } => Boolean(m))
-              .map((m) => (typeof m === 'string' ? { id: m } : { id: m.id, display: m.display }))
+              .filter((m): m is string | { id: string; display?: string; inCostPerM?: number; outCostPerM?: number; recommendedChunkSize?: number } => Boolean(m))
+              .map((m) => (typeof m === 'string' ? { id: m } : { id: m.id, display: m.display, inCostPerM: m.inCostPerM, outCostPerM: m.outCostPerM, recommendedChunkSize: m.recommendedChunkSize }))
           : [];
         setGoodModels(list.length > 0 ? list as GoodModel[] : []);
       })
@@ -177,7 +179,14 @@ export function ProcessingControls({
                   <Label className="text-xs text-muted-foreground">Quick Pick</Label>
                   <Select
                     value=""
-                    onValueChange={(val) => onModelNameChange(normalizeModelId(val))}
+                    onValueChange={(val) => {
+                      const normalized = normalizeModelId(val);
+                      onModelNameChange(normalized);
+                      const gm = (goodModels || []).find(m => m.id === val);
+                      if (gm && typeof gm.recommendedChunkSize === 'number') {
+                        onBatchSizeChange(gm.recommendedChunkSize);
+                      }
+                    }}
                     disabled={isProcessing}
                   >
                     <SelectTrigger className="h-9">
@@ -226,7 +235,7 @@ export function ProcessingControls({
                 data-testid="button-start-processing"
               >
                 <Play className="h-4 w-4 mr-2" />
-                Start Processing
+                {`Start Processing${typeof estimatedTotalCost === 'number' ? ` — Est $${estimatedTotalCost.toFixed(4)}` : ''}`}
               </Button>
             )}
           </div>
