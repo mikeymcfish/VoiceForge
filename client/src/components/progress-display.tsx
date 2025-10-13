@@ -6,6 +6,17 @@ interface ProgressDisplayProps {
   currentChunk: number;
   totalChunks: number;
   isProcessing: boolean;
+  etaMs?: number;
+  lastChunkMs?: number;
+  avgChunkMs?: number;
+}
+
+function formatMs(ms?: number): string {
+  if (!ms && ms !== 0) return "";
+  const s = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(s / 60);
+  const ss = s % 60;
+  return `${m}:${ss.toString().padStart(2, '0')}`;
 }
 
 export function ProgressDisplay({
@@ -13,6 +24,9 @@ export function ProgressDisplay({
   currentChunk,
   totalChunks,
   isProcessing,
+  etaMs,
+  lastChunkMs,
+  avgChunkMs,
 }: ProgressDisplayProps) {
   if (!isProcessing && progress === 0) {
     return null;
@@ -36,6 +50,16 @@ export function ProgressDisplay({
             {isProcessing ? "Processing..." : "Complete"}
           </span>
         </div>
+        {(etaMs !== undefined || lastChunkMs !== undefined || avgChunkMs !== undefined) && (
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>
+              ETA: {etaMs !== undefined ? formatMs(etaMs) : "—"}
+            </span>
+            <span>
+              Last: {lastChunkMs !== undefined ? formatMs(lastChunkMs) : "—"} · Avg: {avgChunkMs !== undefined ? formatMs(avgChunkMs) : "—"}
+            </span>
+          </div>
+        )}
       </div>
     </Card>
   );

@@ -25,6 +25,8 @@ export const cleaningOptionsSchema = z.object({
   removeUrls: z.boolean().default(true),
   removeFootnotes: z.boolean().default(true),
   addPunctuation: z.boolean().default(true),
+  // Merge words split by line breaks/hyphens (PDF/EPUB artifacts)
+  fixHyphenation: z.boolean().default(false),
 });
 
 export type CleaningOptions = z.infer<typeof cleaningOptionsSchema>;
@@ -65,6 +67,10 @@ export const processingConfigSchema = z.object({
   localModelName: z.string().optional(), // For local models
   ollamaModelName: z.string().optional(), // For Ollama models
   customInstructions: z.string().optional(), // Custom instructions for the LLM
+  // If true, run cleaning + speaker formatting in one LLM call per chunk
+  singlePass: z.boolean().default(false),
+  // Use shorter instruction prompts to reduce tokens
+  concisePrompts: z.boolean().default(true),
 });
 
 export type ProcessingConfig = z.infer<typeof processingConfigSchema>;
@@ -117,6 +123,9 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
       progress: z.number(),
       currentChunk: z.number(),
       totalChunks: z.number(),
+      lastChunkMs: z.number().optional(),
+      avgChunkMs: z.number().optional(),
+      etaMs: z.number().optional(),
     }),
   }),
   z.object({

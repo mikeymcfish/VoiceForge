@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -22,6 +23,10 @@ interface ProcessingControlsProps {
   onBatchSizeChange: (size: number) => void;
   modelName: string;
   onModelNameChange: (name: string) => void;
+  singlePass?: boolean;
+  onSinglePassChange?: (val: boolean) => void;
+  concisePrompts?: boolean;
+  onConcisePromptsChange?: (val: boolean) => void;
   onStart: () => void;
   onStop: () => void;
   onTest: () => void;
@@ -35,6 +40,10 @@ export function ProcessingControls({
   onBatchSizeChange,
   modelName,
   onModelNameChange,
+  singlePass = false,
+  onSinglePassChange,
+  concisePrompts = true,
+  onConcisePromptsChange,
   onStart,
   onStop,
   onTest,
@@ -73,6 +82,36 @@ export function ProcessingControls({
           <p className="text-xs text-muted-foreground">
             Number of sentences to process in each LLM request
           </p>
+        </div>
+
+        <div className="flex items-center justify-between py-1">
+          <div className="space-y-0.5">
+            <Label className="text-sm font-medium">Single‑Pass Processing</Label>
+            <p className="text-xs text-muted-foreground">
+              Clean + speaker formatting in one LLM call per chunk
+            </p>
+          </div>
+          <Switch
+            checked={singlePass}
+            onCheckedChange={(val) => onSinglePassChange?.(val === true)}
+            disabled={isProcessing}
+            data-testid="switch-single-pass"
+          />
+        </div>
+
+        <div className="flex items-center justify-between py-1">
+          <div className="space-y-0.5">
+            <Label className="text-sm font-medium">Concise Prompts</Label>
+            <p className="text-xs text-muted-foreground">
+              Use shorter instructions to reduce input tokens
+            </p>
+          </div>
+          <Switch
+            checked={concisePrompts}
+            onCheckedChange={(val) => onConcisePromptsChange?.(val === true)}
+            disabled={isProcessing}
+            data-testid="switch-concise-prompts"
+          />
         </div>
 
         <Collapsible open={isAdvancedOpen} onOpenChange={setIsAdvancedOpen}>

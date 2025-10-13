@@ -52,11 +52,16 @@ export default function Home() {
   const [modelName, setModelName] = useState("meta-llama/Llama-3.1-8B-Instruct");
   const [ollamaModelName, setOllamaModelName] = useState<string>();
   const [customInstructions, setCustomInstructions] = useState("");
+  const [singlePass, setSinglePass] = useState(false);
+  const [concisePrompts, setConcisePrompts] = useState(true);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentChunk, setCurrentChunk] = useState(0);
   const [totalChunks, setTotalChunks] = useState(0);
+  const [etaMs, setEtaMs] = useState<number | undefined>(undefined);
+  const [lastChunkMs, setLastChunkMs] = useState<number | undefined>(undefined);
+  const [avgChunkMs, setAvgChunkMs] = useState<number | undefined>(undefined);
   const [processedText, setProcessedText] = useState("");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isTesting, setIsTesting] = useState(false);
@@ -152,6 +157,8 @@ export default function Home() {
             modelName,
             ollamaModelName,
             customInstructions: customInstructions || undefined,
+            singlePass,
+            concisePrompts,
           },
         })
       );
@@ -171,6 +178,9 @@ export default function Home() {
             setProgress(message.payload.progress);
             setCurrentChunk(message.payload.currentChunk);
             setTotalChunks(message.payload.totalChunks);
+            if (typeof message.payload.etaMs === 'number') setEtaMs(message.payload.etaMs);
+            if (typeof message.payload.lastChunkMs === 'number') setLastChunkMs(message.payload.lastChunkMs);
+            if (typeof message.payload.avgChunkMs === 'number') setAvgChunkMs(message.payload.avgChunkMs);
             break;
 
           case "chunk":
@@ -201,6 +211,9 @@ export default function Home() {
           case "complete":
             setIsProcessing(false);
             setProcessedText(message.payload.processedText);
+            setEtaMs(undefined);
+            setLastChunkMs(undefined);
+            setAvgChunkMs(undefined);
             addLog(
               "success",
               "Processing completed",
@@ -278,6 +291,8 @@ export default function Home() {
             modelName,
             ollamaModelName,
             customInstructions: customInstructions || undefined,
+            singlePass,
+            concisePrompts,
           },
         }),
       });
@@ -404,21 +419,27 @@ export default function Home() {
               cleaningOptions={cleaningOptions}
               speakerConfig={speakerConfig}
               customInstructions={customInstructions}
+              singlePass={singlePass}
+              concisePrompts={concisePrompts}
               disabled={isProcessing}
             />
 
             <ProcessingControls
-              batchSize={batchSize}
-              onBatchSizeChange={setBatchSize}
-              modelName={modelName}
-              onModelNameChange={setModelName}
-              onStart={handleStartProcessing}
-              onStop={handleStopProcessing}
-              onTest={handleTestChunk}
-              isProcessing={isProcessing}
-              canStart={!!originalText && !isProcessing}
-              isTesting={isTesting}
-            />
+            batchSize={batchSize}
+            onBatchSizeChange={setBatchSize}
+            modelName={modelName}
+            onModelNameChange={setModelName}
+            singlePass={singlePass}
+            onSinglePassChange={setSinglePass}
+            concisePrompts={concisePrompts}
+            onConcisePromptsChange={setConcisePrompts}
+            onStart={handleStartProcessing}
+            onStop={handleStopProcessing}
+            onTest={handleTestChunk}
+            isProcessing={isProcessing}
+            canStart={!!originalText && !isProcessing}
+            isTesting={isTesting}
+          />
           </div>
         </div>
 
@@ -430,6 +451,9 @@ export default function Home() {
               currentChunk={currentChunk}
               totalChunks={totalChunks}
               isProcessing={isProcessing}
+              etaMs={etaMs}
+              lastChunkMs={lastChunkMs}
+              avgChunkMs={avgChunkMs}
             />
           </div>
           <div className="flex-1 px-4 pb-4 overflow-hidden">

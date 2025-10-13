@@ -40,6 +40,11 @@ const cleaningOptionsList = [
     label: "Add punctuation",
     description: "Add punctuation after headers and loose numbers for better TTS prosody",
   },
+  {
+    key: "fixHyphenation" as keyof CleaningOptions,
+    label: "Fix hyphenation",
+    description: "Merge words split by line breaks or hyphens (PDF/EPUB artifacts)",
+  },
 ];
 
 export function CleaningOptionsPanel({

@@ -82,7 +82,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         sampleText,
         config.cleaningOptions,
         config.speakerConfig,
-        config.customInstructions
+        config.customInstructions,
+        (config as any).singlePass === true,
+        (config as any).concisePrompts !== false
       );
 
       res.json(prompts);
@@ -270,6 +272,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   progress: ((progress.chunkIndex + 1) / totalChunks) * 100,
                   currentChunk: progress.chunkIndex + 1,
                   totalChunks,
+                  lastChunkMs: progress.lastChunkMs,
+                  avgChunkMs: progress.avgChunkMs,
+                  etaMs: progress.etaMs,
                 },
               } as WSMessage)
             );

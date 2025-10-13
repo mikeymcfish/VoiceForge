@@ -42,10 +42,17 @@ A professional text preprocessing application for multi-speaker TTS (text-to-spe
 
 ### Advanced Features
 - **Custom Instructions**: Add specific instructions for the LLM
-- **Prompt Preview**: View exact prompts before processing
+- **Prompt Preview**: View exact prompts before processing (supports Single‑Pass + Concise Prompts)
 - **Test Mode**: Process one chunk to preview results
 - **Real-time Progress**: Live WebSocket updates during processing
 - **Activity Logging**: Detailed timestamped logs with export
+- **Single‑Pass Processing**: Clean + speaker formatting in one LLM call per chunk (reduces tokens)
+- **Concise Prompts**: Use shorter instruction prompts to reduce input tokens (toggleable)
+- **Narrator Attribution Modes** (Intelligent Parsing):
+  - Remove tags (default)
+  - Narrator says tags (verbatim)
+  - Narrator adds context (intelligent rewrite)
+- **Fix Hyphenation**: Merge words split by line breaks or hyphens (PDF/EPUB artifacts)
 
 ## 📋 Prerequisites
 
@@ -164,6 +171,8 @@ npm start
 5. Review and manage character mappings
 6. Proceed with processing
 
+You can choose how the Narrator handles dialogue attribution tags ("he said"): remove, verbatim, or convert into a concise context line.
+
 ## 🔧 Configuration Options
 
 ### Text Cleaning Options
@@ -188,6 +197,35 @@ npm start
 - **Custom Instructions**: Add specific instructions for the LLM
 - **Prompt Preview**: View exact prompts before processing
 - **Test Mode**: Process one chunk for preview
+- **Single‑Pass Processing**: Combine stages into a single call per chunk
+- **Concise Prompts**: Shorter instructions to reduce tokens
+- **Fix Hyphenation**: Merge words split across lines/hyphens
+
+## Providers and Cost Controls
+
+### Hugging Face Providers
+- Set provider via env `HF_PROVIDER`:
+  - `auto` (recommended): lets HF pick a provider for the model/task
+  - `hf-inference`: Hugging Face Inference endpoints
+  - `fireworks-ai`, `groq`, `together`, etc. (if available in your HF account)
+
+Notes:
+- We route via Hugging Face using your `HUGGINGFACE_API_TOKEN` (no provider-specific key required).
+- If a provider does not support text-generation (e.g., Fireworks), the app auto‑falls back to chat‑completions for that request.
+- Model ids are normalized (e.g., `meta-llama/Meta-Llama-3.1-8B-Instruct` → `meta-llama/Llama-3.1-8B-Instruct`).
+
+### Ollama (Local)
+- Set `OLLAMA_BASE_URL` (default `http://localhost:11434`).
+
+### Token Usage Tips
+- Enable Single‑Pass Processing to avoid sending two prompts per chunk.
+- Use Concise Prompts to reduce fixed instruction tokens.
+- Increase batch size to amortize instruction tokens across more sentences.
+- Prefer local models via Ollama if usage costs are a concern.
+
+### Debugging Requests
+- Set `LLM_DEBUG=1` to log request/response URL, headers (redacted), and payload previews for HF and Ollama.
+  - Useful to see provider mapping calls and router decisions.
 
 ## 🐛 Troubleshooting
 

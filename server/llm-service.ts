@@ -173,6 +173,8 @@ export interface ProcessChunkOptions {
   localModelName?: string; // Local model name
   ollamaModelName?: string; // Ollama model name
   customInstructions?: string;
+  singlePass?: boolean;
+  concisePrompts?: boolean;
 }
 
 export class LLMService {
@@ -218,6 +220,31 @@ Important rules:
     }
 
     prompt += `\n\nText to clean:\n${text}\n\nCleaned text:`;
+
+    return prompt;
+  }
+
+  private buildCleaningPromptConcise(
+    text: string,
+    options: CleaningOptions,
+    customInstructions?: string
+  ): string {
+    const tasks: string[] = [];
+    if (options.replaceSmartQuotes) tasks.push("- Replace smart quotes with ASCII");
+    if (options.fixOcrErrors) tasks.push("- Fix OCR spacing and merged words");
+    if ((options as any).fixHyphenation) tasks.push("- Fix hyphenation splits (merge words split by line breaks/hyphens)");
+    if (options.correctSpelling) tasks.push("- Fix common spelling/typos");
+    if (options.removeUrls) tasks.push("- Remove URLs");
+    if (options.removeFootnotes) tasks.push("- Remove footnotes/metadata");
+    if (options.addPunctuation) tasks.push("- Add punctuation after headers/loose numbers for TTS");
+
+    let prompt = `You are a TTS text cleaner.\nApply only the selected transformations:\n${tasks.join("\n")}\nRules: preserve meaning, do not rewrite, keep paragraphs.\nReturn ONLY the cleaned text.`;
+
+    if (customInstructions) {
+      prompt += `\n\nCustom:\n${customInstructions}`;
+    }
+
+    prompt += `\n\nText:\n${text}\n\nCleaned:`;
 
     return prompt;
   }
@@ -456,19 +483,84 @@ IMPORTANT: Only extract dialogue from the characters listed above. Ignore dialog
     }
   }
 
+  private buildSinglePassPrompt(
+    text: string,
+    cleaning: CleaningOptions,
+    config: SpeakerConfig,
+    customInstructions?: string
+  ): string {
+    const labelExample =
+      config.labelFormat === "speaker"
+        ? "Speaker 1:, Speaker 2:, ..."
+        : "[1]:, [2]:, [3]:, ...";
+
+    const parts: string[] = [];
+    const cleanTasks: string[] = [];
+    if (cleaning.replaceSmartQuotes) cleanTasks.push("replace smart quotes with ASCII");
+    if (cleaning.fixOcrErrors) cleanTasks.push("fix OCR spacing/merged words");
+    if ((cleaning as any).fixHyphenation) cleanTasks.push("fix hyphenation splits");
+    if (cleaning.correctSpelling) cleanTasks.push("fix common spelling/typos");
+    if (cleaning.removeUrls) cleanTasks.push("remove URLs");
+    if (cleaning.removeFootnotes) cleanTasks.push("remove footnotes/metadata");
+    if (cleaning.addPunctuation) cleanTasks.push("add punctuation after headers/loose numbers for TTS");
+    parts.push(`CLEANING: ${cleanTasks.join("; ")}. Preserve meaning; no rewrites; keep paragraphs.`);
+
+    const hasNarratorFromMapping = config.characterMapping?.some((c) => c.name.toLowerCase() === 'narrator');
+    const hasNarrator = Boolean(config.includeNarrator || hasNarratorFromMapping);
+    const narratorAttr = (config as any).narratorAttribution || 'remove';
+
+    if (config.mode === 'format') {
+      parts.push(`FORMAT: Convert to multi-speaker format. Labels: ${labelExample}. Only change labels; keep content.`);
+    } else {
+      if (hasNarrator) {
+        const attrRule = narratorAttr === 'remove'
+          ? 'Remove attribution tags (e.g., "he said").'
+          : narratorAttr === 'verbatim'
+            ? 'Move attribution tags into a Narrator line immediately after the spoken line.'
+            : 'Convert attribution/action into a concise Narrator line after the spoken line (e.g., "John passed the book to Tim."). Prefer explicit names when ambiguous.';
+        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines. ${attrRule} Preserve narrative descriptions as Narrator lines. Use consistent speaker numbers.`);
+      } else {
+        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines only. Remove attribution tags; keep consistent speaker numbering.`);
+      }
+    }
+
+    if (config.characterMapping && config.characterMapping.length > 0) {
+      const mappingList = config.characterMapping.map((c) => `${c.name} = Speaker ${c.speakerNumber}`).join('; ');
+      parts.push(`MAPPING: ${mappingList}. Use exactly these assignments.`);
+    }
+
+    if (customInstructions) parts.push(`CUSTOM: ${customInstructions}`);
+    parts.push(`Return ONLY the cleaned, formatted output. No explanations.`);
+
+    return `${parts.join('\n')}
+\nTEXT:\n${text}\n\nOUTPUT:`;
+  }
+
   async processChunk(options: ProcessChunkOptions): Promise<string> {
     const { text, cleaningOptions, speakerConfig, customInstructions } = options;
 
     // Stage 1: Text cleaning
-    const cleaningPrompt = this.buildCleaningPrompt(text, cleaningOptions, customInstructions);
-    let processedText = await this.runInference(cleaningPrompt, options);
+    let processedText = '';
+    if (speakerConfig && speakerConfig.mode !== "none" && options.singlePass) {
+      if (DEBUG_ENABLED) {
+        console.debug('[LLM DEBUG] Single-pass processing enabled');
+      }
+      const singlePrompt = this.buildSinglePassPrompt(text, cleaningOptions, speakerConfig, customInstructions);
+      processedText = await this.runInference(singlePrompt, options);
+    } else {
+      const useConcise = options.concisePrompts !== false;
+      const cleaningPrompt = useConcise
+        ? this.buildCleaningPromptConcise(text, cleaningOptions, customInstructions)
+        : this.buildCleaningPrompt(text, cleaningOptions, customInstructions);
+      processedText = await this.runInference(cleaningPrompt, options);
+    }
 
     if (!processedText) {
       processedText = text;
     }
 
     // Stage 2: Speaker formatting (if configured and mode is not "none")
-    if (speakerConfig && speakerConfig.mode !== "none") {
+    if (speakerConfig && speakerConfig.mode !== "none" && !options.singlePass) {
       const speakerPrompt = this.buildSpeakerPrompt(processedText, speakerConfig, customInstructions);
       const stage2Text = await this.runInference(speakerPrompt, options);
       
@@ -517,13 +609,19 @@ IMPORTANT: Only extract dialogue from the characters listed above. Ignore dialog
     sampleText: string,
     cleaningOptions: CleaningOptions,
     speakerConfig?: SpeakerConfig,
-    customInstructions?: string
+    customInstructions?: string,
+    singlePass?: boolean,
+    concisePrompts?: boolean
   ): { stage1: string; stage2?: string } {
-    const stage1 = this.buildCleaningPrompt(sampleText, cleaningOptions, customInstructions);
+    const stage1 = speakerConfig && speakerConfig.mode !== 'none' && singlePass
+      ? this.buildSinglePassPrompt(sampleText, cleaningOptions, speakerConfig, customInstructions)
+      : (concisePrompts !== false
+          ? this.buildCleaningPromptConcise(sampleText, cleaningOptions, customInstructions)
+          : this.buildCleaningPrompt(sampleText, cleaningOptions, customInstructions));
     
     const result: { stage1: string; stage2?: string } = { stage1 };
 
-    if (speakerConfig && speakerConfig.mode !== "none") {
+    if (speakerConfig && speakerConfig.mode !== "none" && !singlePass) {
       result.stage2 = this.buildSpeakerPrompt(sampleText, speakerConfig, customInstructions);
     }
 

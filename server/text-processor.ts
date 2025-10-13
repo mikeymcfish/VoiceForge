@@ -6,6 +6,9 @@ export interface ProcessingProgress {
   processedText: string;
   status: "success" | "retry" | "failed";
   retryCount: number;
+  lastChunkMs?: number;
+  avgChunkMs?: number;
+  etaMs?: number;
 }
 
 export class TextProcessor {
@@ -40,12 +43,16 @@ export class TextProcessor {
   ): Promise<string> {
     const chunks = this.splitIntoChunks(text, config.batchSize);
     const processedChunks: string[] = [];
+    const totalChunks = chunks.length;
+    let durationsTotal = 0;
+    let processedCount = 0;
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       let retryCount = 0;
       let success = false;
       let processedText = "";
+      const chunkStart = Date.now();
 
       // Try processing with one retry on failure
       while (retryCount < 2 && !success) {
@@ -58,6 +65,8 @@ export class TextProcessor {
             modelName: config.modelName,
             ollamaModelName: (config as any).ollamaModelName,
             customInstructions: config.customInstructions,
+            singlePass: (config as any).singlePass === true,
+            concisePrompts: (config as any).concisePrompts !== false,
           });
 
           // Validate output
@@ -70,12 +79,21 @@ export class TextProcessor {
           if (validation.valid) {
             success = true;
             processedChunks.push(processedText);
+            const lastChunkMs = Date.now() - chunkStart;
+            durationsTotal += lastChunkMs;
+            processedCount += 1;
+            const avgChunkMs = durationsTotal / processedCount;
+            const remaining = totalChunks - (i + 1);
+            const etaMs = Math.max(0, Math.round(avgChunkMs * remaining));
             
             onProgress({
               chunkIndex: i,
               processedText,
               status: "success",
               retryCount,
+              lastChunkMs,
+              avgChunkMs,
+              etaMs,
             });
           } else {
             retryCount++;
@@ -109,11 +127,20 @@ export class TextProcessor {
       // If still failed after retries, use original chunk
       if (!success) {
         processedChunks.push(chunk);
+        const lastChunkMs = Date.now() - chunkStart;
+        durationsTotal += lastChunkMs;
+        processedCount += 1;
+        const avgChunkMs = durationsTotal / processedCount;
+        const remaining = totalChunks - (i + 1);
+        const etaMs = Math.max(0, Math.round(avgChunkMs * remaining));
         onProgress({
           chunkIndex: i,
           processedText: chunk,
           status: "failed",
           retryCount,
+          lastChunkMs,
+          avgChunkMs,
+          etaMs,
         });
       }
     }
