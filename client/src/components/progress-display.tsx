@@ -9,6 +9,9 @@ interface ProgressDisplayProps {
   etaMs?: number;
   lastChunkMs?: number;
   avgChunkMs?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalCost?: number;
 }
 
 function formatMs(ms?: number): string {
@@ -27,6 +30,9 @@ export function ProgressDisplay({
   etaMs,
   lastChunkMs,
   avgChunkMs,
+  totalInputTokens,
+  totalOutputTokens,
+  totalCost,
 }: ProgressDisplayProps) {
   if (!isProcessing && progress === 0) {
     return null;
@@ -57,6 +63,16 @@ export function ProgressDisplay({
             </span>
             <span>
               Last: {lastChunkMs !== undefined ? formatMs(lastChunkMs) : "—"} · Avg: {avgChunkMs !== undefined ? formatMs(avgChunkMs) : "—"}
+            </span>
+          </div>
+        )}
+        {(typeof totalInputTokens === 'number' || typeof totalOutputTokens === 'number' || typeof totalCost === 'number') && (
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>
+              Tokens in/out: {typeof totalInputTokens === 'number' ? totalInputTokens : "-"}/{typeof totalOutputTokens === 'number' ? totalOutputTokens : "-"}
+            </span>
+            <span>
+              Cost: {typeof totalCost === 'number' ? `$${totalCost.toFixed(4)}` : "-"}
             </span>
           </div>
         )}

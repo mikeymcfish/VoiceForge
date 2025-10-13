@@ -1,5 +1,7 @@
 import { HfInference } from "@huggingface/inference";
 import type { CleaningOptions, SpeakerConfig, ModelSource } from "@shared/schema";
+import fs from "fs";
+import path from "path";
 
 // Check if HuggingFace API token is available
 const apiToken = process.env.HUGGINGFACE_API_TOKEN;
@@ -177,6 +179,59 @@ export interface ProcessChunkOptions {
   concisePrompts?: boolean;
 }
 
+type ModelPricing = { inCostPerM?: number; outCostPerM?: number };
+type InferenceUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  inputCost: number;
+  outputCost: number;
+};
+
+function estimateTokens(text: string): number {
+  if (!text) return 0;
+  const t = Math.ceil(text.trim().length / 4);
+  return t > 0 ? t : 0;
+}
+
+function normalizeModelIdForLookup(id: string): string {
+  return normalizeHuggingFaceModelId(id).toLowerCase();
+}
+
+let GOOD_MODELS_CACHE: Array<{ id: string; inCostPerM?: number; outCostPerM?: number; display?: string }> | null = null;
+function loadGoodModels(): Array<{ id: string; inCostPerM?: number; outCostPerM?: number; display?: string }> {
+  if (GOOD_MODELS_CACHE) return GOOD_MODELS_CACHE;
+  try {
+    const jsonPath = path.resolve(process.cwd(), 'good_models.json');
+    if (fs.existsSync(jsonPath)) {
+      const raw = fs.readFileSync(jsonPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      const list = Array.isArray(parsed?.models) ? parsed.models : Array.isArray(parsed) ? parsed : [];
+      GOOD_MODELS_CACHE = list;
+      return list;
+    }
+    const txtPath = path.resolve(process.cwd(), 'good_models.txt');
+    if (fs.existsSync(txtPath)) {
+      const raw = fs.readFileSync(txtPath, 'utf-8');
+      const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+      const list = lines.map((id) => ({ id }));
+      GOOD_MODELS_CACHE = list;
+      return list;
+    }
+  } catch (e) {
+    console.warn('Failed to load good models list:', (e as Error).message);
+  }
+  GOOD_MODELS_CACHE = [];
+  return [];
+}
+
+function lookupPricing(modelId: string): ModelPricing | undefined {
+  const list = loadGoodModels();
+  const needle = normalizeModelIdForLookup(modelId);
+  const found = list.find(m => normalizeModelIdForLookup(m.id) === needle);
+  if (!found) return undefined;
+  return { inCostPerM: found.inCostPerM, outCostPerM: found.outCostPerM };
+}
+
 export class LLMService {
   private buildCleaningPrompt(
     text: string, 
@@ -348,9 +403,12 @@ IMPORTANT:
     return prompt;
   }
 
-  private async runInference(prompt: string, options: ProcessChunkOptions): Promise<string> {
+  private async runInference(prompt: string, options: ProcessChunkOptions): Promise<{ text: string; usage: InferenceUsage }> {
     const { modelSource = 'api', modelName, localModelName, ollamaModelName } = options;
     const resolvedModelName = normalizeHuggingFaceModelId(modelName);
+    const pricing = modelSource === 'api' ? (lookupPricing(resolvedModelName) || undefined) : undefined;
+    const inputTokens = estimateTokens(prompt);
+    let output = '';
 
     if (modelSource === 'ollama') {
       const model = ollamaModelName || "llama3.1:8b";
@@ -381,7 +439,7 @@ IMPORTANT:
         throw new Error(`Ollama request failed (${res.status}): ${body}`);
       }
       const json: any = await res.json();
-      return json.response || '';
+      output = json.response || '';
     } else {
       // Check if API token is available
       if (!apiToken) {
@@ -416,7 +474,7 @@ IMPORTANT:
               fetch: createLoggingFetch('HF.chatCompletion.Fireworks'),
             }
           );
-          return response.choices?.[0]?.message?.content || '';
+          output = response.choices?.[0]?.message?.content || '';
         } else {
           // Default to text generation via selected provider (router). If provider doesn't support text-generation (e.g., fireworks-ai), fallback to chatCompletion.
           if (DEBUG_ENABLED) {
@@ -445,7 +503,7 @@ IMPORTANT:
                 fetch: createLoggingFetch('HF.textGeneration'),
               }
             );
-            return response.generated_text || '';
+            output = response.generated_text || '';
           } catch (e) {
             const err = e as Error;
             const prov = parseProviderFromTaskError(err.message);
@@ -463,9 +521,10 @@ IMPORTANT:
                 },
                 { fetch: createLoggingFetch('HF.chatCompletion.fallback') }
               );
-              return response.choices?.[0]?.message?.content || '';
+              output = response.choices?.[0]?.message?.content || '';
+            } else {
+              throw e;
             }
-            throw e;
           }
         }
       } catch (error) {
@@ -492,6 +551,10 @@ IMPORTANT:
         throw error;
       }
     }
+    const outputTokens = estimateTokens(output);
+    const inCost = pricing?.inCostPerM ? (inputTokens / 1_000_000) * pricing.inCostPerM : 0;
+    const outCost = pricing?.outCostPerM ? (outputTokens / 1_000_000) * pricing.outCostPerM : 0;
+    return { text: output, usage: { inputTokens, outputTokens, inputCost: inCost, outputCost: outCost } };
   }
 
   private buildSinglePassPrompt(
@@ -551,23 +614,30 @@ IMPORTANT:
 \nTEXT:\n${text}\n\nOUTPUT:`;
   }
 
-  async processChunk(options: ProcessChunkOptions): Promise<string> {
+  async processChunk(options: ProcessChunkOptions): Promise<{ text: string; usage: InferenceUsage }> {
     const { text, cleaningOptions, speakerConfig, customInstructions } = options;
 
     // Stage 1: Text cleaning
     let processedText = '';
+    let totalInTokens = 0, totalOutTokens = 0, totalInCost = 0, totalOutCost = 0;
     if (speakerConfig && speakerConfig.mode !== "none" && options.singlePass) {
       if (DEBUG_ENABLED) {
         console.debug('[LLM DEBUG] Single-pass processing enabled');
       }
       const singlePrompt = this.buildSinglePassPrompt(text, cleaningOptions, speakerConfig, customInstructions);
-      processedText = await this.runInference(singlePrompt, options);
+      const r = await this.runInference(singlePrompt, options);
+      processedText = r.text;
+      totalInTokens += r.usage.inputTokens; totalOutTokens += r.usage.outputTokens;
+      totalInCost += r.usage.inputCost; totalOutCost += r.usage.outputCost;
     } else {
       const useConcise = options.concisePrompts !== false;
       const cleaningPrompt = useConcise
         ? this.buildCleaningPromptConcise(text, cleaningOptions, customInstructions)
         : this.buildCleaningPrompt(text, cleaningOptions, customInstructions);
-      processedText = await this.runInference(cleaningPrompt, options);
+      const r1 = await this.runInference(cleaningPrompt, options);
+      processedText = r1.text;
+      totalInTokens += r1.usage.inputTokens; totalOutTokens += r1.usage.outputTokens;
+      totalInCost += r1.usage.inputCost; totalOutCost += r1.usage.outputCost;
     }
 
     if (!processedText) {
@@ -577,14 +647,25 @@ IMPORTANT:
     // Stage 2: Speaker formatting (if configured and mode is not "none")
     if (speakerConfig && speakerConfig.mode !== "none" && !options.singlePass) {
       const speakerPrompt = this.buildSpeakerPrompt(processedText, speakerConfig, customInstructions);
-      const stage2Text = await this.runInference(speakerPrompt, options);
+      const r2 = await this.runInference(speakerPrompt, options);
+      const stage2Text = r2.text;
+      totalInTokens += r2.usage.inputTokens; totalOutTokens += r2.usage.outputTokens;
+      totalInCost += r2.usage.inputCost; totalOutCost += r2.usage.outputCost;
       
       if (stage2Text) {
         processedText = stage2Text;
       }
     }
 
-    return processedText.trim();
+    return {
+      text: processedText.trim(),
+      usage: {
+        inputTokens: totalInTokens,
+        outputTokens: totalOutTokens,
+        inputCost: totalInCost,
+        outputCost: totalOutCost,
+      }
+    };
   }
 
   async validateOutput(

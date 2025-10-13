@@ -9,6 +9,14 @@ export interface ProcessingProgress {
   lastChunkMs?: number;
   avgChunkMs?: number;
   etaMs?: number;
+  // Token/cost metrics for this chunk (optional)
+  inputTokens?: number;
+  outputTokens?: number;
+  inputCost?: number;
+  outputCost?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalCost?: number;
 }
 
 export class TextProcessor {
@@ -47,6 +55,7 @@ export class TextProcessor {
     const totalChunks = chunks.length;
     let durationsTotal = 0;
     let processedCount = 0;
+    let totalInTokens = 0, totalOutTokens = 0, totalCost = 0;
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
@@ -58,7 +67,7 @@ export class TextProcessor {
       // Try processing with one retry on failure
       while (retryCount < 2 && !success) {
         try {
-          processedText = await llmService.processChunk({
+          const result = await llmService.processChunk({
             text: chunk,
             cleaningOptions: config.cleaningOptions,
             speakerConfig: config.speakerConfig,
@@ -69,6 +78,11 @@ export class TextProcessor {
             singlePass: (config as any).singlePass === true,
             concisePrompts: (config as any).concisePrompts !== false,
           });
+          processedText = result.text;
+          const chunkIn = result.usage.inputTokens || 0;
+          const chunkOut = result.usage.outputTokens || 0;
+          const chunkCost = (result.usage.inputCost || 0) + (result.usage.outputCost || 0);
+          totalInTokens += chunkIn; totalOutTokens += chunkOut; totalCost += chunkCost;
 
           // Validate output
           const validation = await llmService.validateOutput(
@@ -95,6 +109,13 @@ export class TextProcessor {
               lastChunkMs,
               avgChunkMs,
               etaMs,
+              inputTokens: chunkIn,
+              outputTokens: chunkOut,
+              inputCost: result.usage.inputCost,
+              outputCost: result.usage.outputCost,
+              totalInputTokens: totalInTokens,
+              totalOutputTokens: totalOutTokens,
+              totalCost,
             });
           } else {
             retryCount++;

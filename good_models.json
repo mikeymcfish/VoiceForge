@@ -1,0 +1,17 @@
+{
+  "models": [
+    {
+      "id": "deepseek-ai/DeepSeek-V3.1",
+      "display": "DeepSeek V3.1",
+      "inCostPerM": 0.27,
+      "outCostPerM": 1.0
+    },
+    {
+      "id": "meta-llama/Llama-3.3-70B-Instruct",
+      "display": "Llama 3.3 70B Instruct",
+      "inCostPerM": 0.9,
+      "outCostPerM": 1.8
+    }
+  ]
+}
+

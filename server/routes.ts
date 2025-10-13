@@ -68,19 +68,32 @@ async function parseEpub(buffer: Buffer): Promise<string> {
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
 
-  // Good models list from good_models.txt
+  // Good models list (JSON with pricing preferred; fallback to TXT)
   app.get("/api/good-models", async (_req, res) => {
     try {
-      const filePath = path.resolve(process.cwd(), "good_models.txt");
-      if (!fs.existsSync(filePath)) {
-        return res.json({ models: [] });
+      const jsonPath = path.resolve(process.cwd(), "good_models.json");
+      if (fs.existsSync(jsonPath)) {
+        const raw = await fs.promises.readFile(jsonPath, "utf-8");
+        const parsed = JSON.parse(raw);
+        const models = Array.isArray(parsed?.models)
+          ? parsed.models
+          : Array.isArray(parsed)
+            ? parsed
+            : [];
+        return res.json({ models });
       }
-      const raw = await fs.promises.readFile(filePath, "utf-8");
-      const models = raw
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0 && !l.startsWith("#"));
-      return res.json({ models });
+      // Fallback to simple text list
+      const txtPath = path.resolve(process.cwd(), "good_models.txt");
+      if (fs.existsSync(txtPath)) {
+        const raw = await fs.promises.readFile(txtPath, "utf-8");
+        const lines = raw
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0 && !l.startsWith("#"));
+        const models = lines.map((id) => ({ id }));
+        return res.json({ models });
+      }
+      return res.json({ models: [] });
     } catch (err) {
       console.error("Failed to read good_models.txt:", err);
       return res.status(500).json({ error: "Failed to read good models list" });
@@ -133,7 +146,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const sentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) || [text];
       const testChunk = sentences.slice(0, config.batchSize).join(" ");
 
-      const processedText = await llmService.processChunk({
+      const result = await llmService.processChunk({
         text: testChunk,
         cleaningOptions: config.cleaningOptions,
         speakerConfig: config.speakerConfig,
@@ -145,8 +158,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({
         originalChunk: testChunk,
-        processedChunk: processedText,
+        processedChunk: result.text,
         sentenceCount: Math.min(sentences.length, config.batchSize),
+        usage: result.usage,
       });
     } catch (error) {
       console.error("Test chunk error:", error);
@@ -297,6 +311,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   lastChunkMs: progress.lastChunkMs,
                   avgChunkMs: progress.avgChunkMs,
                   etaMs: progress.etaMs,
+                  // optional usage metrics
+                  inputTokens: progress.inputTokens,
+                  outputTokens: progress.outputTokens,
+                  inputCost: progress.inputCost,
+                  outputCost: progress.outputCost,
+                  totalInputTokens: progress.totalInputTokens,
+                  totalOutputTokens: progress.totalOutputTokens,
+                  totalCost: progress.totalCost,
                 },
               } as WSMessage)
             );
@@ -346,6 +368,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 timestamp: new Date(),
                 type: "success",
                 message: `Chunk ${progress.chunkIndex + 1} processed successfully`,
+                details: (typeof progress.inputTokens === 'number')
+                  ? `Chunk tokens in/out: ${progress.inputTokens}/${progress.outputTokens} — cost: $${((progress.inputCost||0)+(progress.outputCost||0)).toFixed(4)} (total: $${(progress.totalCost||0).toFixed(4)})`
+                  : undefined,
               };
 
               ws.send(
@@ -366,6 +391,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
               processedText,
               totalChunks,
             },
+          } as WSMessage)
+        );
+        // Send cost summary log if available
+        ws.send(
+          JSON.stringify({
+            type: "log",
+            payload: {
+              id: nanoid(),
+              timestamp: new Date(),
+              type: "info",
+              message: "Processing complete",
+              details: "See progress logs for token and cost summary per chunk.",
+            } as LogEntry,
           } as WSMessage)
         );
       } catch (error) {

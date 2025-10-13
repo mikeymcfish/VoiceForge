@@ -62,6 +62,9 @@ export default function Home() {
   const [etaMs, setEtaMs] = useState<number | undefined>(undefined);
   const [lastChunkMs, setLastChunkMs] = useState<number | undefined>(undefined);
   const [avgChunkMs, setAvgChunkMs] = useState<number | undefined>(undefined);
+  const [totalInputTokens, setTotalInputTokens] = useState<number | undefined>(undefined);
+  const [totalOutputTokens, setTotalOutputTokens] = useState<number | undefined>(undefined);
+  const [totalCost, setTotalCost] = useState<number | undefined>(undefined);
   const [processedText, setProcessedText] = useState("");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isTesting, setIsTesting] = useState(false);
@@ -181,6 +184,9 @@ export default function Home() {
             if (typeof message.payload.etaMs === 'number') setEtaMs(message.payload.etaMs);
             if (typeof message.payload.lastChunkMs === 'number') setLastChunkMs(message.payload.lastChunkMs);
             if (typeof message.payload.avgChunkMs === 'number') setAvgChunkMs(message.payload.avgChunkMs);
+            if (typeof message.payload.totalInputTokens === 'number') setTotalInputTokens(message.payload.totalInputTokens);
+            if (typeof message.payload.totalOutputTokens === 'number') setTotalOutputTokens(message.payload.totalOutputTokens);
+            if (typeof message.payload.totalCost === 'number') setTotalCost(message.payload.totalCost);
             break;
 
           case "chunk":
@@ -214,14 +220,18 @@ export default function Home() {
             setEtaMs(undefined);
             setLastChunkMs(undefined);
             setAvgChunkMs(undefined);
+            if (typeof message.payload.totalInputTokens === 'number') setTotalInputTokens(message.payload.totalInputTokens);
+            if (typeof message.payload.totalOutputTokens === 'number') setTotalOutputTokens(message.payload.totalOutputTokens);
+            if (typeof message.payload.totalCost === 'number') setTotalCost(message.payload.totalCost);
             addLog(
               "success",
               "Processing completed",
-              `${message.payload.totalChunks} chunks processed successfully`
+              `${message.payload.totalChunks} chunks processed successfully` +
+              (typeof totalCost === 'number' ? ` — total cost: $${totalCost.toFixed(4)}` : '')
             );
             toast({
               title: "Processing complete",
-              description: "Text has been processed successfully",
+              description: typeof totalCost === 'number' ? `Text processed. Estimated cost $${totalCost.toFixed(4)}` : "Text has been processed successfully",
             });
             break;
 
@@ -301,16 +311,17 @@ export default function Home() {
         throw new Error("Failed to test chunk");
       }
 
-      const data = await response.json();
-      setProcessedText(
-        `=== TEST RESULT (${data.sentenceCount} sentences) ===\n\nOriginal:\n${data.originalChunk}\n\n---\n\nProcessed:\n${data.processedChunk}`
-      );
+          const data = await response.json();
+          setProcessedText(
+        `=== TEST RESULT (${data.sentenceCount} sentences) ===\n\nOriginal:\n${data.originalChunk}\n\n---\n\nProcessed:\n${data.processedChunk}` +
+        (data.usage ? `\n\n---\nUsage: in ${data.usage.inputTokens} tok, out ${data.usage.outputTokens} tok — cost: $${(((data.usage.inputCost||0)+(data.usage.outputCost||0)).toFixed(4))}` : '')
+          );
 
-      addLog(
-        "success",
-        "Test completed",
-        `Processed ${data.sentenceCount} sentences`
-      );
+          addLog(
+            "success",
+            "Test completed",
+            `Processed ${data.sentenceCount} sentences` + (data.usage ? ` — cost: $${(((data.usage.inputCost||0)+(data.usage.outputCost||0)).toFixed(4))}` : '')
+          );
 
       toast({
         title: "Test complete",
@@ -460,6 +471,9 @@ export default function Home() {
               etaMs={etaMs}
               lastChunkMs={lastChunkMs}
               avgChunkMs={avgChunkMs}
+              totalInputTokens={totalInputTokens}
+              totalOutputTokens={totalOutputTokens}
+              totalCost={totalCost}
             />
           </div>
           <div className="flex-1 px-4 pb-4 overflow-hidden">

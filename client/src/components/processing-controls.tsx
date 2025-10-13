@@ -52,7 +52,8 @@ export function ProcessingControls({
   isTesting = false,
 }: ProcessingControlsProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
-  const [goodModels, setGoodModels] = useState<string[] | null>(null);
+  type GoodModel = { id: string; display?: string };
+  const [goodModels, setGoodModels] = useState<GoodModel[] | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -62,10 +63,14 @@ export function ProcessingControls({
         if (!res.ok) throw new Error(`Failed to load models (${res.status})`);
         return res.json();
       })
-      .then((data: { models?: string[] }) => {
+      .then((data: { models?: Array<string | { id: string; display?: string }> }) => {
         if (!isMounted) return;
-        const list = Array.isArray(data?.models) ? data.models.filter(Boolean) : [];
-        setGoodModels(list.length > 0 ? list : []);
+        const list = Array.isArray(data?.models)
+          ? data.models
+              .filter((m): m is string | { id: string; display?: string } => Boolean(m))
+              .map((m) => (typeof m === 'string' ? { id: m } : { id: m.id, display: m.display }))
+          : [];
+        setGoodModels(list.length > 0 ? list as GoodModel[] : []);
       })
       .catch(() => {
         if (!isMounted) return;
@@ -183,12 +188,12 @@ export function ProcessingControls({
                         ? goodModels
                         : [
                             // Fallback defaults if file is missing/empty
-                            'meta-llama/Llama-3.1-8B-Instruct',
-                            'mistralai/Mistral-7B-Instruct-v0.2',
-                            'Qwen/Qwen2.5-7B-Instruct',
+                            { id: 'meta-llama/Llama-3.1-8B-Instruct' },
+                            { id: 'mistralai/Mistral-7B-Instruct-v0.2' },
+                            { id: 'Qwen/Qwen2.5-7B-Instruct' },
                           ]
                       ).map((m) => (
-                        <SelectItem key={m} value={m}>{m}</SelectItem>
+                        <SelectItem key={m.id} value={m.id}>{m.display || m.id}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>

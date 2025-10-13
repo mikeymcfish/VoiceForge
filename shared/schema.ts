@@ -129,6 +129,14 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
       lastChunkMs: z.number().optional(),
       avgChunkMs: z.number().optional(),
       etaMs: z.number().optional(),
+      // optional usage metrics
+      inputTokens: z.number().optional(),
+      outputTokens: z.number().optional(),
+      inputCost: z.number().optional(),
+      outputCost: z.number().optional(),
+      totalInputTokens: z.number().optional(),
+      totalOutputTokens: z.number().optional(),
+      totalCost: z.number().optional(),
     }),
   }),
   z.object({
@@ -144,6 +152,10 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
     payload: z.object({
       processedText: z.string(),
       totalChunks: z.number(),
+      // optional totals
+      totalInputTokens: z.number().optional(),
+      totalOutputTokens: z.number().optional(),
+      totalCost: z.number().optional(),
     }),
   }),
   z.object({
