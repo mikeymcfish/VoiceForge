@@ -42,7 +42,7 @@ export default function Home() {
     speakerCount: 2,
     labelFormat: "speaker",
     extractCharacters: false,
-    sampleSize: 20,
+    sampleSize: 50,
     includeNarrator: false,
     characterMapping: [],
   });
@@ -399,7 +399,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr_384px] h-screen">
+      <div className="grid grid-cols-1 lg:grid-cols-[480px_1fr_384px] h-screen">
         {/* Left Panel - Configuration */}
         <div className="border-r bg-card overflow-y-auto">
           <div className="p-4 pb-20 space-y-3">
@@ -537,3 +537,4 @@ export default function Home() {
     </div>
   );
 }
+

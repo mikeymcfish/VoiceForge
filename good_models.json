@@ -11,8 +11,15 @@
       "id": "meta-llama/Llama-3.3-70B-Instruct",
       "display": "Llama 3.3 70B Instruct",
       "inCostPerM": 0.9,
-      "outCostPerM": 1.8,
-      "recommendedChunkSize": 25
+      "outCostPerM": 0.9,
+      "recommendedChunkSize": 50
+    },
+    {
+      "id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+      "display": "Llama-4-Maverick-17B-128E-Instruct",
+      "inCostPerM": 0.22,
+      "outCostPerM": 0.88,
+      "recommendedChunkSize": 70
     }
   ]
 }

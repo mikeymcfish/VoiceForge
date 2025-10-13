@@ -38,7 +38,7 @@ export const speakerConfigSchema = z.object({
   labelFormat: z.enum(["speaker", "bracket"]), // "Speaker 1:" or "[1]:"
   speakerMapping: z.record(z.string(), z.string()).optional(), // detected name -> speaker label
   extractCharacters: z.boolean().default(false), // Whether to extract character names
-  sampleSize: z.number().min(5).max(100).default(20), // Number of sentences for character extraction
+  sampleSize: z.number().min(5).max(100).default(50), // Number of sentences for character extraction
   includeNarrator: z.boolean().default(false), // Include narrator as separate speaker
   // How to handle dialogue attribution tags like "he said", "she replied" when Narrator is included
   narratorAttribution: z

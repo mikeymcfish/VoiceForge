@@ -1,7 +1,7 @@
 import { Copy, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
+import { useMemo } from "react";
 import { useToast } from "@/hooks/use-toast";
 
 interface OutputDisplayProps {
@@ -11,6 +11,61 @@ interface OutputDisplayProps {
 
 export function OutputDisplay({ text, fileName }: OutputDisplayProps) {
   const { toast } = useToast();
+
+  const coloredLines = useMemo(() => {
+    const lines = (text || "").split(/\r?\n/);
+    // Bright colors that pop on black background
+    const palette = [
+      "text-blue-400",
+      "text-emerald-400",
+      "text-violet-400",
+      "text-amber-400",
+      "text-rose-400",
+      "text-cyan-400",
+      "text-fuchsia-400",
+      "text-lime-400",
+    ];
+    const getColor = (n: number) => palette[(n - 1) % palette.length];
+
+    return lines.map((raw, idx) => {
+      const line = raw ?? "";
+      const m = line.match(/^\s*(?:(Speaker\s+(\d+):)|(\[(\d+)\]:)|(Narrator:))/i);
+      if (!m) {
+        return (
+          <div key={idx} className="whitespace-pre-wrap">
+            {line}
+          </div>
+        );
+      }
+      let tag = "";
+      let rest = line;
+      let cls = "";
+      if (m[1]) {
+        // Speaker N:
+        const n = parseInt(m[2] || "1", 10) || 1;
+        tag = m[1];
+        rest = line.slice(m[0].length);
+        cls = getColor(n);
+      } else if (m[3]) {
+        // [N]:
+        const n = parseInt(m[4] || "1", 10) || 1;
+        tag = m[3];
+        rest = line.slice(m[0].length);
+        cls = getColor(n);
+      } else if (m[5]) {
+        // Narration: display as Speaker 1 for consistency in preview
+        tag = "Speaker 1:";
+        rest = line.slice(m[0].length);
+        cls = getColor(1);
+      }
+      return (
+        <div key={idx} className="whitespace-pre-wrap">
+          <span className={`font-mono font-semibold ${cls}`}>{tag}</span>
+          <span>{rest}</span>
+        </div>
+      );
+    });
+  }, [text]);
 
   const handleCopy = async () => {
     try {
@@ -75,13 +130,12 @@ export function OutputDisplay({ text, fileName }: OutputDisplayProps) {
         </div>
       </div>
       <div className="flex-1 p-4 overflow-hidden">
-        <Textarea
-          value={text}
-          readOnly
-          placeholder="Processed text will appear here..."
-          className="h-full resize-none font-mono text-sm border-0 focus-visible:ring-0"
+        <div
+          className="h-full w-full overflow-auto rounded-md border border-slate-800 bg-black text-white p-3 font-mono text-sm whitespace-pre-wrap"
           data-testid="textarea-output"
-        />
+        >
+          {coloredLines}
+        </div>
       </div>
     </Card>
   );

@@ -313,6 +313,7 @@ Important rules:
       config.labelFormat === "speaker"
         ? "Speaker 1:, Speaker 2:, etc."
         : "[1]:, [2]:, [3]:, etc.";
+    const narratorLabel = config.labelFormat === 'speaker' ? 'Speaker 1:' : '[1]:';
 
     let prompt = "";
 
@@ -333,9 +334,8 @@ Requirements:
       const hasNarrator = Boolean(config.includeNarrator || hasNarratorFromMapping);
       const narratorAttr = (config as any).narratorAttribution || 'remove';
       const narratorName = (config as any).narratorCharacterName && String((config as any).narratorCharacterName).trim() || undefined;
-      const narratorSpNum = narratorName
-        ? config.characterMapping?.find(c => c.name.toLowerCase() === narratorName.toLowerCase())?.speakerNumber
-        : undefined;
+      // For prompts, reserve Speaker 1 for narration when present
+      const narratorSpNum = narratorName && hasNarrator ? 1 : undefined;
 
       if (hasNarrator) {
         prompt = `You are an intelligent dialogue parsing assistant. Analyze this prose text and structure it for multi-speaker TTS.
@@ -344,7 +344,7 @@ Requirements:
 - Detect speaker changes from context clues (said, replied, asked, etc.)
 - Format each speaking character's line as: ${labelExample} [dialogue text]
 - ${narratorAttr === 'remove' ? 'Remove dialogue attribution tags (e.g., "he said", "she replied", "Bob asked")' : narratorAttr === 'verbatim' ? 'Move dialogue attribution tags (e.g., "he said", "she replied", "Bob asked") into separate Narrator lines immediately following the spoken line (preserve punctuation).' : 'Convert dialogue attribution and action context into a separate Narrator line immediately after the spoken line. Rewrite the tag and any action into a concise descriptive sentence without quotes (e.g., "John passed the book over to Tim."). Prefer explicit names over pronouns when ambiguous.'}
-- Preserve narrative descriptions and non-dialogue text as Narrator lines
+- Label narration (non-dialogue) using ${narratorLabel} (do NOT use the literal label "Narrator:")
 - Preserve full content and order from the input. Do not omit or reorder any parts.
 - ${narratorName ? `Narrator identity: The narrator is the character "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Keep narration as Narrator lines but write the narration content in first-person ("I") from that character's perspective. Do not use the narrator's name inside narration.` : 'If the text uses first-person narration ("I") that clearly refers to a speaking character, keep narration as Narrator lines and write from first-person ("I") rather than using the character\'s name. Use Narrator only for narration; use speaker labels for spoken dialogue.'}
 - Assign consistent speaker numbers based on who speaks`;
@@ -364,33 +364,38 @@ Requirements:
       }
     }
 
-    // Add character mapping if available
+    // Add character mapping if available (adjust so narration occupies Speaker 1)
     if (config.characterMapping && config.characterMapping.length > 0) {
-      const mappingList = config.characterMapping
+      const narratorNameLower = ((config as any).narratorCharacterName || '').toString().trim().toLowerCase();
+      const hasAnyNarrator = Boolean(config.includeNarrator || narratorNameLower || config.characterMapping.some(c => c.name.toLowerCase() === 'narrator')); 
+      const adjusted = (hasAnyNarrator ? config.characterMapping.map(c => ({
+        name: c.name,
+        speakerNumber: narratorNameLower && c.name.toLowerCase() === narratorNameLower ? 1 : (c.speakerNumber + 1),
+      })) : config.characterMapping);
+      const mappingList = adjusted
         .map((char) => `  - ${char.name} = Speaker ${char.speakerNumber}`)
         .join("\n");
       
-      const hasNarrator = config.characterMapping.some(
-        (char) => char.name.toLowerCase() === "narrator"
-      );
+      const hasNarratorInMapping = config.characterMapping.some((char) => char.name.toLowerCase() === "narrator");
+      const narratorActive = Boolean(config.includeNarrator || hasNarratorInMapping || narratorNameLower);
 
-      if (hasNarrator) {
+      if (narratorActive) {
         const narratorAttr = (config as any).narratorAttribution || 'remove';
         prompt += `\n\nCharacter to Speaker Mapping (use these exact assignments):
 ${mappingList}
 
 IMPORTANT: 
 - Only extract dialogue from the speaking characters listed above
-- Assign narrative descriptions and non-dialogue portions to the Narrator
+- Label narration (non-dialogue) with ${narratorLabel}
 - ${narratorAttr === 'remove' ? 'Remove dialogue attribution tags like "he said", "she whispered", "Alice asked"' : narratorAttr === 'verbatim' ? 'Move dialogue attribution tags like "he said", "she whispered", "Alice asked" into a separate Narrator line placed immediately after the spoken line' : 'Transform dialogue attribution and actions into a separate Narrator line that summarizes the action (e.g., "John passed the book over to Tim.") placed immediately after the spoken line'}
-- If a speaking character not listed in the mapping appears, keep their dialogue unmodified and attribute it to the Narrator`;
+- If a speaking character not listed in the mapping appears, keep their dialogue unmodified and attribute it to ${narratorLabel}`;
       } else {
         prompt += `\n\nCharacter to Speaker Mapping (use these exact assignments when possible):
 ${mappingList}
 
 IMPORTANT:
 - Prefer these assignments for known characters.
-- If a speaking character not listed in the mapping appears, keep their dialogue unmodified and attribute it to the Narrator.`;
+- If a speaking character not listed in the mapping appears, keep their dialogue unmodified and attribute it to ${narratorLabel}.`;
       }
     }
 
@@ -567,6 +572,7 @@ IMPORTANT:
       config.labelFormat === "speaker"
         ? "Speaker 1:, Speaker 2:, ..."
         : "[1]:, [2]:, [3]:, ...";
+    const narratorLabel = config.labelFormat === 'speaker' ? 'Speaker 1:' : '[1]:';
 
     const parts: string[] = [];
     const cleanTasks: string[] = [];
@@ -596,15 +602,21 @@ IMPORTANT:
           : narratorAttr === 'verbatim'
             ? 'Move attribution tags into a Narrator line immediately after the spoken line.'
             : 'Convert attribution/action into a concise Narrator line after the spoken line (e.g., "John passed the book to Tim."). Prefer explicit names when ambiguous.';
-        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines. ${attrRule} Preserve narrative descriptions as Narrator lines. ${narratorName ? `Narrator identity: "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Write narration in first-person ("I") from that character's perspective and do not use their name inside narration.` : 'If first-person narration ("I") clearly refers to a speaking character, keep narration as Narrator lines and write from first-person ("I").'} Preserve full content and order from the input; do not omit or reorder. Use consistent speaker numbers.`);
+        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines. ${attrRule} Label narration with ${narratorLabel} (do not use the literal label "Narrator:"). ${narratorName ? `Narrator identity: "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Write narration in first-person ("I") from that character's perspective and do not use their name inside narration.` : 'If first-person narration ("I") clearly refers to a speaking character, label narration with ${narratorLabel} and write from first-person ("I").'} Preserve full content and order from the input; do not omit or reorder. Use consistent speaker numbers.`);
       } else {
-        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines only. Remove attribution tags; ${narratorName ? `Narrator identity: "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Write narration (non-dialogue) in first-person ("I").` : 'if first-person narration ("I") clearly refers to a speaking character, write narration in first-person ("I").'} If dialogue appears from an unknown/unmapped character, keep it unmodified and attribute it to the Narrator. Preserve full content and order from the input; do not omit or reorder. Keep consistent speaker numbering.`);
+        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines only. Remove attribution tags; ${narratorName ? `Narrator identity: "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Write narration (non-dialogue) in first-person ("I").` : 'if first-person narration ("I") clearly refers to a speaking character, write narration in first-person ("I").'} If dialogue appears from an unknown/unmapped character, keep it unmodified and attribute it to ${narratorLabel}. Preserve full content and order from the input; do not omit or reorder. Keep consistent speaker numbering.`);
       }
     }
 
     if (config.characterMapping && config.characterMapping.length > 0) {
-      const mappingList = config.characterMapping.map((c) => `${c.name} = Speaker ${c.speakerNumber}`).join('; ');
-      parts.push(`MAPPING: ${mappingList}. Use exactly these assignments. For any speaking character not listed, keep their dialogue unmodified and attribute it to the Narrator.`);
+      const narratorNameLower = ((config as any).narratorCharacterName || '').toString().trim().toLowerCase();
+      const hasAnyNarrator = Boolean(config.includeNarrator || narratorNameLower || config.characterMapping.some(c => c.name.toLowerCase() === 'narrator')); 
+      const adjusted = (hasAnyNarrator ? config.characterMapping.map(c => ({
+        name: c.name,
+        speakerNumber: narratorNameLower && c.name.toLowerCase() === narratorNameLower ? 1 : (c.speakerNumber + 1),
+      })) : config.characterMapping);
+      const mappingList = adjusted.map((c) => `${c.name} = Speaker ${c.speakerNumber}`).join('; ');
+      parts.push(`MAPPING: ${mappingList}. Use exactly these assignments. For any speaking character not listed, keep their dialogue unmodified and attribute it to ${narratorLabel}.`);
     }
 
     if (customInstructions) parts.push(`CUSTOM: ${customInstructions}`);
@@ -922,3 +934,4 @@ JSON only:`;
 }
 
 export const llmService = new LLMService();
+
