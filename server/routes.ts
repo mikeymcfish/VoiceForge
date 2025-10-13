@@ -6,7 +6,6 @@ import AdmZip from "adm-zip";
 import { parse } from "node-html-parser";
 import { textProcessor } from "./text-processor";
 import { llmService } from "./llm-service";
-import { LocalModelService, AVAILABLE_LOCAL_MODELS } from "./local-model-service";
 import { nanoid } from "nanoid";
 import type { ProcessingConfig, LogEntry, WSMessage } from "@shared/schema";
 
@@ -117,7 +116,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         speakerConfig: config.speakerConfig,
         modelSource: config.modelSource,
         modelName: config.modelName,
-        localModelName: config.localModelName,
+        ollamaModelName: (config as any).ollamaModelName,
         customInstructions: config.customInstructions,
       });
 
@@ -137,13 +136,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Extract character names endpoint
   app.post("/api/extract-characters", async (req, res) => {
     try {
-      const { text, sampleSize, includeNarrator, modelSource, modelName, localModelName } = req.body as {
+      const { text, sampleSize, includeNarrator, modelSource, modelName, ollamaModelName } = req.body as {
         text: string;
         sampleSize: number;
         includeNarrator: boolean;
         modelSource?: string;
         modelName: string;
-        localModelName?: string;
+        ollamaModelName?: string;
       };
 
       if (!text || !sampleSize) {
@@ -159,8 +158,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         text: sampleText,
         includeNarrator,
         modelSource: (modelSource as any) || 'api',
-        modelName: modelName || "Qwen/Qwen2.5-72B-Instruct",
-        localModelName,
+        modelName: modelName || "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        ollamaModelName,
       });
 
       res.json({
@@ -175,29 +174,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get available local models
-  app.get("/api/local-models", (req, res) => {
-    res.json({
-      models: AVAILABLE_LOCAL_MODELS,
-    });
-  });
-
-  // Get local model status
-  app.get("/api/local-model-status/:modelId", (req, res) => {
-    const modelId = decodeURIComponent(req.params.modelId);
-    res.json({
-      modelId,
-      loaded: LocalModelService.isModelLoaded(modelId),
-      downloadProgress: LocalModelService.getDownloadProgress(modelId),
-    });
-  });
-
-  // Clear local model cache
-  app.delete("/api/local-model/:modelId", (req, res) => {
-    const modelId = decodeURIComponent(req.params.modelId);
-    LocalModelService.clearCache(modelId);
-    res.json({ success: true, modelId });
-  });
+  // (Local ONNX models removed)
 
   // File upload endpoint
   app.post("/api/upload", upload.single("file"), async (req, res) => {

@@ -1,0 +1,162 @@
+diff --git a/vite.config.ts b/vite.config.ts
+index 1234567..89abcde 100644
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@
+-import { defineConfig } from "vite";
+-import react from "@vitejs/plugin-react";
+-import path from "path";
+-
+-export default defineConfig({
+-  plugins: [react()],
+-  resolve: {
+-    alias: {
+-      "@": path.resolve(__dirname, "client", "src"),
+-    },
+-  },
+-  server: {
+-    port: 5173,
+-  },
+-});
++import { defineConfig } from "vite";
++import react from "@vitejs/plugin-react";
++import path from "node:path";
++import { fileURLToPath } from "node:url";
++
++const __filename = fileURLToPath(import.meta.url);
++const __dirname = path.dirname(__filename);
++
++export default defineConfig({
++  plugins: [react()],
++  resolve: {
++    alias: {
++      "@": path.resolve(__dirname, "client", "src"),
++    },
++  },
++  server: { port: 5173, strictPort: true },
++});
+diff --git a/postcss.config.js b/postcss.config.js
+index 1111111..2222222 100644
+--- a/postcss.config.js
++++ b/postcss.config.js
+@@
+-module.exports = {
+-  plugins: {
+-    tailwindcss: {},
+-    autoprefixer: {},
+-  },
+-};
++export default {
++  from: undefined,
++  plugins: {
++    tailwindcss: {},
++    autoprefixer: {},
++  },
++};
+diff --git a/server/bootstrap/env.ts b/server/bootstrap/env.ts
+new file mode 100644
+--- /dev/null
++++ b/server/bootstrap/env.ts
+@@
++import { z } from "zod";
++
++const Env = z.object({
++  HUGGINGFACE_API_TOKEN: z.string().min(10).optional(),
++  SESSION_SECRET: z.string().min(16).optional(),
++});
++
++export const env = Env.parse(process.env);
++export const hasHF = !!env.HUGGINGFACE_API_TOKEN;
++
++console.log("[boot] Hugging Face token present:", hasHF ? "yes" : "no");
+diff --git a/server/lib/hfClient.ts b/server/lib/hfClient.ts
+new file mode 100644
+--- /dev/null
++++ b/server/lib/hfClient.ts
+@@
++import fetch from "node-fetch";
++import { env, hasHF } from "../bootstrap/env";
++
++export async function hfFetch(url: string, init: RequestInit = {}) {
++  if (!hasHF) {
++    throw new Error("HF disabled: missing HUGGINGFACE_API_TOKEN");
++  }
++  const headers = new Headers(init.headers || {});
++  headers.set("Authorization", `Bearer ${env.HUGGINGFACE_API_TOKEN}`);
++  headers.set("Content-Type", "application/json");
++  return fetch(url, { ...init, headers });
++}
+diff --git a/server/schema.ts b/server/schema.ts
+new file mode 100644
+--- /dev/null
++++ b/server/schema.ts
+@@
++import { z } from "zod";
++
++export const ModelSource = z.enum(["huggingface", "local"]);
++export const LocalModel = z.enum(["flan_t5_small", "flan_t5_base", "lamini_flan_t5_783m"]);
++export const HFModel = z.string().min(1);
++
++export const ProcessRequest = z
++  .object({
++    modelSource: ModelSource,
++    apiModel: HFModel.optional(),
++    localModel: LocalModel.optional(),
++    text: z.string().min(1),
++  })
++  .refine(
++    (v) =>
++      (v.modelSource === "huggingface" && v.apiModel) ||
++      (v.modelSource === "local" && v.localModel),
++    { message: "Model selection invalid for chosen modelSource" }
++  );
++
++export type ProcessRequestType = z.infer<typeof ProcessRequest>;
+diff --git a/server/index.ts b/server/index.ts
+index 3333333..4444444 100644
+--- a/server/index.ts
++++ b/server/index.ts
+@@
+ import express from "express";
++import { ProcessRequest } from "./schema";
++import { hfFetch } from "./lib/hfClient";
++import { hasHF } from "./bootstrap/env";
+ 
+ const app = express();
+ app.use(express.json());
+ 
+-app.post("/api/process", async (req, res) => {
+-  const { model, text } = req.body;
+-  // Existing logic
+-});
++app.post("/api/process", async (req, res) => {
++  const parsed = ProcessRequest.safeParse(req.body);
++  if (!parsed.success) {
++    return res.status(400).json({ error: parsed.error.flatten() });
++  }
++  const data = parsed.data;
++
++  try {
++    if (data.modelSource === "huggingface") {
++      if (!hasHF) {
++        return res.status(401).json({ error: "Hugging Face disabled" });
++      }
++      const response = await hfFetch(`https://api-inference.huggingface.co/models/${data.apiModel}`, {
++        method: "POST",
++        body: JSON.stringify({ inputs: data.text }),
++      });
++      const result = await response.json();
++      return res.json({ source: "huggingface", model: data.apiModel, result });
++    } else {
++      // local model placeholder
++      return res.json({ source: "local", model: data.localModel, result: "processed locally" });
++    }
++  } catch (err) {
++    console.error(err);
++    return res.status(500).json({ error: String(err) });
++  }
++});
++
++app.get("/healthz", (_, res) => {
++  res.json({ status: "ok", hasHF });
++});

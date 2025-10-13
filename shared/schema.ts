@@ -38,6 +38,10 @@ export const speakerConfigSchema = z.object({
   extractCharacters: z.boolean().default(false), // Whether to extract character names
   sampleSize: z.number().min(5).max(100).default(20), // Number of sentences for character extraction
   includeNarrator: z.boolean().default(false), // Include narrator as separate speaker
+  // How to handle dialogue attribution tags like "he said", "she replied" when Narrator is included
+  narratorAttribution: z
+    .enum(["remove", "verbatim", "contextual"]) // remove = strip tags; verbatim = narrator reads tag as-is; contextual = narrator summarizes action/context
+    .default("remove"),
   characterMapping: z.array(z.object({ // Extracted character name to speaker number mapping
     name: z.string(),
     speakerNumber: z.number(),
@@ -47,7 +51,7 @@ export const speakerConfigSchema = z.object({
 export type SpeakerConfig = z.infer<typeof speakerConfigSchema>;
 
 // Model Source
-export const modelSourceSchema = z.enum(["api", "local"]);
+export const modelSourceSchema = z.enum(["api", "ollama"]);
 export type ModelSource = z.infer<typeof modelSourceSchema>;
 
 // Processing Configuration
@@ -56,8 +60,10 @@ export const processingConfigSchema = z.object({
   cleaningOptions: cleaningOptionsSchema,
   speakerConfig: speakerConfigSchema.optional(),
   modelSource: modelSourceSchema.default("api"), // API or Local
-  modelName: z.string().default("Qwen/Qwen2.5-72B-Instruct"), // For API
+  // Default to a model available on Hugging Face Inference provider
+  modelName: z.string().default("meta-llama/Meta-Llama-3.1-8B-Instruct"), // For API
   localModelName: z.string().optional(), // For local models
+  ollamaModelName: z.string().optional(), // For Ollama models
   customInstructions: z.string().optional(), // Custom instructions for the LLM
 });
 

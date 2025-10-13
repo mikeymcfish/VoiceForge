@@ -4,6 +4,13 @@ import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
@@ -36,6 +43,14 @@ export function ProcessingControls({
   isTesting = false,
 }: ProcessingControlsProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+
+  const normalizeModelId = (value: string) => {
+    // Normalize common Llama 3.1 naming differences
+    if (/^meta-llama\/Meta-Llama-3\.1-/i.test(value)) {
+      return value.replace(/meta-llama\/Meta-Llama-3\.1-/i, "meta-llama/Llama-3.1-");
+    }
+    return value;
+  };
 
   return (
     <Card className="p-3">
@@ -76,15 +91,45 @@ export function ProcessingControls({
               <Label htmlFor="model-name" className="text-sm font-medium">
                 LLM Model
               </Label>
-              <Input
-                id="model-name"
-                value={modelName}
-                onChange={(e) => onModelNameChange(e.target.value)}
-                disabled={isProcessing}
-                data-testid="input-model-name"
-                className="h-9"
-                placeholder="e.g., Qwen/Qwen2.5-72B-Instruct"
-              />
+          <Input
+            id="model-name"
+            value={modelName}
+            onChange={(e) => onModelNameChange(normalizeModelId(e.target.value))}
+            disabled={isProcessing}
+            data-testid="input-model-name"
+            className="h-9"
+            placeholder="e.g., meta-llama/Llama-3.1-8B-Instruct"
+          />
+          {/^meta-llama\/Meta-Llama-3\.1-/i.test(modelName) && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              Tip: Use canonical id meta-llama/Llama-3.1-… (auto-normalized)
+            </p>
+          )}
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Quick Pick</Label>
+                  <Select
+                    value=""
+                    onValueChange={(val) => onModelNameChange(normalizeModelId(val))}
+                    disabled={isProcessing}
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder="Choose a known-good model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="meta-llama/Llama-3.1-8B-Instruct">
+                        meta-llama/Llama-3.1-8B-Instruct
+                      </SelectItem>
+                      <SelectItem value="mistralai/Mistral-7B-Instruct-v0.2">
+                        mistralai/Mistral-7B-Instruct-v0.2
+                      </SelectItem>
+                      <SelectItem value="Qwen/Qwen2.5-7B-Instruct">
+                        Qwen/Qwen2.5-7B-Instruct
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
               <p className="text-xs text-muted-foreground">
                 HuggingFace model ID for text processing
               </p>

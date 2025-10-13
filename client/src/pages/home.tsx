@@ -48,9 +48,9 @@ export default function Home() {
   });
 
   const [batchSize, setBatchSize] = useState(10);
-  const [modelSource, setModelSource] = useState<"api" | "local">("api");
-  const [modelName, setModelName] = useState("Qwen/Qwen2.5-72B-Instruct");
-  const [localModelName, setLocalModelName] = useState<string>();
+  const [modelSource, setModelSource] = useState<"api" | "ollama">("api");
+  const [modelName, setModelName] = useState("meta-llama/Llama-3.1-8B-Instruct");
+  const [ollamaModelName, setOllamaModelName] = useState<string>();
   const [customInstructions, setCustomInstructions] = useState("");
 
   const [isProcessing, setIsProcessing] = useState(false);
@@ -134,7 +134,8 @@ export default function Home() {
     setProgress(0);
     setCurrentChunk(0);
 
-    const ws = new WebSocket(`ws://${window.location.host}/ws/process`);
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${window.location.host}/ws/process`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -149,14 +150,14 @@ export default function Home() {
             speakerConfig,
             modelSource,
             modelName,
-            localModelName,
+            ollamaModelName,
             customInstructions: customInstructions || undefined,
           },
         })
       );
 
-      const modelInfo = modelSource === 'local' 
-        ? `Local: ${localModelName}` 
+      const modelInfo = modelSource === 'ollama' 
+        ? `Ollama: ${ollamaModelName || 'default'}` 
         : `API: ${modelName}`;
       addLog("info", "Processing started", `Model: ${modelInfo}, Batch size: ${batchSize}`);
     };
@@ -189,9 +190,13 @@ export default function Home() {
             }
             break;
 
-          case "log":
-            setLogs((prev) => [...prev, message.payload]);
+          case "log": {
+            const payload = message.payload || {};
+            const ts = payload.timestamp;
+            const timestamp = typeof ts === 'string' ? new Date(ts) : (ts instanceof Date ? ts : new Date());
+            setLogs((prev) => [...prev, { ...payload, timestamp }]);
             break;
+          }
 
           case "complete":
             setIsProcessing(false);
@@ -271,7 +276,7 @@ export default function Home() {
             speakerConfig,
             modelSource,
             modelName,
-            localModelName,
+            ollamaModelName,
             customInstructions: customInstructions || undefined,
           },
         }),
@@ -357,7 +362,8 @@ export default function Home() {
                 text={originalText}
                 modelSource={modelSource}
                 modelName={modelName}
-                localModelName={localModelName}
+                
+                ollamaModelName={ollamaModelName}
                 characterMapping={speakerConfig.characterMapping}
                 sampleSize={speakerConfig.sampleSize}
                 includeNarrator={speakerConfig.includeNarrator}
@@ -381,9 +387,9 @@ export default function Home() {
 
             <ModelSourceSelector
               modelSource={modelSource}
-              localModelName={localModelName}
+              ollamaModelName={ollamaModelName}
               onModelSourceChange={setModelSource}
-              onLocalModelChange={setLocalModelName}
+              onOllamaModelChange={setOllamaModelName}
               disabled={isProcessing}
             />
 

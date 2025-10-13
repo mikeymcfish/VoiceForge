@@ -56,7 +56,7 @@ export class TextProcessor {
             speakerConfig: config.speakerConfig,
             modelSource: config.modelSource,
             modelName: config.modelName,
-            localModelName: config.localModelName,
+            ollamaModelName: (config as any).ollamaModelName,
             customInstructions: config.customInstructions,
           });
 

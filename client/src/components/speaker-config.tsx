@@ -145,6 +145,35 @@ export function SpeakerConfigPanel({
                 </SelectContent>
               </Select>
             </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="narrator-attr" className="text-sm font-medium">
+                Narrator Attribution
+              </Label>
+              <Select
+                value={(config as any).narratorAttribution || 'remove'}
+                onValueChange={(value) =>
+                  onChange({
+                    ...config,
+                    // @ts-expect-error - extend SpeakerConfig shape
+                    narratorAttribution: value as 'remove' | 'verbatim' | 'contextual',
+                  })
+                }
+                disabled={disabled || config.mode === 'none'}
+              >
+                <SelectTrigger id="narrator-attr" className="h-10">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="remove">Remove attribution tags</SelectItem>
+                  <SelectItem value="verbatim">Narrator says tags (verbatim)</SelectItem>
+                  <SelectItem value="contextual">Narrator adds context (intelligent)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Applies when using Intelligent Parsing and including a Narrator.
+              </p>
+            </div>
           </>
         )}
       </div>
