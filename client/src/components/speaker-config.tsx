@@ -1,4 +1,6 @@
 import { Card } from "@/components/ui/card";
+import { CircleHelp } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -28,7 +30,15 @@ export function SpeakerConfigPanel({
       
       <div className="space-y-4">
         <div className="space-y-2">
-          <Label className="text-sm font-medium">Processing Mode</Label>
+          <div className="flex items-center gap-2">
+            <Label className="text-sm font-medium">Processing Mode</Label>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+              </TooltipTrigger>
+              <TooltipContent>Select how to handle speaker tagging</TooltipContent>
+            </Tooltip>
+          </div>
           <RadioGroup
             value={config.mode}
             onValueChange={(value) =>
@@ -44,15 +54,17 @@ export function SpeakerConfigPanel({
                 data-testid="radio-mode-none"
               />
               <div className="space-y-0.5">
-                <Label
-                  htmlFor="mode-none"
-                  className="text-sm font-medium cursor-pointer"
-                >
-                  Single Speaker (No Tags)
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  Clean text only, without adding any speaker tags
-                </p>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="mode-none" className="text-sm font-medium cursor-pointer">
+                    Single Speaker (No Tags)
+                  </Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent>Clean text only; do not add any speaker labels</TooltipContent>
+                  </Tooltip>
+                </div>
               </div>
             </div>
             <div className="flex items-start gap-2.5">
@@ -62,15 +74,17 @@ export function SpeakerConfigPanel({
                 data-testid="radio-mode-format"
               />
               <div className="space-y-0.5">
-                <Label
-                  htmlFor="mode-format"
-                  className="text-sm font-medium cursor-pointer"
-                >
-                  Format Conversion
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  Convert existing multi-speaker text to standardized format
-                </p>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="mode-format" className="text-sm font-medium cursor-pointer">
+                    Format Conversion
+                  </Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent>Convert existing multi-speaker text into your selected label style</TooltipContent>
+                  </Tooltip>
+                </div>
               </div>
             </div>
             <div className="flex items-start gap-2.5">
@@ -80,15 +94,17 @@ export function SpeakerConfigPanel({
                 data-testid="radio-mode-intelligent"
               />
               <div className="space-y-0.5">
-                <Label
-                  htmlFor="mode-intelligent"
-                  className="text-sm font-medium cursor-pointer"
-                >
-                  Intelligent Parsing
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  Detect speakers from prose and structure dialogue output
-                </p>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="mode-intelligent" className="text-sm font-medium cursor-pointer">
+                    Intelligent Parsing
+                  </Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent>Use the LLM to detect speakers and structure dialogue</TooltipContent>
+                  </Tooltip>
+                </div>
               </div>
             </div>
           </RadioGroup>
@@ -97,9 +113,17 @@ export function SpeakerConfigPanel({
         {config.mode !== "none" && (
           <>
             <div className="space-y-1.5">
-              <Label htmlFor="speaker-count" className="text-sm font-medium">
-                Number of Speakers
-              </Label>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="speaker-count" className="text-sm font-medium">
+                  Number of Speakers
+                </Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent>Target number of speakers for formatting/detection</TooltipContent>
+                </Tooltip>
+              </div>
               <Input
                 id="speaker-count"
                 type="number"
@@ -119,9 +143,17 @@ export function SpeakerConfigPanel({
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="label-format" className="text-sm font-medium">
-                Label Format
-              </Label>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="label-format" className="text-sm font-medium">
+                  Label Format
+                </Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent>Choose "Speaker N:" or numeric labels like "[N]:"</TooltipContent>
+                </Tooltip>
+              </div>
               <Select
                 value={config.labelFormat}
                 onValueChange={(value) =>
@@ -147,9 +179,19 @@ export function SpeakerConfigPanel({
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="narrator-attr" className="text-sm font-medium">
-                Narrator Attribution
-              </Label>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="narrator-attr" className="text-sm font-medium">
+                  Narrator Attribution
+                </Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Applies when using Intelligent Parsing and including a Narrator.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
               <Select
                 value={(config as any).narratorAttribution || 'remove'}
                 onValueChange={(value) =>
@@ -170,10 +212,30 @@ export function SpeakerConfigPanel({
                   <SelectItem value="contextual">Narrator adds context (intelligent)</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
-                Applies when using Intelligent Parsing and including a Narrator.
-              </p>
             </div>
+
+            {config.includeNarrator && (config.characterMapping?.length || 0) > 0 && (
+              <div className="space-y-1.5">
+                <Label className="text-sm font-medium">Select Narrator (Speaker 1)</Label>
+                <RadioGroup
+                  value={(config as any).narratorCharacterName || ""}
+                  onValueChange={(val) => onChange({ ...(config as any), narratorCharacterName: val || undefined } as any)}
+                >
+                  <div className="flex items-center gap-2 py-1">
+                    <RadioGroupItem value="" id="narrator-none" />
+                    <Label htmlFor="narrator-none" className="text-sm cursor-pointer">None</Label>
+                  </div>
+                  {config.characterMapping!.map((c) => (
+                    <div key={c.speakerNumber} className="flex items-center gap-2 py-1">
+                      <RadioGroupItem value={c.name} id={`narrator-${c.speakerNumber}`} />
+                      <Label htmlFor={`narrator-${c.speakerNumber}`} className="text-sm cursor-pointer">
+                        Speaker {c.speakerNumber}: {c.name}
+                      </Label>
+                    </div>
+                  ))}
+                </RadioGroup>
+              </div>
+            )}
           </>
         )}
       </div>

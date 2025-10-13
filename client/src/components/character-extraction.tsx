@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Users, Trash2 } from "lucide-react";
+import { Loader2, Users, Trash2, CircleHelp } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -45,6 +46,7 @@ export function CharacterExtraction({
 }: CharacterExtractionProps) {
   const [isExtracting, setIsExtracting] = useState(false);
   const { toast } = useToast();
+  const [newCharacterName, setNewCharacterName] = useState("");
 
   const handleExtractCharacters = async () => {
     if (!text) {
@@ -111,15 +113,21 @@ export function CharacterExtraction({
         <h4 className="text-sm font-medium">Character Extraction</h4>
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        Extract character names from a sample to maintain consistency throughout processing
-      </p>
-
       <div className="space-y-3">
         <div className="space-y-1.5">
-          <Label htmlFor="sample-size" className="text-sm">
-            Sample Size (sentences)
-          </Label>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="sample-size" className="text-sm">
+              Sample Size (sentences)
+            </Label>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+              </TooltipTrigger>
+              <TooltipContent>
+                Number of sentences to analyze for character names
+              </TooltipContent>
+            </Tooltip>
+          </div>
           <Input
             id="sample-size"
             type="number"
@@ -131,9 +139,6 @@ export function CharacterExtraction({
             data-testid="input-sample-size"
             className="h-9"
           />
-          <p className="text-xs text-muted-foreground">
-            Number of sentences to analyze for character names
-          </p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -199,6 +204,50 @@ export function CharacterExtraction({
             </p>
           </div>
         )}
+
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <Label className="text-sm" htmlFor="new-character">Add Character</Label>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+              </TooltipTrigger>
+              <TooltipContent>
+                Manually add a known character. New entries are assigned the next speaker number.
+              </TooltipContent>
+            </Tooltip>
+          </div>
+          <div className="flex gap-2">
+            <Input
+              id="new-character"
+              value={newCharacterName}
+              onChange={(e) => setNewCharacterName(e.target.value)}
+              placeholder="Character name"
+              disabled={disabled}
+              className="h-9"
+            />
+            <Button
+              onClick={() => {
+                const name = newCharacterName.trim();
+                if (!name) return;
+                if (characterMapping.some((c) => c.name.toLowerCase() === name.toLowerCase())) {
+                  toast({ title: "Already exists", description: `${name} is already in the mapping.` });
+                  return;
+                }
+                const updated = [
+                  ...characterMapping,
+                  { name, speakerNumber: characterMapping.length + 1 },
+                ];
+                onCharactersExtracted(updated);
+                setNewCharacterName("");
+              }}
+              disabled={disabled || !newCharacterName.trim()}
+              variant="secondary"
+            >
+              Add
+            </Button>
+          </div>
+        </div>
       </div>
     </Card>
   );

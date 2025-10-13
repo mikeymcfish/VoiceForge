@@ -1,6 +1,8 @@
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { CircleHelp } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface CustomInstructionsProps {
   value: string;
@@ -17,12 +19,17 @@ export function CustomInstructions({
     <Card className="p-3">
       <h3 className="text-sm font-medium mb-3">Custom Instructions</h3>
       <div className="space-y-1.5">
-        <Label htmlFor="custom-instructions" className="text-sm font-medium">
-          Additional LLM Instructions
-        </Label>
-        <p className="text-xs text-muted-foreground mb-2">
-          Add custom instructions for the language model to follow during processing
-        </p>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="custom-instructions" className="text-sm font-medium">
+            Additional LLM Instructions
+          </Label>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+            </TooltipTrigger>
+            <TooltipContent>Add custom instructions for the language model to follow during processing</TooltipContent>
+          </Tooltip>
+        </div>
         <Textarea
           id="custom-instructions"
           value={value}

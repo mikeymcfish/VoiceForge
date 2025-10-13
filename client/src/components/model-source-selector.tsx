@@ -10,7 +10,8 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Cloud, HardDrive } from "lucide-react";
+import { Cloud, HardDrive, CircleHelp } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ModelSource } from "@shared/schema";
 
 interface ModelSourceSelectorProps {
@@ -59,8 +60,16 @@ export function ModelSourceSelector({
         </RadioGroup>
 
         {modelSource === 'api' && (
-          <div className="pl-6 text-xs text-muted-foreground">
-            Uses HuggingFace Inference API with your API token. Best for large, powerful models.
+          <div className="pl-6">
+            <div className="flex items-center gap-2">
+              <Label className="text-sm">HuggingFace API</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent>Uses HuggingFace Inference API with your API token. Best for large, powerful models.</TooltipContent>
+              </Tooltip>
+            </div>
           </div>
         )}
 
@@ -68,7 +77,15 @@ export function ModelSourceSelector({
 
         {modelSource === 'ollama' && (
           <div className="pl-6 space-y-2">
-            <Label htmlFor="ollama-model" className="text-sm">Ollama Model</Label>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="ollama-model" className="text-sm">Ollama Model</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent>Select or type an Ollama model name (requires Ollama running locally)</TooltipContent>
+              </Tooltip>
+            </div>
             <Select
               value={ollamaModelName || ''}
               onValueChange={onOllamaModelChange}
@@ -85,7 +102,15 @@ export function ModelSourceSelector({
               </SelectContent>
             </Select>
             <div className="space-y-1.5 pt-2">
-              <Label htmlFor="ollama-model-custom" className="text-sm">Or type a custom model</Label>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="ollama-model-custom" className="text-sm">Or type a custom model</Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent>Examples: qwen2.5:32b-instruct, codellama:7b</TooltipContent>
+                </Tooltip>
+              </div>
               <Input
                 id="ollama-model-custom"
                 value={ollamaModelName || ''}
@@ -95,9 +120,7 @@ export function ModelSourceSelector({
                 className="h-9"
               />
             </div>
-            <p className="text-xs text-muted-foreground">
-              Requires Ollama running locally at http://localhost:11434. Change with OLLAMA_BASE_URL.
-            </p>
+            
           </div>
         )}
       </div>

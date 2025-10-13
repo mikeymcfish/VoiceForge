@@ -1,6 +1,8 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
+import { CircleHelp } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { CleaningOptions } from "@shared/schema";
 
 interface CleaningOptionsProps {
@@ -75,15 +77,20 @@ export function CleaningOptionsPanel({
               data-testid={`checkbox-${option.key}`}
             />
             <div className="flex-1 space-y-0.5">
-              <Label
-                htmlFor={option.key}
-                className="text-sm font-medium leading-none cursor-pointer"
-              >
-                {option.label}
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                {option.description}
-              </p>
+              <div className="flex items-center gap-2">
+                <Label
+                  htmlFor={option.key}
+                  className="text-sm font-medium leading-none cursor-pointer"
+                >
+                  {option.label}
+                </Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent>{option.description}</TooltipContent>
+                </Tooltip>
+              </div>
             </div>
           </div>
         ))}
