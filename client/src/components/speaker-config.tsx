@@ -24,10 +24,14 @@ export function SpeakerConfigPanel({
   onChange,
   disabled,
 }: SpeakerConfigProps) {
+  const isSingleSpeakerMode = config.mode === "none";
+  const isIntelligentMode = config.mode === "intelligent";
+  const characterMapping = config.characterMapping ?? [];
+
   return (
     <Card className="p-3">
       <h3 className="text-sm font-medium mb-3">Multi-Speaker Configuration</h3>
-      
+
       <div className="space-y-4">
         <div className="space-y-2">
           <div className="flex items-center gap-2">
@@ -110,7 +114,7 @@ export function SpeakerConfigPanel({
           </RadioGroup>
         </div>
 
-        {config.mode !== "none" && (
+        {!isSingleSpeakerMode && (
           <>
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
@@ -200,7 +204,7 @@ export function SpeakerConfigPanel({
                     narratorAttribution: value as "remove" | "verbatim" | "contextual",
                   })
                 }
-                disabled={disabled || config.mode !== "intelligent"}
+                disabled={disabled || !isIntelligentMode}
               >
                 <SelectTrigger id="narrator-attr" className="h-10">
                   <SelectValue />
@@ -213,7 +217,7 @@ export function SpeakerConfigPanel({
               </Select>
             </div>
 
-            {config.includeNarrator && (config.characterMapping?.length || 0) > 0 && (
+            {config.includeNarrator && characterMapping.length > 0 && (
               <div className="space-y-1.5">
                 <Label className="text-sm font-medium">Select Narrator (Speaker 1)</Label>
                 <RadioGroup
@@ -229,7 +233,7 @@ export function SpeakerConfigPanel({
                     <RadioGroupItem value="" id="narrator-none" />
                     <Label htmlFor="narrator-none" className="text-sm cursor-pointer">None</Label>
                   </div>
-                  {config.characterMapping!.map((c) => (
+                  {characterMapping.map((c) => (
                     <div key={c.speakerNumber} className="flex items-center gap-2 py-1">
                       <RadioGroupItem value={c.name} id={`narrator-${c.speakerNumber}`} />
                       <Label htmlFor={`narrator-${c.speakerNumber}`} className="text-sm cursor-pointer">
