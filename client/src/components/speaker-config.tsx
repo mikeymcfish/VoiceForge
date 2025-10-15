@@ -193,15 +193,14 @@ export function SpeakerConfigPanel({
                 </Tooltip>
               </div>
               <Select
-                value={(config as any).narratorAttribution || 'remove'}
+                value={config.narratorAttribution ?? "remove"}
                 onValueChange={(value) =>
                   onChange({
                     ...config,
-                    // @ts-expect-error - extend SpeakerConfig shape
-                    narratorAttribution: value as 'remove' | 'verbatim' | 'contextual',
+                    narratorAttribution: value as "remove" | "verbatim" | "contextual",
                   })
                 }
-                disabled={disabled || config.mode === 'none'}
+                disabled={disabled || config.mode !== "intelligent"}
               >
                 <SelectTrigger id="narrator-attr" className="h-10">
                   <SelectValue />
@@ -218,8 +217,13 @@ export function SpeakerConfigPanel({
               <div className="space-y-1.5">
                 <Label className="text-sm font-medium">Select Narrator (Speaker 1)</Label>
                 <RadioGroup
-                  value={(config as any).narratorCharacterName || ""}
-                  onValueChange={(val) => onChange({ ...(config as any), narratorCharacterName: val || undefined } as any)}
+                  value={config.narratorCharacterName ?? ""}
+                  onValueChange={(val) =>
+                    onChange({
+                      ...config,
+                      narratorCharacterName: val || undefined,
+                    })
+                  }
                 >
                   <div className="flex items-center gap-2 py-1">
                     <RadioGroupItem value="" id="narrator-none" />
