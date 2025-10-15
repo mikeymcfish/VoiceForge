@@ -8,6 +8,7 @@ import { textProcessor } from "./text-processor";
 import { llmService } from "./llm-service";
 import { nanoid } from "nanoid";
 import type { ProcessingConfig, LogEntry, WSMessage } from "@shared/schema";
+import { indexTtsService } from "./tts-service";
 import fs from "fs";
 import path from "path";
 
@@ -15,6 +16,13 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+});
+
+const ttsUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 120 * 1024 * 1024, // 120MB limit for audio/text assets
   },
 });
 
@@ -253,6 +261,129 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // IndexTTS control endpoints
+  app.get("/api/tts/status", (_req, res) => {
+    res.json(indexTtsService.getStatus());
+  });
+
+  app.post("/api/tts/download", (req, res) => {
+    const { repoId } = (req.body ?? {}) as { repoId?: string };
+    const status = indexTtsService.getStatus();
+    if (status.downloadStatus === "in-progress") {
+      return res.status(409).json({ error: "Download already in progress" });
+    }
+    const trimmedRepo =
+      typeof repoId === "string" && repoId.trim().length > 0 ? repoId.trim() : undefined;
+    indexTtsService
+      .downloadModels(trimmedRepo)
+      .catch((error) => console.error("IndexTTS download failed:", error));
+    res.json(indexTtsService.getStatus());
+  });
+
+  app.post("/api/tts/load", (_req, res) => {
+    const status = indexTtsService.getStatus();
+    if (status.downloadStatus !== "completed") {
+      return res.status(409).json({ error: "Download models before loading" });
+    }
+    if (status.loadStatus === "in-progress") {
+      return res.status(409).json({ error: "Load already in progress" });
+    }
+    indexTtsService.loadModels().catch((error) => console.error("IndexTTS load failed:", error));
+    res.json(indexTtsService.getStatus());
+  });
+
+  app.post(
+    "/api/tts/synthesize",
+    ttsUpload.fields([
+      { name: "voice", maxCount: 1 },
+      { name: "script", maxCount: 1 },
+    ]),
+    async (req, res) => {
+      try {
+        const files = (req.files || {}) as Record<string, Express.Multer.File[]>;
+        const voiceFile = files.voice?.[0];
+        const scriptFile = files.script?.[0];
+
+        if (!voiceFile) {
+          return res.status(400).json({ error: "Voice prompt is required" });
+        }
+
+        let textContent = typeof req.body?.text === "string" ? req.body.text : "";
+        let textFileName = scriptFile?.originalname ?? "script.txt";
+        if (scriptFile) {
+          textContent = scriptFile.buffer.toString("utf-8");
+        }
+
+        if (!textContent || textContent.trim().length === 0) {
+          return res.status(400).json({ error: "Text input is required" });
+        }
+
+        const rawSteps = Number(req.body?.steps ?? 20);
+        const steps = Number.isFinite(rawSteps) ? rawSteps : 20;
+
+        const job = await indexTtsService.startSynthesis({
+          voiceBuffer: voiceFile.buffer,
+          voiceFileName: voiceFile.originalname,
+          textContent,
+          textFileName,
+          steps,
+        });
+
+        res.json({ job });
+      } catch (error) {
+        console.error("TTS synthesis error:", error);
+        res.status(500).json({
+          error: error instanceof Error ? error.message : "Failed to start synthesis",
+        });
+      }
+    }
+  );
+
+  app.get("/api/tts/jobs/:id", (req, res) => {
+    const job = indexTtsService.getJob(req.params.id);
+    if (!job) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    res.json({ job });
+  });
+
+  app.get("/api/tts/jobs/:id/audio", (req, res) => {
+    const job = indexTtsService.getJob(req.params.id);
+    if (!job || job.status !== "completed" || !job.outputFile) {
+      return res.status(404).json({ error: "Audio not ready" });
+    }
+    const filePath = path.resolve(job.outputFile);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Audio file missing" });
+    }
+    res.type("audio/wav");
+    res.setHeader("Content-Disposition", `attachment; filename="tts-${job.id}.wav"`);
+    res.sendFile(filePath);
+  });
+
+  // WebSocket server for IndexTTS updates
+  const ttsWss = new WebSocketServer({ noServer: true });
+
+  ttsWss.on("connection", (ws: WebSocket) => {
+    const unsubscribe = indexTtsService.subscribe((message) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(message));
+        } catch (error) {
+          console.error("IndexTTS WebSocket send error:", error);
+        }
+      }
+    });
+
+    ws.on("close", () => {
+      unsubscribe();
+    });
+
+    ws.on("error", (error) => {
+      console.error("IndexTTS WebSocket error:", error);
+    });
+  });
+
   // WebSocket server for real-time processing
   const wss = new WebSocketServer({ noServer: true });
 
@@ -432,6 +563,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (request.url === "/ws/process") {
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit("connection", ws, request);
+      });
+    } else if (request.url === "/ws/tts") {
+      ttsWss.handleUpgrade(request, socket, head, (ws) => {
+        ttsWss.emit("connection", ws, request);
       });
     } else {
       socket.destroy();
