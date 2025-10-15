@@ -224,3 +224,17 @@ export const ttsWsMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export type TtsWsMessage = z.infer<typeof ttsWsMessageSchema>;
+
+// HuggingFace token management
+export const huggingFaceTokenStatusSchema = z.object({
+  configured: z.boolean(),
+  tokenPreview: z.string().optional(),
+});
+
+export type HuggingFaceTokenStatus = z.infer<typeof huggingFaceTokenStatusSchema>;
+
+export const huggingFaceTokenUpdateSchema = z.object({
+  token: z.string().optional().nullable(),
+});
+
+export type HuggingFaceTokenUpdate = z.infer<typeof huggingFaceTokenUpdateSchema>;

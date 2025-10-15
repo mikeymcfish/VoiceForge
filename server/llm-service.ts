@@ -4,7 +4,8 @@ import fs from "fs";
 import path from "path";
 
 // Check if HuggingFace API token is available
-const apiToken = process.env.HUGGINGFACE_API_TOKEN;
+let apiToken: string | undefined =
+  (process.env.HUGGINGFACE_API_TOKEN || process.env.HF_TOKEN || "").trim() || undefined;
 if (!apiToken) {
   console.warn("⚠️  HUGGINGFACE_API_TOKEN not found in environment variables!");
   console.warn("   API mode will not work. Please either:");
@@ -12,7 +13,24 @@ if (!apiToken) {
   console.warn("   2. Use Ollama as the model source");
 }
 
-const hf = new HfInference(apiToken);
+let hf = new HfInference(apiToken);
+
+export function getHuggingFaceApiToken(): string | undefined {
+  return apiToken;
+}
+
+export function setHuggingFaceApiToken(token: string | undefined) {
+  const trimmed = token?.trim();
+  apiToken = trimmed && trimmed.length > 0 ? trimmed : undefined;
+  if (apiToken) {
+    process.env.HUGGINGFACE_API_TOKEN = apiToken;
+    process.env.HF_TOKEN = apiToken;
+  } else {
+    delete process.env.HUGGINGFACE_API_TOKEN;
+    delete process.env.HF_TOKEN;
+  }
+  hf = new HfInference(apiToken);
+}
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
 const HF_PROVIDER = (process.env.HF_PROVIDER || "hf-inference").trim();
 
@@ -961,4 +979,3 @@ JSON only:`;
 }
 
 export const llmService = new LLMService();
-

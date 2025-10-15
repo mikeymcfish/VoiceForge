@@ -18,18 +18,18 @@ from typing import Optional, Tuple
 DEFAULT_INDEXTTS_REPO_ZIP = "https://github.com/index-tts/index-tts/archive/refs/heads/main.zip"
 INDEXTTS_MODULE_NAME = "indextts"
 ADDITIONAL_DEPENDENCIES = (
-    ("librosa", None),
-    ("omegaconf", None),
-    ("transformers", None),
-    ("accelerate", None),
-    ("sentencepiece", None),
-    ("tokenizers", None),
-    ("textstat", None),
-    ("cn2an", None),
-    ("g2p_en", None),
-    ("jieba", None),
-    ("json5", None),
-    ("safetensors", None),
+    ("librosa==0.10.2.post1", "librosa"),
+    ("omegaconf>=2.3.0", "omegaconf"),
+    ("transformers==4.52.1", "transformers"),
+    ("accelerate==1.8.1", "accelerate"),
+    ("sentencepiece>=0.2.1", "sentencepiece"),
+    ("tokenizers==0.21.0", "tokenizers"),
+    ("textstat>=0.7.10", "textstat"),
+    ("cn2an==0.5.22", "cn2an"),
+    ("g2p_en==2.1.0", "g2p_en"),
+    ("jieba==0.42.1", "jieba"),
+    ("json5==0.10.0", "json5"),
+    ("safetensors==0.5.2", "safetensors"),
 )
 
 dependencies_ready = False
@@ -41,8 +41,19 @@ def emit(event: str, **payload):
     print(json.dumps(message), flush=True)
 
 
+def _module_name_from_spec(spec: str) -> str:
+    base = spec
+    for sep in ("==", ">=", "<=", "~=", "!=", ">", "<"):
+        if sep in base:
+            base = base.split(sep, 1)[0]
+            break
+    if "[" in base:
+        base = base.split("[", 1)[0]
+    return base
+
+
 def ensure_package(package_name: str, import_name: Optional[str] = None):
-    module_name = import_name or package_name
+    module_name = import_name or _module_name_from_spec(package_name)
     try:
         importlib.import_module(module_name)
     except ImportError:
