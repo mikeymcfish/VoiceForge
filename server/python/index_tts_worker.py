@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import importlib
+import importlib.metadata as importlib_metadata
 import inspect
 import json
 import os
@@ -13,23 +14,23 @@ import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 DEFAULT_INDEXTTS_REPO_ZIP = "https://github.com/index-tts/index-tts/archive/refs/heads/main.zip"
 INDEXTTS_MODULE_NAME = "indextts"
 ADDITIONAL_DEPENDENCIES = (
-    ("librosa==0.10.2.post1", "librosa"),
-    ("omegaconf>=2.3.0", "omegaconf"),
-    ("transformers==4.52.1", "transformers"),
-    ("accelerate==1.8.1", "accelerate"),
-    ("sentencepiece>=0.2.1", "sentencepiece"),
-    ("tokenizers==0.21.0", "tokenizers"),
-    ("textstat>=0.7.10", "textstat"),
-    ("cn2an==0.5.22", "cn2an"),
-    ("g2p_en==2.1.0", "g2p_en"),
-    ("jieba==0.42.1", "jieba"),
-    ("json5==0.10.0", "json5"),
-    ("safetensors==0.5.2", "safetensors"),
+    {"spec": "librosa==0.10.2.post1", "module": "librosa"},
+    {"spec": "omegaconf>=2.3.0", "module": "omegaconf"},
+    {"spec": "transformers==4.52.1", "module": "transformers"},
+    {"spec": "accelerate==1.8.1", "module": "accelerate"},
+    {"spec": "sentencepiece>=0.2.1", "module": "sentencepiece"},
+    {"spec": "tokenizers==0.21.0", "module": "tokenizers"},
+    {"spec": "textstat>=0.7.10", "module": "textstat"},
+    {"spec": "cn2an==0.5.22", "module": "cn2an"},
+    {"spec": "g2p_en==2.1.0", "module": "g2p_en"},
+    {"spec": "jieba==0.42.1", "module": "jieba"},
+    {"spec": "json5==0.10.0", "module": "json5"},
+    {"spec": "safetensors==0.5.2", "module": "safetensors"},
 )
 
 dependencies_ready = False
@@ -52,18 +53,68 @@ def _module_name_from_spec(spec: str) -> str:
     return base
 
 
-def ensure_package(package_name: str, import_name: Optional[str] = None):
-    module_name = import_name or _module_name_from_spec(package_name)
+def _parse_version(value: str) -> Tuple[int, ...]:
+    parts: list[int] = []
+    for token in value.replace("-", ".").split("."):
+        if token.isdigit():
+            parts.append(int(token))
+        else:
+            digits = "".join(ch for ch in token if ch.isdigit())
+            if digits:
+                parts.append(int(digits))
+    return tuple(parts)
+
+
+def _validate_transformers(module: Any) -> bool:
     try:
-        importlib.import_module(module_name)
+        version_str = importlib_metadata.version("transformers")
+    except importlib_metadata.PackageNotFoundError:
+        return False
+    if _parse_version(version_str) < _parse_version("4.52.1"):
+        return False
+    try:
+        cache_utils = importlib.import_module("transformers.cache_utils")
     except ImportError:
-        if package_name == INDEXTTS_MODULE_NAME:
+        return False
+    return hasattr(cache_utils, "QuantizedCacheConfig")
+
+
+PACKAGE_VALIDATORS: dict[str, Callable[[Any], bool]] = {
+    "transformers": _validate_transformers,
+}
+
+
+def _install_package(package_spec: str, module_name: str):
+    emit("log", level="info", message=f"Installing dependency: {package_spec}")
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", package_spec]
+    )
+    # Purge old module cache so the new version is imported.
+    to_delete = [name for name in sys.modules if name == module_name or name.startswith(f"{module_name}.")]
+    for name in to_delete:
+        sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+
+
+def ensure_package(
+    package_spec: str, import_name: Optional[str] = None, validator: Optional[Callable[[Any], bool]] = None
+):
+    module_name = import_name or _module_name_from_spec(package_spec)
+    validator = validator or PACKAGE_VALIDATORS.get(module_name)
+    try:
+        module = importlib.import_module(module_name)
+        if validator and validator(module):
+            return
+        if validator and not validator(module):
+            raise ImportError(f"Validator failed for {module_name}")
+    except ImportError:
+        if package_spec == INDEXTTS_MODULE_NAME:
             install_indextts_module()
         else:
-            emit("log", level="info", message=f"Installing missing package: {package_name}")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-        importlib.invalidate_caches()
-        importlib.import_module(module_name)
+            _install_package(package_spec, module_name)
+        module = importlib.import_module(module_name)
+        if validator and not validator(module):
+            raise RuntimeError(f"Dependency {module_name} failed validation after installation")
 
 
 def install_indextts_module():
@@ -135,8 +186,8 @@ def ensure_runtime_dependencies():
     global dependencies_ready
     if dependencies_ready:
         return
-    for package_name, import_name in ADDITIONAL_DEPENDENCIES:
-        ensure_package(package_name, import_name)
+    for dep in ADDITIONAL_DEPENDENCIES:
+        ensure_package(dep["spec"], dep.get("module"))
     dependencies_ready = True
 
 
