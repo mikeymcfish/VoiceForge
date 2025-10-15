@@ -15,9 +15,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional, Tuple
 
-DEFAULT_INDEXTTS_REPO_ZIP = (
-    "https://github.com/Ksuriuri/index-tts-vllm/archive/refs/heads/master.zip"
-)
+DEFAULT_INDEXTTS_REPO_ZIP = "https://github.com/index-tts/index-tts/archive/refs/heads/main.zip"
 INDEXTTS_MODULE_NAME = "indextts"
 
 
@@ -52,10 +50,13 @@ def install_indextts_module():
     module_parent = cache_root / "python"
     module_dir = module_parent / INDEXTTS_MODULE_NAME
 
-    if module_dir.exists() and (module_dir / "__init__.py").exists():
-        if str(module_parent) not in sys.path:
-            sys.path.insert(0, str(module_parent))
-        return
+    if module_dir.exists():
+        if (module_dir / "__init__.py").exists() and (module_dir / "infer_v2.py").exists():
+            if str(module_parent) not in sys.path:
+                sys.path.insert(0, str(module_parent))
+            return
+        # stale/incomplete install; refresh
+        shutil.rmtree(module_dir)
 
     module_parent.mkdir(parents=True, exist_ok=True)
 
@@ -76,7 +77,11 @@ def install_indextts_module():
         with zipfile.ZipFile(zip_path) as archive:
             archive.extractall(tmp_path)
 
-        repo_root = next(tmp_path.glob("*index-tts*"), None)
+        repo_root: Optional[Path] = None
+        for candidate in tmp_path.iterdir():
+            if candidate.is_dir() and (candidate / INDEXTTS_MODULE_NAME).exists():
+                repo_root = candidate
+                break
         if not repo_root:
             raise RuntimeError("Failed to locate IndexTTS repository root in downloaded archive")
 
@@ -128,6 +133,7 @@ def prepare_environment(models_dir: str):
     cache_dir = os.path.join(models_dir, "hf_cache")
     os.environ.setdefault("HF_HUB_CACHE", cache_dir)
     os.environ.setdefault("HF_HOME", cache_dir)
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 
 
 def handle_download(args):

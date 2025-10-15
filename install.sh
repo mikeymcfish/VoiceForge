@@ -30,6 +30,10 @@ apt-get install -y --no-install-recommends \
   ca-certificates curl git gnupg python3 python3-pip python3-venv build-essential openssl
 rm -rf /var/lib/apt/lists/*
 
+log "Installing Python utilities..."
+python3 -m pip install --upgrade pip >/dev/null
+python3 -m pip install --no-cache-dir hf_transfer >/dev/null
+
 # Install Node.js ${NODE_MAJOR}.x if missing or too old.
 need_node=true
 if have node; then
