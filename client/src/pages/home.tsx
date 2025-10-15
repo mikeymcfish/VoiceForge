@@ -35,6 +35,7 @@ export default function Home() {
     removeUrls: true,
     removeFootnotes: true,
     addPunctuation: true,
+    fixHyphenation: false,
   });
 
   const [speakerConfig, setSpeakerConfig] = useState<SpeakerConfig>({
@@ -44,6 +45,7 @@ export default function Home() {
     extractCharacters: false,
     sampleSize: 50,
     includeNarrator: false,
+    narratorAttribution: "remove",
     characterMapping: [],
   });
 
@@ -543,4 +545,3 @@ export default function Home() {
     </div>
   );
 }
-
