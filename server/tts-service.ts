@@ -66,8 +66,23 @@ class IndexTtsService extends EventEmitter {
     this.rootDir = rootDir || path.join(process.cwd(), "attached_assets", "index-tts");
     this.modelsDir = path.join(this.rootDir, "models");
     this.jobsDir = path.join(this.rootDir, "jobs");
-    this.workerScript = path.join(__dirname, "python", "index_tts_worker.py");
+    this.workerScript = this.resolveWorkerScript();
     this.ensureBaseDirs();
+  }
+
+  private resolveWorkerScript(): string {
+    const distWorker = path.join(__dirname, "python", "index_tts_worker.py");
+    const srcWorker = path.join(__dirname, "..", "server", "python", "index_tts_worker.py");
+
+    if (fs.existsSync(distWorker)) {
+      return distWorker;
+    }
+
+    if (fs.existsSync(srcWorker)) {
+      return srcWorker;
+    }
+
+    throw new Error("Index TTS worker script not found. Expected at 'server/python/index_tts_worker.py'.");
   }
 
   private ensureBaseDirs() {
