@@ -170,3 +170,57 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export type WSMessage = z.infer<typeof wsMessageSchema>;
+
+// IndexTTS integration schemas
+export const ttsDownloadStatusSchema = z.enum(["idle", "in-progress", "completed", "failed"]);
+export type TtsDownloadStatus = z.infer<typeof ttsDownloadStatusSchema>;
+
+export const ttsJobStatusSchema = z.object({
+  id: z.string(),
+  status: z.enum(["queued", "running", "completed", "failed"]),
+  progress: z.number().min(0).max(100),
+  message: z.string().optional(),
+  steps: z.number().optional(),
+  outputFile: z.string().optional(),
+  voiceFileName: z.string().optional(),
+  textFileName: z.string().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  error: z.string().optional(),
+});
+
+export type TtsJobStatus = z.infer<typeof ttsJobStatusSchema>;
+
+export const ttsStatusSchema = z.object({
+  downloadStatus: ttsDownloadStatusSchema,
+  loadStatus: ttsDownloadStatusSchema,
+  modelsReady: z.boolean(),
+  modelsPath: z.string(),
+  lastDownloadError: z.string().optional(),
+  lastLoadError: z.string().optional(),
+  jobs: z.array(ttsJobStatusSchema),
+});
+
+export type TtsStatus = z.infer<typeof ttsStatusSchema>;
+
+export const ttsWsMessageSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("status"),
+    payload: ttsStatusSchema,
+  }),
+  z.object({
+    type: z.literal("job"),
+    payload: ttsJobStatusSchema,
+  }),
+  z.object({
+    type: z.literal("log"),
+    payload: z.object({
+      id: z.string(),
+      level: z.enum(["info", "warn", "error"]),
+      message: z.string(),
+      timestamp: z.number(),
+    }),
+  }),
+]);
+
+export type TtsWsMessage = z.infer<typeof ttsWsMessageSchema>;
