@@ -159,6 +159,7 @@ def handle_download(args):
 
 def init_model(models_dir: str):
     ensure_package("indextts")
+    ensure_package("librosa")
     import indextts.infer_v2 as infer_v2
 
     prepare_environment(models_dir)
