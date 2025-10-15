@@ -4,11 +4,21 @@ import importlib
 import inspect
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
 import traceback
+import tempfile
+import urllib.request
+import zipfile
+from pathlib import Path
 from typing import Optional, Tuple
+
+DEFAULT_INDEXTTS_REPO_ZIP = (
+    "https://github.com/Ksuriuri/index-tts-vllm/archive/refs/heads/master.zip"
+)
+INDEXTTS_MODULE_NAME = "indextts"
 
 
 def emit(event: str, **payload):
@@ -22,8 +32,71 @@ def ensure_package(package_name: str, import_name: Optional[str] = None):
     try:
         importlib.import_module(module_name)
     except ImportError:
-        emit("log", level="info", message=f"Installing missing package: {package_name}")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        if package_name == INDEXTTS_MODULE_NAME:
+            install_indextts_module()
+        else:
+            emit("log", level="info", message=f"Installing missing package: {package_name}")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        importlib.invalidate_caches()
+        importlib.import_module(module_name)
+
+
+def install_indextts_module():
+    """
+    Install the IndexTTS python module by downloading a published source tree.
+    The upstream project does not provide a pip-distributable package, so we fetch
+    the repo archive and place the `indextts` package inside a cache directory.
+    """
+
+    cache_root = Path(os.environ.get("INDEX_TTS_ROOT", Path.home() / ".cache" / "index_tts"))
+    module_parent = cache_root / "python"
+    module_dir = module_parent / INDEXTTS_MODULE_NAME
+
+    if module_dir.exists() and (module_dir / "__init__.py").exists():
+        if str(module_parent) not in sys.path:
+            sys.path.insert(0, str(module_parent))
+        return
+
+    module_parent.mkdir(parents=True, exist_ok=True)
+
+    repo_zip_url = os.environ.get("INDEX_TTS_PY_MODULE_ZIP_URL", DEFAULT_INDEXTTS_REPO_ZIP)
+    emit(
+        "log",
+        level="info",
+        message="Fetching IndexTTS python sources (first-time setup, may take a minute)…",
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        zip_path = tmp_path / "indextts.zip"
+
+        with urllib.request.urlopen(repo_zip_url) as response:
+            zip_path.write_bytes(response.read())
+
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.extractall(tmp_path)
+
+        repo_root = next(tmp_path.glob("*index-tts*"), None)
+        if not repo_root:
+            raise RuntimeError("Failed to locate IndexTTS repository root in downloaded archive")
+
+        src_module = repo_root / INDEXTTS_MODULE_NAME
+        if not src_module.exists():
+            raise RuntimeError(
+                f"Archive does not contain '{INDEXTTS_MODULE_NAME}' module; "
+                "check INDEX_TTS_PY_MODULE_ZIP_URL"
+            )
+
+        if module_dir.exists():
+            shutil.rmtree(module_dir)
+
+        shutil.copytree(src_module, module_dir, dirs_exist_ok=True)
+
+    # Ensure the package is importable on subsequent runs.
+    if str(module_parent) not in sys.path:
+        sys.path.insert(0, str(module_parent))
+
+    emit("log", level="info", message="IndexTTS python module installed")
 
 
 def find_config(models_dir: str) -> Tuple[str, str]:
