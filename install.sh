@@ -33,7 +33,7 @@ NODE_MAJOR="${NODE_MAJOR:-20}"
 log "Installing base OS deps..."
 apt-get update -y
 apt-get install -y --no-install-recommends \
-  ca-certificates curl git gnupg python3 python3-pip python3-venv build-essential openssl
+  ca-certificates curl git gnupg python3 python3-pip python3-venv build-essential openssl ffmpeg
 rm -rf /var/lib/apt/lists/*
 
 log "Installing Python utilities..."

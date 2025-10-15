@@ -20,7 +20,7 @@ DEFAULT_INDEXTTS_REPO_ZIP = "https://github.com/index-tts/index-tts/archive/refs
 INDEXTTS_MODULE_NAME = "indextts"
 ADDITIONAL_DEPENDENCIES = (
     {"spec": "accelerate==1.8.1", "module": "accelerate"},
-    {"spec": "descript-audiotools==0.7.2", "module": "descript_audio_tools"},
+    {"spec": "descript-audiotools==0.7.2", "module": "audiotools"},
     {"spec": "transformers==4.52.1", "module": "transformers"},
     {"spec": "tokenizers==0.21.0", "module": "tokenizers"},
     {"spec": "cn2an==0.5.22", "module": "cn2an"},
