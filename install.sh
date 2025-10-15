@@ -16,6 +16,12 @@ set -euo pipefail
 
 log() { echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+trim() {
+  local var="$1"
+  var="${var#"${var%%[![:space:]]*}"}"
+  var="${var%"${var##*[![:space:]]}"}"
+  printf '%s' "$var"
+}
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -72,6 +78,14 @@ else
 fi
 
 # Generate SESSION_SECRET if missing.
+if [[ -z "${SESSION_SECRET:-}" && -f "env.txt" ]]; then
+  SESSION_SECRET_FROM_ENV="$(grep -E '^SESSION_SECRET=' env.txt | tail -n 1 | cut -d'=' -f2- || true)"
+  if [[ -n "${SESSION_SECRET_FROM_ENV:-}" ]]; then
+    SESSION_SECRET="${SESSION_SECRET_FROM_ENV}"
+    log "Using SESSION_SECRET from env.txt"
+  fi
+fi
+
 if [[ -z "${SESSION_SECRET:-}" ]]; then
   if have python3; then
     SESSION_SECRET="$(python3 - <<'PY'
@@ -87,15 +101,41 @@ fi
 
 # Write .env (include PORT and NODE_ENV for consistency).
 ENV_FILE=".env"
-log "Writing ${ENV_FILE}..."
+log "Preparing ${ENV_FILE}..."
+declare -A env_values=(
+  ["SESSION_SECRET"]="${SESSION_SECRET}"
+  ["NODE_ENV"]="production"
+  ["PORT"]="${PORT}"
+)
+[[ -n "${HUGGINGFACE_API_TOKEN:-}" ]] && env_values["HUGGINGFACE_API_TOKEN"]="${HUGGINGFACE_API_TOKEN}"
+[[ -n "${OLLAMA_BASE_URL:-}" ]] && env_values["OLLAMA_BASE_URL"]="${OLLAMA_BASE_URL}"
+[[ -n "${INDEX_TTS_REPO:-}" ]] && env_values["INDEX_TTS_REPO"]="${INDEX_TTS_REPO}"
+[[ -n "${INDEX_TTS_PYTHON:-}" ]] && env_values["INDEX_TTS_PYTHON"]="${INDEX_TTS_PYTHON}"
+
+if [[ -f "env.txt" ]]; then
+  log "Found env.txt; merging values into ${ENV_FILE}"
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    if [[ "${line}" == export\ * ]]; then
+      line="${line#export }"
+    fi
+    [[ "${line}" != *=* ]] && continue
+    key="${line%%=*}"
+    value="${line#${key}=}"
+    key="$(trim "${key}")"
+    value="$(trim "${value}")"
+    [[ -z "${key}" ]] && continue
+    if [[ -z "${env_values[$key]:-}" ]]; then
+      env_values["$key"]="${value}"
+    fi
+  done < env.txt
+fi
+
 {
-  echo "SESSION_SECRET=${SESSION_SECRET}"
-  echo "NODE_ENV=production"
-  echo "PORT=${PORT}"
-  [[ -n "${HUGGINGFACE_API_TOKEN:-}" ]] && echo "HUGGINGFACE_API_TOKEN=${HUGGINGFACE_API_TOKEN}"
-  [[ -n "${OLLAMA_BASE_URL:-}" ]] && echo "OLLAMA_BASE_URL=${OLLAMA_BASE_URL}"
-  [[ -n "${INDEX_TTS_REPO:-}" ]] && echo "INDEX_TTS_REPO=${INDEX_TTS_REPO}"
-  [[ -n "${INDEX_TTS_PYTHON:-}" ]] && echo "INDEX_TTS_PYTHON=${INDEX_TTS_PYTHON}"
+  for key in "${!env_values[@]}"; do
+    printf '%s=%s\n' "$key" "${env_values[$key]}"
+  done | sort
 } > "${ENV_FILE}"
 
 log "Building production assets..."

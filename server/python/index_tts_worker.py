@@ -17,6 +17,22 @@ from typing import Optional, Tuple
 
 DEFAULT_INDEXTTS_REPO_ZIP = "https://github.com/index-tts/index-tts/archive/refs/heads/main.zip"
 INDEXTTS_MODULE_NAME = "indextts"
+ADDITIONAL_DEPENDENCIES = (
+    ("librosa", None),
+    ("omegaconf", None),
+    ("transformers", None),
+    ("accelerate", None),
+    ("sentencepiece", None),
+    ("tokenizers", None),
+    ("textstat", None),
+    ("cn2an", None),
+    ("g2p_en", None),
+    ("jieba", None),
+    ("json5", None),
+    ("safetensors", None),
+)
+
+dependencies_ready = False
 
 
 def emit(event: str, **payload):
@@ -104,6 +120,15 @@ def install_indextts_module():
     emit("log", level="info", message="IndexTTS python module installed")
 
 
+def ensure_runtime_dependencies():
+    global dependencies_ready
+    if dependencies_ready:
+        return
+    for package_name, import_name in ADDITIONAL_DEPENDENCIES:
+        ensure_package(package_name, import_name)
+    dependencies_ready = True
+
+
 def find_config(models_dir: str) -> Tuple[str, str]:
     for root, _dirs, files in os.walk(models_dir):
         if "config.yaml" in files:
@@ -159,7 +184,7 @@ def handle_download(args):
 
 def init_model(models_dir: str):
     ensure_package("indextts")
-    ensure_package("librosa")
+    ensure_runtime_dependencies()
     import indextts.infer_v2 as infer_v2
 
     prepare_environment(models_dir)
