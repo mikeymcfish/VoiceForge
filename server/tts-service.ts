@@ -92,13 +92,13 @@ class IndexTtsService extends EventEmitter {
   }
 
   private broadcast(message: TtsWsMessage) {
-    for (const subscriber of this.subscribers) {
+    this.subscribers.forEach((subscriber) => {
       try {
         subscriber(message);
       } catch (err) {
         console.error("TTS subscriber error:", err);
       }
-    }
+    });
   }
 
   public subscribe(listener: (message: TtsWsMessage) => void): () => void {
