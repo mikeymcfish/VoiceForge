@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { FileUpload } from "@/components/file-upload";
 import { CleaningOptionsPanel } from "@/components/cleaning-options";
 import { SpeakerConfigPanel } from "@/components/speaker-config";
@@ -19,6 +19,17 @@ import type {
   FileUploadResponse,
 } from "@shared/schema";
 
+const ensureFixHyphenation = (options: CleaningOptions): CleaningOptions => ({
+  ...options,
+  fixHyphenation: options.fixHyphenation ?? false,
+});
+
+const ensureNarratorDefaults = (config: SpeakerConfig): SpeakerConfig => ({
+  ...config,
+  narratorAttribution: config.narratorAttribution ?? "remove",
+  characterMapping: config.characterMapping ?? [],
+});
+
 export default function Home() {
   const { toast } = useToast();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -28,26 +39,50 @@ export default function Home() {
   } | null>(null);
   const [originalText, setOriginalText] = useState("");
   
-  const [cleaningOptions, setCleaningOptions] = useState<CleaningOptions>({
-    replaceSmartQuotes: true,
-    fixOcrErrors: true,
-    correctSpelling: false,
-    removeUrls: true,
-    removeFootnotes: true,
-    addPunctuation: true,
-    fixHyphenation: false,
-  });
+  const [cleaningOptions, setCleaningOptions] = useState<CleaningOptions>(() =>
+    ensureFixHyphenation({
+      replaceSmartQuotes: true,
+      fixOcrErrors: true,
+      correctSpelling: false,
+      removeUrls: true,
+      removeFootnotes: true,
+      addPunctuation: true,
+      fixHyphenation: false,
+    })
+  );
 
-  const [speakerConfig, setSpeakerConfig] = useState<SpeakerConfig>({
-    mode: "format",
-    speakerCount: 2,
-    labelFormat: "speaker",
-    extractCharacters: false,
-    sampleSize: 50,
-    includeNarrator: false,
-    narratorAttribution: "remove",
-    characterMapping: [],
-  });
+  const updateCleaningOptions = useCallback(
+    (updater: CleaningOptions | ((prev: CleaningOptions) => CleaningOptions)) => {
+      setCleaningOptions((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        return ensureFixHyphenation(next);
+      });
+    },
+    []
+  );
+
+  const [speakerConfig, setSpeakerConfig] = useState<SpeakerConfig>(() =>
+    ensureNarratorDefaults({
+      mode: "format",
+      speakerCount: 2,
+      labelFormat: "speaker",
+      extractCharacters: false,
+      sampleSize: 50,
+      includeNarrator: false,
+      narratorAttribution: "remove",
+      characterMapping: [],
+    })
+  );
+
+  const updateSpeakerConfig = useCallback(
+    (updater: SpeakerConfig | ((prev: SpeakerConfig) => SpeakerConfig)) => {
+      setSpeakerConfig((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        return ensureNarratorDefaults(next);
+      });
+    },
+    []
+  );
 
   const [batchSize, setBatchSize] = useState(10);
   const [modelSource, setModelSource] = useState<"api" | "ollama">("api");
@@ -423,13 +458,13 @@ export default function Home() {
 
             <CleaningOptionsPanel
               options={cleaningOptions}
-              onChange={setCleaningOptions}
+              onChange={updateCleaningOptions}
               disabled={isProcessing}
             />
 
             <SpeakerConfigPanel
               config={speakerConfig}
-              onChange={setSpeakerConfig}
+              onChange={updateSpeakerConfig}
               disabled={isProcessing}
             />
 
@@ -438,31 +473,33 @@ export default function Home() {
                 text={originalText}
                 modelSource={modelSource}
                 modelName={modelName}
-                
                 ollamaModelName={ollamaModelName}
                 characterMapping={speakerConfig.characterMapping}
                 sampleSize={speakerConfig.sampleSize}
                 includeNarrator={speakerConfig.includeNarrator}
-                onSampleSizeChange={(size) =>
-                  setSpeakerConfig((prev) => ({ ...prev, sampleSize: size }))
-                }
-                onIncludeNarratorChange={(include) =>
-                  setSpeakerConfig((prev) => ({ ...prev, includeNarrator: include }))
-                }
-                onCharactersExtracted={(characters) => {
-                  setSpeakerConfig((prev) => ({ ...prev, characterMapping: characters }));
-                  addLog(
-                    "success",
-                    `Characters extracted: ${characters.length} character(s)`,
-                    characters.map(c => `${c.name} = Speaker ${c.speakerNumber}`).join(", ")
-                  );
-                }}
-                onNarratorCharacterNameChange={(name) => {
-                  setSpeakerConfig((prev) => ({ ...prev, narratorCharacterName: name || undefined }));
-                  if (name) {
-                    addLog("info", `Narrator identified as: ${name}`);
+                  onSampleSizeChange={(size) =>
+                    updateSpeakerConfig((prev) => ({ ...prev, sampleSize: size }))
                   }
-                }}
+                  onIncludeNarratorChange={(include) =>
+                    updateSpeakerConfig((prev) => ({ ...prev, includeNarrator: include }))
+                  }
+                  onCharactersExtracted={(characters) => {
+                    updateSpeakerConfig((prev) => ({ ...prev, characterMapping: characters }));
+                    addLog(
+                      "success",
+                      `Characters extracted: ${characters.length} character(s)`,
+                      characters.map(c => `${c.name} = Speaker ${c.speakerNumber}`).join(", ")
+                    );
+                  }}
+                  onNarratorCharacterNameChange={(name) => {
+                    updateSpeakerConfig((prev) => ({
+                      ...prev,
+                      narratorCharacterName: name || undefined,
+                    }));
+                    if (name) {
+                      addLog("info", `Narrator identified as: ${name}`);
+                    }
+                  }}
                 disabled={isProcessing}
               />
             )}
