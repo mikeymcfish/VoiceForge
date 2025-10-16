@@ -77,12 +77,24 @@ install_tts_requirements() {
   python3 - <<'PY'
 import sys
 import traceback
+import subprocess
 
 try:
     from server.python import index_tts_worker as worker
     for spec in ("indextts", "huggingface_hub", "modelscope", "soundfile", "torch"):
         worker.ensure_package(spec)
     worker.ensure_runtime_dependencies()
+except ModuleNotFoundError as exc:
+    if exc.name == "tensorflow":
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", "tensorflow==2.17.0"])
+        except subprocess.CalledProcessError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", "tensorflow"])
+        worker.ensure_package("keras==2.13.1", "keras")
+        worker.ensure_runtime_dependencies()
+    else:
+        traceback.print_exc()
+        sys.exit(1)
 except Exception:
     traceback.print_exc()
     sys.exit(1)

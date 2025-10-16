@@ -8,10 +8,11 @@ import { textProcessor } from "./text-processor";
 import { llmService, setHuggingFaceApiToken, getHuggingFaceApiToken } from "./llm-service";
 import { nanoid } from "nanoid";
 import type { ProcessingConfig, LogEntry, WSMessage, HuggingFaceTokenStatus } from "@shared/schema";
-import { huggingFaceTokenUpdateSchema } from "@shared/schema";
+import { huggingFaceTokenUpdateSchema, deterministicCleanRequestSchema } from "@shared/schema";
 import { indexTtsService } from "./tts-service";
 import fs from "fs";
 import path from "path";
+import { applyDeterministicCleaning } from "./text-cleaner";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -163,6 +164,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Failed to update HuggingFace token:", error);
       res.status(500).json({
         error: "Failed to update HuggingFace token",
+      });
+    }
+  });
+
+  app.post("/api/text/clean", (req, res) => {
+    const parsed = deterministicCleanRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+
+    try {
+      const { text, options } = parsed.data;
+      const pre = applyDeterministicCleaning(text, options, "pre");
+      const post = applyDeterministicCleaning(pre.text, options, "post");
+      const appliedSteps = Array.from(new Set([...pre.applied, ...post.applied]));
+      res.json({
+        cleanedText: post.text,
+        appliedSteps,
+      });
+    } catch (error) {
+      console.error("Deterministic cleaning failed:", error);
+      res.status(500).json({
+        error: "Failed to clean text",
+        details: error instanceof Error ? error.message : undefined,
       });
     }
   });

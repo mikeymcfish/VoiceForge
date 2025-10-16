@@ -110,6 +110,21 @@ export const processTextRequestSchema = z.object({
 
 export type ProcessTextRequest = z.infer<typeof processTextRequestSchema>;
 
+// Deterministic text cleaning (no LLM)
+export const deterministicCleanRequestSchema = z.object({
+  text: z.string(),
+  options: cleaningOptionsSchema,
+});
+
+export type DeterministicCleanRequest = z.infer<typeof deterministicCleanRequestSchema>;
+
+export const deterministicCleanResponseSchema = z.object({
+  cleanedText: z.string(),
+  appliedSteps: z.array(z.string()).default([]),
+});
+
+export type DeterministicCleanResponse = z.infer<typeof deterministicCleanResponseSchema>;
+
 // Processing Response (chunk result)
 export const processChunkResponseSchema = z.object({
   chunkIndex: z.number(),
