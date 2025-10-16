@@ -2,6 +2,7 @@ import { HfInference } from "@huggingface/inference";
 import type { CleaningOptions, SpeakerConfig, ModelSource } from "@shared/schema";
 import fs from "fs";
 import path from "path";
+import { applyDeterministicCleaning } from "./text-cleaner";
 
 // Check if HuggingFace API token is available
 let apiToken: string | undefined =
@@ -672,32 +673,38 @@ IMPORTANT:
 
   async processChunk(options: ProcessChunkOptions): Promise<{ text: string; usage: InferenceUsage }> {
     const { text, cleaningOptions, speakerConfig, customInstructions } = options;
+    const deterministic = applyDeterministicCleaning(text, cleaningOptions, "pre");
+    const cleanedInput = deterministic.text;
 
     // Stage 1: Text cleaning
-    let processedText = '';
+    let processedText = cleanedInput;
     let totalInTokens = 0, totalOutTokens = 0, totalInCost = 0, totalOutCost = 0;
     if (speakerConfig && speakerConfig.mode !== "none" && options.singlePass) {
       if (DEBUG_ENABLED) {
         console.debug('[LLM DEBUG] Single-pass processing enabled');
       }
-      const singlePrompt = this.buildSinglePassPrompt(text, cleaningOptions, speakerConfig, customInstructions, options.extendedExamples);
+      const singlePrompt = this.buildSinglePassPrompt(cleanedInput, cleaningOptions, speakerConfig, customInstructions, options.extendedExamples);
       const r = await this.runInference(singlePrompt, options);
-      processedText = r.text;
+      if (r.text) {
+        processedText = r.text;
+      }
       totalInTokens += r.usage.inputTokens; totalOutTokens += r.usage.outputTokens;
       totalInCost += r.usage.inputCost; totalOutCost += r.usage.outputCost;
     } else {
       const useConcise = options.concisePrompts !== false;
       const cleaningPrompt = useConcise
-        ? this.buildCleaningPromptConcise(text, cleaningOptions, customInstructions)
-        : this.buildCleaningPrompt(text, cleaningOptions, customInstructions);
+        ? this.buildCleaningPromptConcise(cleanedInput, cleaningOptions, customInstructions)
+        : this.buildCleaningPrompt(cleanedInput, cleaningOptions, customInstructions);
       const r1 = await this.runInference(cleaningPrompt, options);
-      processedText = r1.text;
+      if (r1.text) {
+        processedText = r1.text;
+      }
       totalInTokens += r1.usage.inputTokens; totalOutTokens += r1.usage.outputTokens;
       totalInCost += r1.usage.inputCost; totalOutCost += r1.usage.outputCost;
     }
 
     if (!processedText) {
-      processedText = text;
+      processedText = cleanedInput;
     }
 
     // Stage 2: Speaker formatting (if configured and mode is not "none")
@@ -713,8 +720,9 @@ IMPORTANT:
       }
     }
 
+    const finalPass = applyDeterministicCleaning(processedText, cleaningOptions, "post");
     return {
-      text: processedText.trim(),
+      text: finalPass.text,
       usage: {
         inputTokens: totalInTokens,
         outputTokens: totalOutTokens,

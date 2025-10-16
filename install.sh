@@ -2,7 +2,7 @@
 # One-shot VoiceForge setup for a fresh RunPod (PyTorch) image.
 # Env vars you can set before running:
 #   REPO_URL=https://github.com/mikeymcfish/VoiceForge.git
-#   APP_DIR=$HOME/VoiceForge
+#   APP_DIR=$HOME/VoiceForge          # defaults to this script's directory
 #   PORT=5000
 #   NODE_MAJOR=20
 #   SESSION_SECRET=...           # auto-generated if absent
@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
+
 log() { echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 trim() {
@@ -22,11 +26,83 @@ trim() {
   var="${var%"${var##*[![:space:]]}"}"
   printf '%s' "$var"
 }
+prompt_yes_no() {
+  local prompt="$1"
+  local default="${2:-}"
+  local answer
+  if [ ! -t 0 ]; then
+    case "${default}" in
+      [Yy]) return 0 ;;
+      [Nn]) return 1 ;;
+      *) return 1 ;;
+    esac
+  fi
+  while true; do
+    if [[ "${default}" =~ ^[Yy]$ ]]; then
+      if ! read -r -p "${prompt} [Y/n] " answer; then
+        answer="${default}"
+      fi
+      answer="${answer:-$default}"
+    elif [[ "${default}" =~ ^[Nn]$ ]]; then
+      if ! read -r -p "${prompt} [y/N] " answer; then
+        answer="${default}"
+      fi
+      answer="${answer:-$default}"
+    else
+      if ! read -r -p "${prompt} [y/n] " answer; then
+        return 1
+      fi
+    fi
+    case "${answer}" in
+      [Yy]*) return 0 ;;
+      [Nn]*) return 1 ;;
+    esac
+    echo "Please answer yes or no."
+  done
+}
+is_truthy() {
+  local value="${1:-}"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    1|y|yes|true|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+install_tts_requirements() {
+  if ! have python3; then
+    log "Python 3 not found; skipping IndexTTS dependency installation."
+    return 0
+  fi
+  log "Installing IndexTTS python dependencies..."
+  python3 - <<'PY'
+import sys
+import traceback
+
+try:
+    from server.python import index_tts_worker as worker
+    for spec in ("indextts", "huggingface_hub", "modelscope", "soundfile", "torch"):
+        worker.ensure_package(spec)
+    worker.ensure_runtime_dependencies()
+except Exception:
+    traceback.print_exc()
+    sys.exit(1)
+PY
+  log "IndexTTS dependencies installed."
+}
+install_ollama() {
+  if have ollama; then
+    log "Ollama already installed; skipping."
+    return 0
+  fi
+  log "Installing Ollama..."
+  curl -fsSL https://ollama.com/install.sh | sh
+  log "Ollama installation finished."
+}
 
 export DEBIAN_FRONTEND=noninteractive
 
 REPO_URL="${REPO_URL:-https://github.com/mikeymcfish/VoiceForge.git}"
-APP_DIR="${APP_DIR:-$HOME/VoiceForge}"
+APP_DIR="${APP_DIR:-$SCRIPT_DIR}"
 PORT="${PORT:-5000}"
 NODE_MAJOR="${NODE_MAJOR:-20}"
 
@@ -57,15 +133,28 @@ if [ "$need_node" = true ]; then
   log "Node installed: $(node -v); npm $(npm -v)"
 fi
 
-# Fetch code (idempotent): pull if exists, else clone.
+# Fetch code (idempotent): pull if exists, else bootstrap into APP_DIR.
 if [ -d "${APP_DIR}/.git" ]; then
   log "Repo exists at ${APP_DIR}; pulling latest..."
   git -C "${APP_DIR}" fetch --all --prune
   git -C "${APP_DIR}" reset --hard origin/HEAD || true
   git -C "${APP_DIR}" pull --ff-only || true
 else
-  log "Cloning ${REPO_URL} into ${APP_DIR}..."
-  git clone "${REPO_URL}" "${APP_DIR}"
+  mkdir -p "${APP_DIR}"
+  log "Bootstrapping ${REPO_URL} into ${APP_DIR}..."
+  if [[ -z "$(find "${APP_DIR}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    git clone "${REPO_URL}" "${APP_DIR}"
+  else
+    tmp_clone_root="$(mktemp -d)"
+    git clone "${REPO_URL}" "${tmp_clone_root}/repo"
+    if [[ "${SCRIPT_PATH}" == "${APP_DIR}/"* ]]; then
+      find "${APP_DIR}" -mindepth 1 -maxdepth 1 ! -path "${SCRIPT_PATH}" -exec rm -rf {} +
+    else
+      find "${APP_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    fi
+    cp -a "${tmp_clone_root}/repo/." "${APP_DIR}/"
+    rm -rf "${tmp_clone_root}"
+  fi
 fi
 
 cd "${APP_DIR}"
@@ -75,6 +164,28 @@ if [ -f package-lock.json ]; then
   npm ci || { log "npm ci failed; falling back to npm install"; npm install; }
 else
   npm install
+fi
+
+if [[ -z "${INSTALL_TTS_REQUIREMENTS:-}" ]]; then
+  if prompt_yes_no "Install IndexTTS Python dependencies now?" "n"; then
+    INSTALL_TTS_REQUIREMENTS="yes"
+  else
+    INSTALL_TTS_REQUIREMENTS="no"
+  fi
+fi
+if is_truthy "${INSTALL_TTS_REQUIREMENTS:-}"; then
+  install_tts_requirements
+fi
+
+if [[ -z "${INSTALL_OLLAMA:-}" ]]; then
+  if prompt_yes_no "Install Ollama on this machine?" "n"; then
+    INSTALL_OLLAMA="yes"
+  else
+    INSTALL_OLLAMA="no"
+  fi
+fi
+if is_truthy "${INSTALL_OLLAMA:-}"; then
+  install_ollama
 fi
 
 # Generate SESSION_SECRET if missing.
@@ -88,11 +199,7 @@ fi
 
 if [[ -z "${SESSION_SECRET:-}" ]]; then
   if have python3; then
-    SESSION_SECRET="$(python3 - <<'PY'
-import secrets
-print(secrets.token_hex(32))
-PY
-)"
+    SESSION_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
   else
     SESSION_SECRET="$(openssl rand -hex 32)"
   fi
