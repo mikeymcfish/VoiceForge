@@ -14,13 +14,16 @@ import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 DEFAULT_INDEXTTS_REPO_ZIP = "https://github.com/index-tts/index-tts/archive/refs/heads/main.zip"
 INDEXTTS_MODULE_NAME = "indextts"
-ADDITIONAL_DEPENDENCIES = (
+_TORCH_PLACEHOLDER = {"spec": "__TORCH__", "module": "torch"}
+_DEEPSPEED_PLACEHOLDER = {"spec": "__DEEPSPEED__", "module": "deepspeed"}
+
+_BASE_DEPENDENCIES: Tuple[dict[str, Any], ...] = (
     {"spec": "numpy==1.24.3", "module": "numpy"},
-    {"spec": "torch==2.3.1", "module": "torch"},
+    _TORCH_PLACEHOLDER,
     {"spec": "accelerate==1.8.1", "module": "accelerate"},
     {"spec": "descript-audiotools==0.7.2", "module": "audiotools"},
     {"spec": "transformers==4.52.1", "module": "transformers"},
@@ -41,7 +44,7 @@ ADDITIONAL_DEPENDENCIES = (
     {"spec": "tensorboard==2.13.0", "module": "tensorboard"},
     {"spec": "librosa==0.10.2.post1", "module": "librosa"},
     {"spec": "safetensors==0.5.2", "module": "safetensors"},
-    {"spec": "deepspeed==0.17.1", "module": "deepspeed"},
+    _DEEPSPEED_PLACEHOLDER,
     {"spec": "modelscope==1.27.0", "module": "modelscope"},
     {"spec": "omegaconf>=2.3.0", "module": "omegaconf"},
     {"spec": "sentencepiece>=0.2.1", "module": "sentencepiece"},
@@ -51,6 +54,8 @@ ADDITIONAL_DEPENDENCIES = (
     {"spec": "huggingface_hub>=0.25.0", "module": "huggingface_hub"},
     {"spec": "spaces>=0.31.0", "module": "spaces"},
 )
+
+_RESOLVED_DEPENDENCIES: Optional[Tuple[dict[str, Any], ...]] = None
 
 dependencies_ready = False
 
@@ -103,11 +108,96 @@ PACKAGE_VALIDATORS: dict[str, Callable[[Any], bool]] = {
 }
 
 
-def _install_package(package_spec: str, module_name: str):
+def is_truthy(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_additional_dependencies() -> Tuple[dict[str, Any], ...]:
+    global _RESOLVED_DEPENDENCIES
+    if _RESOLVED_DEPENDENCIES is not None:
+        return _RESOLVED_DEPENDENCIES
+
+    use_cuda = is_truthy(os.environ.get("INDEX_TTS_ENABLE_CUDA"))
+    torch_spec = os.environ.get("INDEX_TTS_TORCH_SPEC")
+    torch_index_url = os.environ.get("INDEX_TTS_TORCH_INDEX_URL")
+    torch_extra_indexes: Optional[Tuple[str, ...]] = None
+
+    if use_cuda:
+        torch_spec = torch_spec or "torch==2.3.1"
+        extra_url = os.environ.get("INDEX_TTS_TORCH_EXTRA_INDEX_URL")
+        if extra_url:
+            torch_extra_indexes = (extra_url,)
+        emit(
+            "log",
+            level="info",
+            message=f"Using PyTorch dependency {torch_spec} (CUDA-enabled configuration)",
+        )
+    else:
+        torch_spec = torch_spec or "torch==2.3.1+cpu"
+        torch_index_url = torch_index_url or "https://download.pytorch.org/whl/cpu"
+        extra_url = os.environ.get("INDEX_TTS_TORCH_EXTRA_INDEX_URL", "https://pypi.org/simple")
+        torch_extra_indexes = tuple(filter(None, (extra_url,)))
+        emit(
+            "log",
+            level="info",
+            message=(
+                "Using CPU-only PyTorch build for IndexTTS dependencies; set "
+                "INDEX_TTS_ENABLE_CUDA=1 to install GPU wheels"
+            ),
+        )
+
+    skip_deepspeed = is_truthy(os.environ.get("INDEX_TTS_SKIP_DEEPSPEED", "1"))
+    deepspeed_spec = os.environ.get("INDEX_TTS_DEEPSPEED_SPEC", "deepspeed==0.17.1")
+
+    resolved: list[dict[str, Any]] = []
+    for dep in _BASE_DEPENDENCIES:
+        if dep is _TORCH_PLACEHOLDER:
+            entry = {
+                "spec": torch_spec,
+                "module": dep["module"],
+            }
+            if torch_index_url:
+                entry["index_url"] = torch_index_url
+            if torch_extra_indexes:
+                entry["extra_index_urls"] = torch_extra_indexes
+            resolved.append(entry)
+        elif dep is _DEEPSPEED_PLACEHOLDER:
+            if skip_deepspeed:
+                emit(
+                    "log",
+                    level="info",
+                    message=(
+                        "Skipping optional dependency deepspeed; set INDEX_TTS_SKIP_DEEPSPEED=0 "
+                        "to attempt installation"
+                    ),
+                )
+            else:
+                resolved.append({"spec": deepspeed_spec, "module": dep["module"], "optional": True})
+        else:
+            resolved.append(dict(dep))
+
+    _RESOLVED_DEPENDENCIES = tuple(resolved)
+    return _RESOLVED_DEPENDENCIES
+
+
+def _install_package(
+    package_spec: str,
+    module_name: str,
+    *,
+    index_url: Optional[str] = None,
+    extra_index_urls: Optional[Sequence[str]] = None,
+):
     emit("log", level="info", message=f"Installing dependency: {package_spec}")
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", package_spec]
-    )
+    command = [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", package_spec]
+    if index_url:
+        command.extend(["--index-url", index_url])
+    if extra_index_urls:
+        for url in extra_index_urls:
+            if url:
+                command.extend(["--extra-index-url", url])
+    subprocess.check_call(command)
     # Purge old module cache so the new version is imported.
     to_delete = [name for name in sys.modules if name == module_name or name.startswith(f"{module_name}.")]
     for name in to_delete:
@@ -116,7 +206,13 @@ def _install_package(package_spec: str, module_name: str):
 
 
 def ensure_package(
-    package_spec: str, import_name: Optional[str] = None, validator: Optional[Callable[[Any], bool]] = None
+    package_spec: str,
+    import_name: Optional[str] = None,
+    validator: Optional[Callable[[Any], bool]] = None,
+    *,
+    index_url: Optional[str] = None,
+    extra_index_urls: Optional[Sequence[str]] = None,
+    optional: bool = False,
 ):
     module_name = import_name or _module_name_from_spec(package_spec)
     validator = validator or PACKAGE_VALIDATORS.get(module_name)
@@ -127,10 +223,25 @@ def ensure_package(
         if validator and not validator(module):
             raise ImportError(f"Validator failed for {module_name}")
     except ImportError:
-        if package_spec == INDEXTTS_MODULE_NAME:
-            install_indextts_module()
-        else:
-            _install_package(package_spec, module_name)
+        try:
+            if package_spec == INDEXTTS_MODULE_NAME:
+                install_indextts_module()
+            else:
+                _install_package(
+                    package_spec,
+                    module_name,
+                    index_url=index_url,
+                    extra_index_urls=extra_index_urls,
+                )
+        except subprocess.CalledProcessError as exc:
+            if optional:
+                emit(
+                    "log",
+                    level="warning",
+                    message=f"Optional dependency {package_spec} failed to install: {exc}",
+                )
+                return
+            raise
         module = importlib.import_module(module_name)
         if validator and not validator(module):
             raise RuntimeError(f"Dependency {module_name} failed validation after installation")
@@ -205,8 +316,15 @@ def ensure_runtime_dependencies():
     global dependencies_ready
     if dependencies_ready:
         return
-    for dep in ADDITIONAL_DEPENDENCIES:
-        ensure_package(dep["spec"], dep.get("module"))
+    for dep in _get_additional_dependencies():
+        ensure_package(
+            dep["spec"],
+            dep.get("module"),
+            dep.get("validator"),
+            index_url=dep.get("index_url"),
+            extra_index_urls=dep.get("extra_index_urls"),
+            optional=dep.get("optional", False),
+        )
     dependencies_ready = True
 
 

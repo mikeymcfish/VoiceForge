@@ -56,7 +56,7 @@ A professional text preprocessing application for multi-speaker TTS (text-to-spe
 
 ## 📋 Prerequisites
 
-- Node.js 18+ and npm
+- Node.js 20 LTS (or newer) and npm 10+
 - (Optional) HuggingFace API token for cloud models
 - Storage space for local models (300MB - 800MB per model)
 
@@ -76,6 +76,18 @@ cd tts-text-editor
 ```bash
 npm install
 ```
+
+> [!TIP]
+> The project depends on `@huggingface/transformers`, which in turn tries to download CUDA-enabled binaries for `onnxruntime-node` during installation.
+> If you are not setting up GPU acceleration (the common case), the bundled `.npmrc` file forces npm to skip the CUDA download so the install does not fail on networks that block direct GitHub downloads.
+
+#### Optional IndexTTS backend dependencies
+
+The `install.sh` helper can also bootstrap the optional IndexTTS speech synthesis backend. Those Python packages are large and GPU-focused, so the script now defaults to a CPU-only PyTorch wheel and skips the CUDA-only `deepspeed` dependency.
+
+- Set `INDEX_TTS_ENABLE_CUDA=1` before running the installer if you need the CUDA wheels instead of the CPU build.
+- Set `INDEX_TTS_SKIP_DEEPSPEED=0` to attempt the `deepspeed` install (requires a CUDA toolchain and can take a long time).
+- Advanced users can override the exact wheel URLs with `INDEX_TTS_TORCH_SPEC`, `INDEX_TTS_TORCH_INDEX_URL`, and `INDEX_TTS_TORCH_EXTRA_INDEX_URL`.
 
 ### 3. Configure Environment Variables
 
