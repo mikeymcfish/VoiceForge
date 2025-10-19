@@ -25,7 +25,6 @@ export const cleaningOptionsSchema = z.object({
   removeUrls: z.boolean().default(true),
   removeFootnotes: z.boolean().default(true),
   addPunctuation: z.boolean().default(true),
-  // Merge words split by line breaks/hyphens (PDF/EPUB artifacts)
   fixHyphenation: z.boolean().default(false),
 });
 
@@ -33,23 +32,24 @@ export type CleaningOptions = z.infer<typeof cleaningOptionsSchema>;
 
 // Multi-Speaker Configuration
 export const speakerConfigSchema = z.object({
-  mode: z.enum(["none", "format", "intelligent"]), // "none" = single speaker, no tags
+  mode: z.enum(["none", "format", "intelligent"]),
   speakerCount: z.number().min(1).max(20).default(2),
-  labelFormat: z.enum(["speaker", "bracket"]), // "Speaker 1:" or "[1]:"
-  speakerMapping: z.record(z.string(), z.string()).optional(), // detected name -> speaker label
-  extractCharacters: z.boolean().default(false), // Whether to extract character names
-  sampleSize: z.number().min(5).max(160).default(50), // Number of sentences for character extraction
-  includeNarrator: z.boolean().default(false), // Include narrator as separate speaker
-  // How to handle dialogue attribution tags like "he said", "she replied" when Narrator is included
+  labelFormat: z.enum(["speaker", "bracket"]),
+  speakerMapping: z.record(z.string(), z.string()).optional(),
+  extractCharacters: z.boolean().default(false),
+  sampleSize: z.number().min(5).max(160).default(50),
+  includeNarrator: z.boolean().default(false),
   narratorAttribution: z
-    .enum(["remove", "verbatim", "contextual"]) // remove = strip tags; verbatim = narrator reads tag as-is; contextual = narrator summarizes action/context
+    .enum(["remove", "verbatim", "contextual"])
     .default("remove"),
-  characterMapping: z.array(z.object({ // Extracted character name to speaker number mapping
-    name: z.string(),
-    speakerNumber: z.number(),
-  })).optional(),
-  // If the story’s narrator (first-person “I”) is the same as a speaking character,
-  // capture that character’s name here to guide formatting prompts.
+  characterMapping: z
+    .array(
+      z.object({
+        name: z.string(),
+        speakerNumber: z.number(),
+      })
+    )
+    .optional(),
   narratorCharacterName: z.string().optional(),
 });
 
@@ -64,17 +64,13 @@ export const processingConfigSchema = z.object({
   batchSize: z.number().min(1).max(50).default(10),
   cleaningOptions: cleaningOptionsSchema,
   speakerConfig: speakerConfigSchema.optional(),
-  modelSource: modelSourceSchema.default("api"), // API or Local
-  // Default to a model available on Hugging Face Inference provider
-  modelName: z.string().default("meta-llama/Meta-Llama-3.1-8B-Instruct"), // For API
-  localModelName: z.string().optional(), // For local models
-  ollamaModelName: z.string().optional(), // For Ollama models
-  customInstructions: z.string().optional(), // Custom instructions for the LLM
-  // If true, run cleaning + speaker formatting in one LLM call per chunk
+  modelSource: modelSourceSchema.default("api"),
+  modelName: z.string().default("meta-llama/Meta-Llama-3.1-8B-Instruct"),
+  localModelName: z.string().optional(),
+  ollamaModelName: z.string().optional(),
+  customInstructions: z.string().optional(),
   singlePass: z.boolean().default(false),
-  // Use shorter instruction prompts to reduce tokens
   concisePrompts: z.boolean().default(false),
-  // Include extended prompt examples/guidance
   extendedExamples: z.boolean().default(false),
 });
 
@@ -146,7 +142,6 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
       lastChunkMs: z.number().optional(),
       avgChunkMs: z.number().optional(),
       etaMs: z.number().optional(),
-      // optional usage metrics
       inputTokens: z.number().optional(),
       outputTokens: z.number().optional(),
       inputCost: z.number().optional(),
@@ -169,7 +164,6 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
     payload: z.object({
       processedText: z.string(),
       totalChunks: z.number(),
-      // optional totals
       totalInputTokens: z.number().optional(),
       totalOutputTokens: z.number().optional(),
       totalCost: z.number().optional(),
@@ -239,6 +233,64 @@ export const ttsWsMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export type TtsWsMessage = z.infer<typeof ttsWsMessageSchema>;
+
+// VibeVoice integration schemas
+export const vibevoiceSetupStatusSchema = z.enum([
+  "idle",
+  "in-progress",
+  "completed",
+  "failed",
+]);
+
+export type VibevoiceSetupStatus = z.infer<typeof vibevoiceSetupStatusSchema>;
+
+export const vibevoiceJobStatusSchema = z.object({
+  id: z.string(),
+  status: z.enum(["queued", "running", "completed", "failed"]),
+  progress: z.number().min(0).max(100),
+  message: z.string().optional(),
+  outputFile: z.string().optional(),
+  voiceFileName: z.string().optional(),
+  textFileName: z.string().optional(),
+  style: z.string().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  error: z.string().optional(),
+});
+
+export type VibevoiceJobStatus = z.infer<typeof vibevoiceJobStatusSchema>;
+
+export const vibevoiceStatusSchema = z.object({
+  setupStatus: vibevoiceSetupStatusSchema,
+  ready: z.boolean(),
+  repoPath: z.string(),
+  lastSetupError: z.string().optional(),
+  jobs: z.array(vibevoiceJobStatusSchema),
+});
+
+export type VibevoiceStatus = z.infer<typeof vibevoiceStatusSchema>;
+
+export const vibevoiceWsMessageSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("status"),
+    payload: vibevoiceStatusSchema,
+  }),
+  z.object({
+    type: z.literal("job"),
+    payload: vibevoiceJobStatusSchema,
+  }),
+  z.object({
+    type: z.literal("log"),
+    payload: z.object({
+      id: z.string(),
+      level: z.enum(["info", "warn", "error"]),
+      message: z.string(),
+      timestamp: z.number(),
+    }),
+  }),
+]);
+
+export type VibevoiceWsMessage = z.infer<typeof vibevoiceWsMessageSchema>;
 
 // HuggingFace token management
 export const huggingFaceTokenStatusSchema = z.object({
