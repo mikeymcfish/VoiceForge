@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -30,6 +31,31 @@ export function ModelSourceSelector({
   onOllamaModelChange,
   disabled,
 }: ModelSourceSelectorProps) {
+  const [installedModels, setInstalledModels] = useState<string[] | null>(null);
+
+  // Load installed Ollama models when switching to Ollama
+  useEffect(() => {
+    let active = true;
+    if (modelSource !== 'ollama') return;
+    setInstalledModels(null);
+    fetch('/api/ollama/models')
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        return res.json();
+      })
+      .then((data: { models?: Array<string | { id: string }> }) => {
+        if (!active) return;
+        const list = Array.isArray(data?.models)
+          ? data.models.map((m) => (typeof m === 'string' ? m : m.id)).filter(Boolean)
+          : [];
+        setInstalledModels(list);
+      })
+      .catch(() => {
+        if (!active) return;
+        setInstalledModels([]);
+      });
+    return () => { active = false; };
+  }, [modelSource]);
 
   return (
     <Card className="p-3">
@@ -100,10 +126,12 @@ export function ModelSourceSelector({
                 <SelectValue placeholder="e.g., qwen2.5:7b or llama3.1:8b" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="qwen2.5:7b">qwen2.5:7b</SelectItem>
-                <SelectItem value="qwen2.5:14b">qwen2.5:14b</SelectItem>
-                <SelectItem value="llama3.1:8b">llama3.1:8b</SelectItem>
-                <SelectItem value="mistral:7b">mistral:7b</SelectItem>
+                {((installedModels && installedModels.length > 0
+                  ? installedModels
+                  : (["qwen2.5:7b", "qwen2.5:14b", "llama3.1:8b", "mistral:7b"])) as string[]
+                ).map((m: string) => (
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <div className="space-y-1.5 pt-2">

@@ -74,9 +74,10 @@ export class TextProcessor {
             modelSource: config.modelSource,
             modelName: config.modelName,
             ollamaModelName: (config as any).ollamaModelName,
+            temperature: (config as any).temperature,
+            llmCleaningDisabled: (config as any).llmCleaningDisabled === true,
             customInstructions: config.customInstructions,
             singlePass: (config as any).singlePass === true,
-            concisePrompts: (config as any).concisePrompts !== false,
             extendedExamples: (config as any).extendedExamples === true,
           });
           processedText = result.text;

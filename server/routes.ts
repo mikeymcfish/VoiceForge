@@ -251,8 +251,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         config.speakerConfig,
         config.customInstructions,
         (config as any).singlePass === true,
-        (config as any).concisePrompts !== false,
-        (config as any).extendedExamples === true
+        (config as any).extendedExamples === true,
+        (config as any).llmCleaningDisabled === true
       );
 
       res.json(prompts);
@@ -287,6 +287,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         modelSource: config.modelSource,
         modelName: config.modelName,
         ollamaModelName: (config as any).ollamaModelName,
+        temperature: (config as any).temperature,
+        llmCleaningDisabled: (config as any).llmCleaningDisabled === true,
         customInstructions: config.customInstructions,
         extendedExamples: (config as any).extendedExamples === true,
       });
@@ -308,13 +310,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Extract character names endpoint
   app.post("/api/extract-characters", async (req, res) => {
     try {
-      const { text, sampleSize, includeNarrator, modelSource, modelName, ollamaModelName } = req.body as {
+      const { text, sampleSize, includeNarrator, modelSource, modelName, ollamaModelName, temperature } = req.body as {
         text: string;
         sampleSize: number;
         includeNarrator: boolean;
         modelSource?: string;
         modelName: string;
         ollamaModelName?: string;
+        temperature?: number;
       };
 
       if (!text || !sampleSize) {
@@ -336,6 +339,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         modelSource: resolvedSource,
         modelName: modelName || "meta-llama/Meta-Llama-3.1-8B-Instruct",
         ollamaModelName,
+        temperature: (typeof temperature === 'number' && Number.isFinite(temperature)) ? temperature : undefined,
       });
 
       res.json({
@@ -349,6 +353,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({
         error: error instanceof Error ? error.message : "Failed to extract characters",
       });
+    }
+  });
+
+  // List installed Ollama models for dropdown pre-population
+  app.get("/api/ollama/models", async (_req, res) => {
+    try {
+      const base = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+      const url = `${base}/api/tags`;
+      const r = await fetch(url, { method: 'GET' });
+      if (!r.ok) {
+        return res.status(502).json({ error: `Failed to query Ollama (${r.status})` });
+      }
+      const data: any = await r.json();
+      const models = Array.isArray(data?.models)
+        ? data.models.map((m: any) => ({ id: String(m?.name || m?.model || '').trim() })).filter((m: any) => m.id)
+        : [];
+      return res.json({ models });
+    } catch (e) {
+      return res.status(500).json({ error: 'Failed to list Ollama models' });
     }
   });
 
@@ -511,13 +534,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post(
     "/api/vibevoice/synthesize",
     vibevoiceUpload.fields([
-      { name: "voice", maxCount: 1 },
+      { name: "voice1", maxCount: 1 },
+      { name: "voice2", maxCount: 1 },
+      { name: "voice3", maxCount: 1 },
+      { name: "voice4", maxCount: 1 },
       { name: "script", maxCount: 1 },
     ]),
     async (req, res) => {
       try {
         const files = (req.files || {}) as Record<string, Express.Multer.File[]>;
-        const voiceFile = files.voice?.[0];
+        const v1 = files.voice1?.[0];
+        const v2 = files.voice2?.[0];
+        const v3 = files.voice3?.[0];
+        const v4 = files.voice4?.[0];
+        const voiceFiles = [v1, v2, v3, v4].filter(Boolean) as Express.Multer.File[];
         const scriptFile = files.script?.[0];
 
         let textContent = typeof req.body?.text === "string" ? req.body.text : "";
@@ -541,13 +571,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ? req.body.style.trim()
             : undefined;
 
+        const modelId =
+          typeof req.body?.modelId === "string" && req.body.modelId.trim().length > 0
+            ? req.body.modelId.trim()
+            : undefined;
+
         const job = await vibevoiceService.startSynthesis({
-          voiceBuffer: voiceFile?.buffer,
-          voiceFileName: voiceFile?.originalname,
+          voiceBuffers: voiceFiles.map((f) => f.buffer),
+          voiceFileNames: voiceFiles.map((f) => f.originalname),
+          voiceBuffer: undefined,
+          voiceFileName: voiceFiles[0]?.originalname,
           textContent,
           textFileName,
           style,
           temperature,
+          modelId,
         });
 
         res.json({ job });

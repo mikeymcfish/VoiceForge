@@ -42,7 +42,9 @@ interface PythonMessage {
 }
 
 const DEFAULT_REPO_ID = process.env.INDEX_TTS_REPO || "IndexTeam/IndexTTS-2";
-const PYTHON_BIN = process.env.INDEX_TTS_PYTHON || "python3";
+// Prefer a Windows-friendly default. Override with INDEX_TTS_PYTHON if needed.
+const PYTHON_BIN =
+  process.env.INDEX_TTS_PYTHON || (process.platform === "win32" ? "python" : "python3");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -234,8 +236,12 @@ class IndexTtsService extends EventEmitter {
         if (code === 0) {
           resolve();
         } else {
+          const hint =
+            code === 9009
+              ? "\n(Hint: On Windows, this often means Python isn’t on PATH or the alias points to the Microsoft Store. Install Python and ensure 'python' works, or set INDEX_TTS_PYTHON)"
+              : "";
           const error = new Error(
-            `IndexTTS worker exited with code ${code}\n${stderrChunks.join("\n")}`
+            `IndexTTS worker exited with code ${code}${hint}\n${stderrChunks.join("\n")}`
           );
           reject(error);
         }

@@ -16,7 +16,7 @@ interface PromptPreviewProps {
   customInstructions?: string;
   disabled?: boolean;
   singlePass?: boolean;
-  concisePrompts?: boolean;
+  llmCleaningDisabled?: boolean;
   extendedExamples?: boolean;
 }
 
@@ -27,7 +27,7 @@ export function PromptPreview({
   customInstructions,
   disabled,
   singlePass,
-  concisePrompts,
+  llmCleaningDisabled,
   extendedExamples,
 }: PromptPreviewProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -49,7 +49,7 @@ export function PromptPreview({
             speakerConfig,
             customInstructions: customInstructions || undefined,
             singlePass: singlePass ?? !!(speakerConfig && speakerConfig.mode !== 'none'),
-            concisePrompts: concisePrompts ?? true,
+            llmCleaningDisabled: llmCleaningDisabled === true,
             extendedExamples: extendedExamples ?? false,
           },
         }),
@@ -101,7 +101,7 @@ export function PromptPreview({
           {prompts && (
             <>
               <div className="space-y-1.5">
-                <h4 className="text-sm font-medium">Stage 1: Text Cleaning</h4>
+                <h4 className="text-sm font-medium">Stage 1 Prompt</h4>
                 <pre className="text-xs bg-muted p-2.5 rounded-md overflow-x-auto whitespace-pre-wrap">
                   {prompts.stage1}
                 </pre>
@@ -109,7 +109,7 @@ export function PromptPreview({
 
               {prompts.stage2 && (
                 <div className="space-y-1.5">
-                  <h4 className="text-sm font-medium">Stage 2: Speaker Formatting</h4>
+                  <h4 className="text-sm font-medium">Stage 2 Prompt</h4>
                   <pre className="text-xs bg-muted p-2.5 rounded-md overflow-x-auto whitespace-pre-wrap">
                     {prompts.stage2}
                   </pre>

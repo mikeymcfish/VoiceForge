@@ -68,9 +68,10 @@ export const processingConfigSchema = z.object({
   modelName: z.string().default("meta-llama/Meta-Llama-3.1-8B-Instruct"),
   localModelName: z.string().optional(),
   ollamaModelName: z.string().optional(),
+  temperature: z.number().min(0).max(2).default(0.3).optional(),
+  llmCleaningDisabled: z.boolean().default(false).optional(),
   customInstructions: z.string().optional(),
   singlePass: z.boolean().default(false),
-  concisePrompts: z.boolean().default(false),
   extendedExamples: z.boolean().default(false),
 });
 
@@ -251,8 +252,10 @@ export const vibevoiceJobStatusSchema = z.object({
   message: z.string().optional(),
   outputFile: z.string().optional(),
   voiceFileName: z.string().optional(),
+  voiceFileNames: z.array(z.string()).optional(),
   textFileName: z.string().optional(),
   style: z.string().optional(),
+  selectedModel: z.string().optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
   error: z.string().optional(),
@@ -265,6 +268,7 @@ export const vibevoiceStatusSchema = z.object({
   ready: z.boolean(),
   repoPath: z.string(),
   lastSetupError: z.string().optional(),
+  availableModels: z.array(z.object({ id: z.string(), path: z.string() })),
   jobs: z.array(vibevoiceJobStatusSchema),
 });
 

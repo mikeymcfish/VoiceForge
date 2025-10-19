@@ -15,7 +15,9 @@ import type {
 const DEFAULT_REPO_URL =
   process.env.VIBEVOICE_REPO_URL || "https://github.com/vibevoice-community/VibeVoice.git";
 const DEFAULT_REPO_BRANCH = process.env.VIBEVOICE_REPO_BRANCH || "main";
-const PYTHON_BIN = process.env.VIBEVOICE_PYTHON || "python3";
+// Prefer a Windows-friendly default. Users can override via VIBEVOICE_PYTHON
+const PYTHON_BIN =
+  process.env.VIBEVOICE_PYTHON || (process.platform === "win32" ? "python" : "python3");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,8 +33,10 @@ interface InternalJob {
   message?: string;
   outputFile?: string;
   voiceFileName?: string;
+  voiceFileNames?: string[];
   textFileName?: string;
   style?: string;
+  selectedModel?: string;
   error?: string;
   createdAt: number;
   updatedAt: number;
@@ -134,8 +138,10 @@ class VibevoiceService extends EventEmitter {
       message: job.message,
       outputFile: job.outputFile,
       voiceFileName: job.voiceFileName,
+      voiceFileNames: job.voiceFileNames,
       textFileName: job.textFileName,
       style: job.style,
+      selectedModel: job.selectedModel,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       error: job.error,
@@ -152,8 +158,33 @@ class VibevoiceService extends EventEmitter {
       ready: this.setupStatus === "completed",
       repoPath: this.repoDir,
       lastSetupError: this.setupError,
+      availableModels: this.listAvailableModels(),
       jobs,
     };
+  }
+
+  private listAvailableModels(): { id: string; path: string }[] {
+    const modelsRoot = path.join(this.rootDir, "models");
+    if (!fs.existsSync(modelsRoot)) return [];
+    const entries = fs.readdirSync(modelsRoot, { withFileTypes: true });
+    const models: { id: string; path: string }[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dirPath = path.join(modelsRoot, entry.name);
+      let id: string | undefined;
+      const idFile = path.join(dirPath, "repo_id.txt");
+      if (fs.existsSync(idFile)) {
+        try {
+          id = fs.readFileSync(idFile, "utf-8").trim();
+        } catch {}
+      }
+      if (!id || id.length === 0) {
+        id = entry.name.replace(/__/g, "/");
+      }
+      models.push({ id, path: dirPath });
+    }
+    models.sort((a, b) => a.id.localeCompare(b.id));
+    return models;
   }
 
   private updateJob(id: string, patch: Partial<InternalJob>) {
@@ -230,7 +261,11 @@ class VibevoiceService extends EventEmitter {
         if (code === 0) {
           resolve();
         } else {
-          reject(new Error(`VibeVoice worker exited with code ${code}`));
+          const hint =
+            code === 9009
+              ? " (Windows 'command not found'. Ensure Python is installed and on PATH, or set VIBEVOICE_PYTHON)"
+              : "";
+          reject(new Error(`VibeVoice worker exited with code ${code}${hint}`));
         }
       });
     });
@@ -281,12 +316,15 @@ class VibevoiceService extends EventEmitter {
   }
 
   public async startSynthesis(params: {
-    voiceBuffer?: Buffer;
-    voiceFileName?: string;
+    voiceBuffers?: Buffer[];
+    voiceFileNames?: (string | undefined)[];
+    voiceBuffer?: Buffer; // backwards-compat
+    voiceFileName?: string; // backwards-compat
     textContent: string;
     textFileName?: string;
     style?: string;
     temperature?: number;
+    modelId?: string;
   }): Promise<VibevoiceJobStatus> {
     if (this.setupStatus !== "completed") {
       throw new Error("Run setup before starting synthesis");
@@ -296,11 +334,26 @@ class VibevoiceService extends EventEmitter {
     const jobDir = path.join(this.jobsDir, jobId);
     await fsPromises.mkdir(jobDir, { recursive: true });
 
-    let voicePath: string | undefined;
-    if (params.voiceBuffer && params.voiceBuffer.length > 0) {
-      const ext = params.voiceFileName ? path.extname(params.voiceFileName) : ".wav";
-      voicePath = path.join(jobDir, `voice${ext || ".wav"}`);
-      await fsPromises.writeFile(voicePath, params.voiceBuffer);
+    const voicePaths: string[] = [];
+    const voiceFiles: string[] = [];
+    const buffers: Buffer[] = [];
+    const names: (string | undefined)[] = [];
+    if (params.voiceBuffers && params.voiceBuffers.length > 0) {
+      buffers.push(...params.voiceBuffers);
+      if (params.voiceFileNames) names.push(...params.voiceFileNames);
+    } else if (params.voiceBuffer && params.voiceBuffer.length > 0) {
+      buffers.push(params.voiceBuffer);
+      names.push(params.voiceFileName);
+    }
+    for (let i = 0; i < Math.min(4, buffers.length); i++) {
+      const buf = buffers[i];
+      if (!buf || buf.length === 0) continue;
+      const orig = names[i];
+      const ext = orig ? path.extname(orig) : ".wav";
+      const p = path.join(jobDir, `voice${i + 1}${ext || ".wav"}`);
+      await fsPromises.writeFile(p, buf);
+      voicePaths.push(p);
+      if (orig) voiceFiles.push(orig);
     }
 
     const textPath = path.join(jobDir, "script.txt");
@@ -315,8 +368,10 @@ class VibevoiceService extends EventEmitter {
       progress: 5,
       message: "Starting synthesis…",
       voiceFileName: params.voiceFileName,
+      voiceFileNames: voiceFiles.length > 0 ? voiceFiles : undefined,
       textFileName: params.textFileName ?? "script.txt",
       style: params.style,
+      selectedModel: params.modelId,
       createdAt,
       updatedAt: createdAt,
       workingDir: jobDir,
@@ -338,14 +393,17 @@ class VibevoiceService extends EventEmitter {
       outputPath,
     ];
 
-    if (voicePath) {
-      args.push("--voice", voicePath);
+    for (const vp of voicePaths) {
+      args.push("--voice", vp);
     }
     if (params.style) {
       args.push("--style", params.style);
     }
     if (typeof params.temperature === "number" && Number.isFinite(params.temperature)) {
       args.push("--temperature", String(params.temperature));
+    }
+    if (params.modelId) {
+      args.push("--model-id", params.modelId);
     }
 
     void this.runPython(

@@ -39,6 +39,68 @@ const HF_PROVIDER = (process.env.HF_PROVIDER || "hf-inference").trim();
 // Debug logging helpers
 const LLM_DEBUG = String(process.env.LLM_DEBUG || "").toLowerCase();
 const DEBUG_ENABLED = LLM_DEBUG === "1" || LLM_DEBUG === "true" || LLM_DEBUG === "yes";
+const LLM_DEBUG_FULL = String(process.env.LLM_DEBUG_FULL || "").toLowerCase();
+const DEBUG_FULL_BODY = LLM_DEBUG_FULL === "1" || LLM_DEBUG_FULL === "true" || LLM_DEBUG_FULL === "yes";
+const LOG_FILE_ENV = (process.env.LLM_DEBUG_FILE || "").trim();
+const DEFAULT_LOG_FILE = path.resolve(process.cwd(), "logs", "llm-debug.txt");
+const FALLBACK_LOG_FILE = path.resolve(process.cwd(), "temp_llm.txt");
+
+function ensureLogPath(): string | null {
+  if (!DEBUG_ENABLED) return null;
+  try {
+    const chosen = LOG_FILE_ENV || DEFAULT_LOG_FILE;
+    const dir = path.dirname(chosen);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    return chosen;
+  } catch {
+    try { return FALLBACK_LOG_FILE; } catch { return null; }
+  }
+}
+
+const DEBUG_LOG_PATH = ensureLogPath();
+
+function writeDebugLine(label: string, payload?: unknown) {
+  if (!DEBUG_ENABLED || !DEBUG_LOG_PATH) return;
+  try {
+    const ts = new Date().toISOString();
+    const line = payload === undefined
+      ? `[${ts}] ${label}\n`
+      : `[${ts}] ${label} ${JSON.stringify(payload)}\n`;
+    fs.appendFileSync(DEBUG_LOG_PATH, line, { encoding: "utf-8" });
+  } catch {}
+}
+
+function writeDebugBlock(label: string, text: string) {
+  if (!DEBUG_ENABLED || !DEBUG_LOG_PATH) return;
+  try {
+    const ts = new Date().toISOString();
+    const header = `\n[${ts}] ${label} BEGIN\n`;
+    const footer = `\n[${ts}] ${label} END\n`;
+    fs.appendFileSync(DEBUG_LOG_PATH, header + text + footer, { encoding: "utf-8" });
+  } catch {}
+}
+
+// Template utilities
+function readTemplateFile(name: string): string | null {
+  try {
+    const p = path.resolve(process.cwd(), name);
+    if (fs.existsSync(p)) {
+      return fs.readFileSync(p, 'utf-8');
+    }
+  } catch {}
+  return null;
+}
+
+function renderTemplate(tpl: string, vars: Record<string, string | undefined>): string {
+  let out = tpl;
+  for (const [key, val] of Object.entries(vars)) {
+    const safe = (val ?? '').toString();
+    out = out.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), safe);
+  }
+  return out;
+}
 
 function redact(value: string): string {
   if (!value) return value;
@@ -114,6 +176,12 @@ function logRequest(label: string, url: string | URL, init?: RequestInit) {
   const headers = sanitizeHeaders(init?.headers);
   const body = summarizeBody(init?.body ?? undefined);
   console.debug(`[LLM DEBUG] ${label} request`, { method, url: String(url), headers, body });
+  writeDebugLine(`${label} request`, { method, url: String(url), headers, body });
+  try {
+    if (DEBUG_FULL_BODY && typeof (init?.body) === 'string') {
+      writeDebugBlock(`[HTTP] ${label} request body`, String(init?.body));
+    }
+  } catch {}
 }
 
 function logResponse(label: string, res: Response, info?: { bodyPreview?: string | object }) {
@@ -121,6 +189,14 @@ function logResponse(label: string, res: Response, info?: { bodyPreview?: string
   const headers: Record<string, string> = {};
   res.headers.forEach((v, k) => (headers[k] = v));
   console.debug(`[LLM DEBUG] ${label} response`, {
+    url: (res as any).url,
+    ok: res.ok,
+    status: res.status,
+    statusText: res.statusText,
+    headers,
+    ...(info || {}),
+  });
+  writeDebugLine(`${label} response`, {
     url: (res as any).url,
     ok: res.ok,
     status: res.status,
@@ -142,6 +218,9 @@ function createLoggingFetch(label: string): typeof fetch {
         const text = await clone.text();
         const bodyPreview = text.length > 1200 ? `${text.slice(0, 1200)}… [truncated ${text.length - 1200} chars]` : text;
         logResponse(label, res, { bodyPreview });
+        if (DEBUG_FULL_BODY) {
+          try { writeDebugBlock(`[HTTP] ${label} response body`, text); } catch {}
+        }
       } else {
         logResponse(label, res);
       }
@@ -150,6 +229,54 @@ function createLoggingFetch(label: string): typeof fetch {
     }
     return res;
   };
+}
+
+// Sanitize LLM model outputs (remove fences, thinking tags, echoed labels)
+function stripCodeFences(s: string): string {
+  let out = s.trim();
+  out = out.replace(/^\s*```[a-zA-Z0-9_+\-]*\s*/i, "");
+  out = out.replace(/\s*```\s*$/i, "");
+  out = out.replace(/^\s*"""\s*/i, "");
+  out = out.replace(/\s*"""\s*$/i, "");
+  return out.trim();
+}
+
+function stripThinkingTags(s: string): string {
+  let out = s;
+  const tags = ["think", "thinking", "reflection", "reasoning", "scratchpad", "chain-of-thought", "cot", "c-o-t"];
+  for (const t of tags) {
+    const re = new RegExp(`<${t}>[\\s\\S]*?<\\/${t}>`, "gi");
+    out = out.replace(re, "");
+  }
+  out = out.replace(/^(?:\s*(Thought|Reasoning|Chain of Thought)\s*:\s.*(?:\r?\n|$))+?/gmi, "");
+  return out;
+}
+
+function stripLeadingLabels(s: string): string {
+  return s.replace(/^(Cleaned\s*text|Formatted\s*dialogue|Formatted\s*dialog|Output|OUTPUT|Result|Cleaned|JSON\s*only)\s*:\s*/i, "").trim();
+}
+
+function extractAfterLastOutputCue(s: string): string {
+  const cues = ["Cleaned text:", "Formatted dialogue:", "Formatted dialog:", "OUTPUT:", "Output:", "Cleaned:", "Result:"];
+  let idx = -1;
+  for (const cue of cues) {
+    const i = s.lastIndexOf(cue);
+    if (i > idx) idx = i + cue.length;
+  }
+  if (idx > -1 && idx < s.length) {
+    return s.slice(idx).trim();
+  }
+  return s.trim();
+}
+
+function sanitizeModelOutput(raw: string, _promptHint?: string): string {
+  if (!raw) return "";
+  let out = raw.replace(/^\uFEFF/, "");
+  out = stripCodeFences(out);
+  out = stripThinkingTags(out);
+  out = stripLeadingLabels(out);
+  out = extractAfterLastOutputCue(out);
+  return out.trim();
 }
 
 function normalizeHuggingFaceModelId(model: string): string {
@@ -194,9 +321,11 @@ export interface ProcessChunkOptions {
   modelName: string; // API model name
   localModelName?: string; // Local model name
   ollamaModelName?: string; // Ollama model name
+  temperature?: number;
   customInstructions?: string;
   singlePass?: boolean;
-  concisePrompts?: boolean;
+  // When true, skip LLM-based cleaning and rely on local deterministic cleaning only
+  llmCleaningDisabled?: boolean;
   extendedExamples?: boolean;
 }
 
@@ -255,75 +384,39 @@ function lookupPricing(modelId: string): ModelPricing | undefined {
 
 export class LLMService {
   private buildCleaningPrompt(
-    text: string, 
-    options: CleaningOptions,
-    customInstructions?: string
-  ): string {
-    const tasks: string[] = [];
-
-    if (options.replaceSmartQuotes) {
-      tasks.push("- Replace all smart quotes (", ", ', ') with standard ASCII quotes (\", ')");
-    }
-    if (options.fixOcrErrors) {
-      tasks.push("- Fix OCR errors: correct spacing issues and merged words (e.g., 'thebook' → 'the book')");
-    }
-    if (options.correctSpelling) {
-      tasks.push("- Correct common spelling mistakes and typos");
-    }
-    if (options.removeUrls) {
-      tasks.push("- Remove all URLs and web links");
-    }
-    if (options.removeFootnotes) {
-      tasks.push("- Remove footnote markers (numbers, asterisks) and extraneous metadata");
-    }
-    if (options.addPunctuation) {
-      tasks.push("- Add appropriate punctuation after headers and loose numbers for better TTS prosody");
-    }
-
-    let prompt = `You are a text cleaning assistant for TTS (text-to-speech) preprocessing. Your task is to clean and repair the following text.
-
-Apply these transformations:
-${tasks.join("\n")}
-
-Important rules:
-- Preserve the original meaning and content
-- Only fix errors, don't rewrite or rephrase
-- Maintain paragraph structure
-- Return ONLY the cleaned text, no explanations`;
-
-    if (customInstructions) {
-      prompt += `\n\nAdditional custom instructions:\n${customInstructions}`;
-    }
-
-    prompt += `\n\nText to clean:\n${text}\n\nCleaned text:`;
-
-    return prompt;
-  }
-
-  private buildCleaningPromptConcise(
     text: string,
     options: CleaningOptions,
     customInstructions?: string
   ): string {
     const tasks: string[] = [];
-    if (options.replaceSmartQuotes) tasks.push("- Replace smart quotes with ASCII");
-    if (options.fixOcrErrors) tasks.push("- Fix OCR spacing and merged words");
-    if ((options as any).fixHyphenation) tasks.push("- Fix hyphenation splits (merge words split by line breaks/hyphens)");
-    if (options.correctSpelling) tasks.push("- Fix common spelling/typos");
-    if (options.removeUrls) tasks.push("- Remove URLs");
-    if (options.removeFootnotes) tasks.push("- Remove footnotes/metadata");
-    if (options.addPunctuation) tasks.push("- Add punctuation after headers/loose numbers for TTS");
+    if (options.replaceSmartQuotes) tasks.push(`* Replace all smart quotes (“ ” ‘ ’) with standard ASCII quotes (" and ').`);
+    if (options.fixOcrErrors) tasks.push(`* Fix common OCR errors, such as spacing issues and merged words (e.g., 'thebook' -> 'the book').`);
+    if ((options as any).fixHyphenation) tasks.push(`* Fix hyphenation splits (merge words split by line breaks/hyphens).`);
+    if (options.correctSpelling) tasks.push(`* Correct common spelling mistakes and typos.`);
+    if (options.removeUrls) tasks.push(`* Remove all URLs, web links, and email addresses.`);
+    if (options.removeFootnotes) tasks.push(`* Remove footnote markers (e.g., numbers, asterisks) and any other extraneous metadata.`);
+    if (options.addPunctuation) tasks.push(`* Ensure appropriate punctuation (like a period) follows any headers or loose numbers for better TTS prosody.`);
 
-    let prompt = `You are a TTS text cleaner.\nApply only the selected transformations:\n${tasks.join("\n")}\nRules: preserve meaning, do not rewrite, keep paragraphs.\nReturn ONLY the cleaned text.`;
+    let prompt = `You are a TTS preprocessing assistant. Clean and repair the text using ONLY the listed transformations.
+
+Preprocessing Steps:
+${tasks.join('\n')}
+
+Rules:
+- Preserve the original meaning and content.
+- Only fix errors; do not rewrite or rephrase.
+- Maintain paragraph structure.
+- Return ONLY the cleaned text, no explanations.`;
 
     if (customInstructions) {
-      prompt += `\n\nCustom:\n${customInstructions}`;
+      prompt += `\n\nAdditional custom instructions:\n${customInstructions}`;
     }
 
     prompt += `\n\nText:\n${text}\n\nCleaned:`;
-
     return prompt;
   }
+
+  // Note: concise prompt variant removed in favor of stronger, explicit instructions.
 
   private buildSpeakerPrompt(
     text: string,
@@ -331,121 +424,60 @@ Important rules:
     customInstructions?: string,
     extendedExamples?: boolean
   ): string {
-    const labelExample =
-      config.labelFormat === "speaker"
-        ? "Speaker 1:, Speaker 2:, etc."
-        : "[1]:, [2]:, [3]:, etc.";
-    const narratorLabel = config.labelFormat === 'speaker' ? 'Speaker 1:' : '[1]:';
+    // Prefer sample_prompt.md template when available
+    const tpl = readTemplateFile('sample_prompt.md');
+    const mapping = (config.characterMapping && config.characterMapping.length > 0)
+      ? config.characterMapping.map((c) => `${c.name} = Speaker ${c.speakerNumber}`).join('; ')
+      : 'none';
+    const preprocessing = 'Preprocessing: already applied before this step.';
+    if (tpl) {
+      return renderTemplate(tpl, {
+        mapping,
+        preprocessing,
+        text,
+      });
+    }
 
-    let prompt = "";
-
-    if (config.mode === "format") {
-      prompt = `You are a dialogue formatting assistant. Convert the following text to a standardized multi-speaker format.
-
-Requirements:
-- Number of speakers: ${config.speakerCount}
-- Label format: ${labelExample}
-- Each speaker's line should start with their label
-- Preserve all dialogue content exactly as written
-- Only change the speaker label format`;
+    // Fallback to inline prompt if template missing
+    const includeNarrator = Boolean(config.includeNarrator);
+    const narratorName = (config as any).narratorCharacterName && String((config as any).narratorCharacterName).trim() || undefined;
+    const parts: string[] = [];
+    parts.push('You are a dialogue structuring assistant for multi-speaker TTS. Cleaned text is provided. Format into strict Speaker and Narrator lines.');
+    parts.push('- Assign labels dynamically: first speaker -> Speaker 1:, second -> Speaker 2:, etc.');
+    if (includeNarrator) {
+      parts.push('- Label narration, descriptions, and actions with Narrator:.');
+      if (narratorName) parts.push(`- Narration should reflect first-person perspective when clearly from "${narratorName}"; do not insert their name in narration.`);
     } else {
-      // Check if narrator is in the character mapping
-      const hasNarratorFromMapping = config.characterMapping?.some(
-        (char) => char.name.toLowerCase() === "narrator"
-      );
-      const hasNarrator = Boolean(config.includeNarrator || hasNarratorFromMapping);
-      const narratorAttr = (config as any).narratorAttribution || 'remove';
-      const narratorName = (config as any).narratorCharacterName && String((config as any).narratorCharacterName).trim() || undefined;
-      // For prompts, reserve Speaker 1 for narration when present
-      const narratorSpNum = narratorName && hasNarrator ? 1 : undefined;
-
-      if (hasNarrator) {
-        prompt = `You are an intelligent dialogue parsing assistant. Analyze this prose text and structure it for multi-speaker TTS.
-
-Requirements:
-- Detect speaker changes from context clues (said, replied, asked, etc.)
-- Format each speaking character's line as: ${labelExample} [dialogue text]
-- ${narratorAttr === 'remove'
-            ? 'Remove dialogue attribution tags (e.g., "he said", "she replied", "Bob asked"). Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these attribution phrases inline as part of the spoken line.'
-            : narratorAttr === 'verbatim'
-              ? 'Move dialogue attribution tags (e.g., "he said", "she replied", "Bob asked") into separate Narrator lines immediately following the spoken line (preserve punctuation). Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these phrases inline in the spoken line (do not move).'
-              : 'Convert dialogue attribution and action context into a separate Narrator line immediately after the spoken line. Rewrite the tag and any action into a concise descriptive sentence without quotes (e.g., "John passed the book over to Tim."). Prefer explicit names over pronouns when ambiguous. Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these attribution phrases inline as part of the spoken line.'}
-- Label narration (non-dialogue) using ${narratorLabel} (do NOT use the literal label "Narrator:")
- - Narrator speaking rule: When the narrator (Speaker 1) speaks, preserve first‑person speaking cues inline (e.g., "I said", "I asked", "I replied", "I whispered", "I shouted"). Do NOT remove, move, or convert these phrases; keep them attached to the dialogue so TTS switches to the speaking voice.
-- Preserve full content and order from the input. Do not omit or reorder any parts.
-- ${narratorName ? `Narrator identity: The narrator is the character "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Keep narration as Narrator lines but write the narration content in first-person ("I") from that character's perspective. Do not use the narrator's name inside narration.` : 'If the text uses first-person narration ("I") that clearly refers to a speaking character, keep narration as Narrator lines and write from first-person ("I") rather than using the character\'s name. Use Narrator only for narration; use speaker labels for spoken dialogue.'}
-- Assign consistent speaker numbers based on who speaks`;
-      } else {
-        prompt = `You are an intelligent dialogue parsing assistant. Analyze this prose text and extract dialogue between ${config.speakerCount} speakers.
-
-Requirements:
-- Detect speaker changes from context clues (said, replied, asked, etc.)
-- Format each line as: ${labelExample} [dialogue text]
-- Assign consistent speaker numbers based on who speaks
-- Extract only spoken dialogue; omit non-dialogue narration/descriptions.
-- Remove dialogue attribution tags (e.g., "he said", "she replied")
-- If a character name is detected, keep it consistent with one speaker number
-- Preserve full content and order from the input. Do not omit or reorder any parts.
-- ${narratorName ? `Narrator identity: The narrator is the character "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Keep narration (non-dialogue) as Narrator lines and write them in first-person ("I"). Do not include the narrator's own name inside narration.` : 'If the story uses first-person narration ("I") clearly from a character\'s perspective, keep narration as Narrator lines and write from first-person ("I").'}
-- If dialogue occurs from characters not in the known set, keep that dialogue unmodified and assign a new speaker number (do not label as narration).`;
-      }
+      parts.push('- Omit narrative-only lines (no Narrator: lines).');
     }
-
-    // Add character mapping if available (adjust so narration occupies Speaker 1)
-    if (config.characterMapping && config.characterMapping.length > 0) {
-      const narratorNameLower = ((config as any).narratorCharacterName || '').toString().trim().toLowerCase();
-      const hasAnyNarrator = Boolean(config.includeNarrator || config.characterMapping.some(c => c.name.toLowerCase() === 'narrator'));
-      const adjusted = (hasAnyNarrator ? config.characterMapping.map(c => ({
-        name: c.name,
-        speakerNumber: narratorNameLower && c.name.toLowerCase() === narratorNameLower ? 1 : (c.speakerNumber + 1),
-      })) : config.characterMapping);
-      const mappingList = adjusted
-        .map((char) => `  - ${char.name} = Speaker ${char.speakerNumber}`)
-        .join("\n");
-      
-      const hasNarratorInMapping = config.characterMapping.some((char) => char.name.toLowerCase() === "narrator");
-      const narratorActive = Boolean(config.includeNarrator || hasNarratorInMapping);
-
-      if (narratorActive) {
-        const narratorAttr = (config as any).narratorAttribution || 'remove';
-        prompt += `\n\nCharacter to Speaker Mapping (use these exact assignments):
-${mappingList}
-
-IMPORTANT: 
-- Only extract dialogue from the speaking characters listed above
-- Label narration (non-dialogue) with ${narratorLabel}
-- ${narratorAttr === 'remove' ? 'Remove dialogue attribution tags like "he said", "she whispered", "Alice asked"' : narratorAttr === 'verbatim' ? 'Move dialogue attribution tags like "he said", "she whispered", "Alice asked" into a separate Narrator line placed immediately after the spoken line' : 'Transform dialogue attribution and actions into a separate Narrator line that summarizes the action (e.g., "John passed the book over to Tim.") placed immediately after the spoken line'}
-- If a speaking character not listed in the mapping appears, keep their dialogue unmodified and attribute it to ${narratorLabel}`;
-      } else {
-        prompt += `\n\nCharacter to Speaker Mapping (use these exact assignments when possible):
-${mappingList}
-
-IMPORTANT:
-- Prefer these assignments for known characters.
-- If a speaking character not listed in the mapping appears, keep their dialogue unmodified and attribute it to ${narratorLabel}.`;
-      }
+    parts.push('- Put spoken dialogue on its own Speaker line and remove quotes.');
+    parts.push('- Merge dialogue from the same speaker if separated only by attribution.');
+    parts.push('- Attribution+action -> Narrator line (omit "said"/"asked"); attribution-only -> omit.');
+    parts.push('- First-person narrator exception: keep narrator\'s own first-person attributions inline.');
+    if (config.characterMapping?.length) {
+      parts.push(`Mapping: ${mapping}`);
     }
-
-    if (customInstructions) {
-      prompt += `\n\nAdditional custom instructions:\n${customInstructions}`;
-    }
-
-    if (extendedExamples && config.mode === 'intelligent') {
-      const exLabel = narratorLabel;
-      prompt += `\n\nExamples (narrator speech handling):\n1) He was standing outside in the cold waiting for me. I said, "Let's go."\nExpected:\n${exLabel} I said, "Let's go."\n\n2) "Let's go," I said.\nExpected:\n${exLabel} "Let's go," I said.\n\n3) He was standing outside... I asked, "Are you ready?"\nExpected:\n${exLabel} I asked, "Are you ready?"\n\n4) Unknown speaker appears briefly in dialogue\nExpected: Keep the line, attribute to ${exLabel} without modification.`;
-    }
-
-    prompt += `\n\nText to format:\n${text}\n\nFormatted dialogue:`;
-
-    return prompt;
+    parts.push(`\nText:\n${text}\n\nFormatted:`);
+    return parts.join('\n');
   }
 
   private async runInference(prompt: string, options: ProcessChunkOptions): Promise<{ text: string; usage: InferenceUsage }> {
-    const { modelSource = 'api', modelName, localModelName, ollamaModelName } = options;
+    const { modelSource = 'api', modelName, localModelName, ollamaModelName, temperature } = options;
     const resolvedModelName = normalizeHuggingFaceModelId(modelName);
     const pricing = modelSource === 'api' ? (lookupPricing(resolvedModelName) || undefined) : undefined;
     const inputTokens = estimateTokens(prompt);
     let output = '';
+
+    if (DEBUG_ENABLED) {
+      writeDebugBlock('INFERENCE PROMPT', prompt);
+      writeDebugLine('INFERENCE META', { modelSource, modelName, localModelName, ollamaModelName, inputTokens });
+    }
+
+    const clampTemp = (t: number | undefined, def: number) => {
+      const v = typeof t === 'number' && Number.isFinite(t) ? t : def;
+      return Math.max(0, Math.min(2, v));
+    };
+    const tempGen = clampTemp(temperature as any, 0.3);
 
     if (modelSource === 'ollama') {
       const model = ollamaModelName || "llama3.1:8b";
@@ -458,7 +490,9 @@ IMPORTANT:
           num_ctx: 8192,
         },
         modelSource,
-        model
+        model,
+        // User-set temperature should override thinking tuning
+        (typeof temperature === 'number' ? { temperature: tempGen } : undefined)
       );
       const init: RequestInit = {
         method: 'POST',
@@ -485,6 +519,36 @@ IMPORTANT:
       }
       const json: any = await res.json();
       output = json.response || json.final_response || json?.message?.content || '';
+      if (!output || !String(output).trim()) {
+        // Some chat-centric models behave better with /api/chat; retry once
+        try {
+          writeDebugLine('OLLAMA GENERATE EMPTY; RETRY CHAT', { model });
+          const chatUrl = `${OLLAMA_BASE_URL}/api/chat`;
+          const chatInit: RequestInit = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model,
+              messages: [ { role: 'user', content: prompt } ],
+              stream: false,
+              keep_alive: isThinking ? '15m' : '5m',
+              options,
+            }),
+          };
+          logRequest("Ollama.chat", chatUrl, chatInit);
+          const chatRes = await fetch(chatUrl, chatInit);
+          const chatClone = chatRes.clone();
+          try {
+            const preview = await chatClone.text();
+            logResponse("Ollama.chat", chatRes, { bodyPreview: preview.length > 600 ? `${preview.slice(0, 600)}… [truncated ${preview.length - 600} chars]` : preview });
+            if (DEBUG_FULL_BODY) { try { writeDebugBlock('[HTTP] Ollama.chat response body', preview); } catch {} }
+          } catch {}
+          if (chatRes.ok) {
+            const chatJson: any = await chatRes.json();
+            output = chatJson?.message?.content || '';
+          }
+        } catch {}
+      }
     } else {
       // Check if API token is available
       if (!apiToken) {
@@ -512,7 +576,7 @@ IMPORTANT:
               messages: [
                 { role: 'user', content: prompt },
               ],
-              temperature: 0.3,
+              temperature: tempGen,
               max_tokens: 2000,
             },
             {
@@ -528,7 +592,7 @@ IMPORTANT:
               model: resolvedModelName,
               tokenPresent: Boolean(apiToken),
               promptPreview: prompt.length > 500 ? `${prompt.slice(0, 500)}… [truncated ${prompt.length - 500} chars]` : prompt,
-              parameters: { max_new_tokens: 2000, temperature: 0.3, return_full_text: false },
+              parameters: { max_new_tokens: 2000, temperature: tempGen, return_full_text: false },
             });
           }
           try {
@@ -561,7 +625,7 @@ IMPORTANT:
                   provider: prov as any,
                   model: resolvedModelName,
                   messages: [ { role: 'user', content: prompt } ],
-                  temperature: 0.3,
+                  temperature: tempGen,
                   max_tokens: 2000,
                 },
                 { fetch: createLoggingFetch('HF.chatCompletion.fallback') }
@@ -596,10 +660,15 @@ IMPORTANT:
         throw error;
       }
     }
-    const outputTokens = estimateTokens(output);
+    const cleaned = sanitizeModelOutput(output, prompt);
+    if (DEBUG_ENABLED) {
+      writeDebugBlock('INFERENCE RAW OUTPUT', output || '[empty]');
+      writeDebugBlock('INFERENCE SANITIZED OUTPUT', cleaned || '[empty]');
+    }
+    const outputTokens = estimateTokens(cleaned);
     const inCost = pricing?.inCostPerM ? (inputTokens / 1_000_000) * pricing.inCostPerM : 0;
     const outCost = pricing?.outCostPerM ? (outputTokens / 1_000_000) * pricing.outCostPerM : 0;
-    return { text: output, usage: { inputTokens, outputTokens, inputCost: inCost, outputCost: outCost } };
+    return { text: cleaned, usage: { inputTokens, outputTokens, inputCost: inCost, outputCost: outCost } };
   }
 
   private buildSinglePassPrompt(
@@ -607,77 +676,32 @@ IMPORTANT:
     cleaning: CleaningOptions,
     config: SpeakerConfig,
     customInstructions?: string,
-    extendedExamples?: boolean
+    extendedExamples?: boolean,
+    llmCleaningDisabled?: boolean
   ): string {
-    const labelExample =
-      config.labelFormat === "speaker"
-        ? "Speaker 1:, Speaker 2:, ..."
-        : "[1]:, [2]:, [3]:, ...";
-    const narratorLabel = config.labelFormat === 'speaker' ? 'Speaker 1:' : '[1]:';
-
-    const parts: string[] = [];
-    const cleanTasks: string[] = [];
-    if (cleaning.replaceSmartQuotes) cleanTasks.push("replace smart quotes with ASCII");
-    if (cleaning.fixOcrErrors) cleanTasks.push("fix OCR spacing/merged words");
-    if ((cleaning as any).fixHyphenation) cleanTasks.push("fix hyphenation splits");
-    if (cleaning.correctSpelling) cleanTasks.push("fix common spelling/typos");
-    if (cleaning.removeUrls) cleanTasks.push("remove URLs");
-    if (cleaning.removeFootnotes) cleanTasks.push("remove footnotes/metadata");
-    if (cleaning.addPunctuation) cleanTasks.push("add punctuation after headers/loose numbers for TTS");
-    parts.push(`CLEANING: ${cleanTasks.join("; ")}. Preserve meaning; no rewrites; keep paragraphs.`);
-
-    const hasNarratorFromMapping = config.characterMapping?.some((c) => c.name.toLowerCase() === 'narrator');
-    const hasNarrator = Boolean(config.includeNarrator || hasNarratorFromMapping);
-    const narratorAttr = (config as any).narratorAttribution || 'remove';
-    const narratorName = (config as any).narratorCharacterName && String((config as any).narratorCharacterName).trim() || undefined;
-    const narratorSpNum = narratorName
-      ? config.characterMapping?.find(c => c.name.toLowerCase() === narratorName.toLowerCase())?.speakerNumber
-      : undefined;
-
-    if (config.mode === 'format') {
-      parts.push(`FORMAT: Convert to multi-speaker format. Labels: ${labelExample}. Only change labels; keep content.`);
+    const tpl = readTemplateFile('sample_prompt.md');
+    const mapping = (config.characterMapping && config.characterMapping.length > 0)
+      ? config.characterMapping.map((c) => `${c.name} = Speaker ${c.speakerNumber}`).join('; ')
+      : 'none';
+    let preprocessing = '';
+    if (llmCleaningDisabled) {
+      preprocessing = 'Preprocessing Steps: (skip — already applied locally)';
     } else {
-      if (hasNarrator) {
-        const attrRule = narratorAttr === 'remove'
-          ? 'Remove attribution tags (e.g., "he said"). Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these phrases inline in the spoken line.'
-          : narratorAttr === 'verbatim'
-            ? 'Move attribution tags into a Narrator line immediately after the spoken line. Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these phrases inline in the spoken line (do not move).'
-            : 'Convert attribution/action into a concise Narrator line after the spoken line (e.g., "John passed the book to Tim."). Prefer explicit names when ambiguous. Exception: when the narrator (Speaker 1) speaks in first person (e.g., "I said", "I asked", "I replied"), keep these phrases inline in the spoken line (do not convert).';
-        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines. ${attrRule} Label narration with ${narratorLabel} (do not use the literal label "Narrator:"). ${narratorName ? `Narrator identity: "${narratorName}"${narratorSpNum ? ` (Speaker ${narratorSpNum})` : ''}. Write narration in first-person ("I") from that character's perspective and do not use their name inside narration.` : 'If first-person narration ("I") clearly refers to a speaking character, label narration with ${narratorLabel} and write from first-person ("I").'} Preserve full content and order from the input; do not omit or reorder. Use consistent speaker numbers.`);
-        parts.push(`NARRATOR SPEAKING RULE: When the narrator (Speaker 1) speaks, preserve first-person speaking cues inline (e.g., "I said", "I asked", "I replied", "I whispered", "I shouted"). Do NOT remove, move, or convert these phrases; keep them attached to the dialogue so TTS switches to the speaking voice.`);
-      } else {
-        parts.push(`INTELLIGENT DIALOGUE: Detect speakers; output ${labelExample} for spoken lines only. Remove attribution tags. If dialogue appears from an unknown/unmapped character, keep it unmodified and assign a new speaker number (do not label as narration). Preserve full content and order from the input; do not omit or reorder. Keep consistent speaker numbering.`);
-      }
+      const parts: string[] = [];
+      if (cleaning.replaceSmartQuotes) parts.push(`* Replace smart quotes with ASCII (" and ')`);
+      if (cleaning.fixOcrErrors) parts.push(`* Fix OCR errors: spacing issues and merged words.`);
+      if ((cleaning as any).fixHyphenation) parts.push(`* Fix hyphenation splits.`);
+      if (cleaning.correctSpelling) parts.push(`* Correct common spelling mistakes and typos.`);
+      if (cleaning.removeUrls) parts.push(`* Remove URLs, links, and email addresses.`);
+      if (cleaning.removeFootnotes) parts.push(`* Remove footnote markers and extraneous metadata.`);
+      if (cleaning.addPunctuation) parts.push(`* Ensure punctuation after headers/loose numbers for TTS.`);
+      preprocessing = ['Preprocessing Steps:', ...parts].join('\n');
     }
-
-    if (config.characterMapping && config.characterMapping.length > 0) {
-      const narratorNameLower = ((config as any).narratorCharacterName || '').toString().trim().toLowerCase();
-      const hasAnyNarrator = Boolean(config.includeNarrator || config.characterMapping.some(c => c.name.toLowerCase() === 'narrator'));
-      const adjusted = (hasAnyNarrator ? config.characterMapping.map(c => ({
-        name: c.name,
-        speakerNumber: narratorNameLower && c.name.toLowerCase() === narratorNameLower ? 1 : (c.speakerNumber + 1),
-      })) : config.characterMapping);
-      const mappingList = adjusted.map((c) => `${c.name} = Speaker ${c.speakerNumber}`).join('; ');
-      parts.push(`MAPPING: ${mappingList}. Use exactly these assignments. For any speaking character not listed, keep their dialogue unmodified and attribute it to ${narratorLabel}.`);
+    if (tpl) {
+      return renderTemplate(tpl, { mapping, preprocessing, text });
     }
-
-    if (customInstructions) parts.push(`CUSTOM: ${customInstructions}`);
-    if (extendedExamples && config.mode === 'intelligent') {
-      const ex = [
-        `EXAMPLES:`,
-        `1) He was standing outside in the cold waiting for me. I said, "Let's go."`,
-        `   Output: ${narratorLabel} I said, "Let's go."`,
-        `2) "Let's go," I said.`,
-        `   Output: ${narratorLabel} "Let's go," I said.`,
-        `3) He was standing outside... I asked, "Are you ready?"`,
-        `   Output: ${narratorLabel} I asked, "Are you ready?"`,
-      ];
-      parts.push(ex.join('\n'));
-    }
-    parts.push(`Return ONLY the cleaned, formatted output. No explanations.`);
-
-    return `${parts.join('\n')}
-\nTEXT:\n${text}\n\nOUTPUT:`;
+    // Fallback to speaker prompt if template not found
+    return this.buildSpeakerPrompt(text, config, customInstructions, extendedExamples);
   }
 
   async processChunk(options: ProcessChunkOptions): Promise<{ text: string; usage: InferenceUsage }> {
@@ -691,8 +715,17 @@ IMPORTANT:
     if (speakerConfig && speakerConfig.mode !== "none" && options.singlePass) {
       if (DEBUG_ENABLED) {
         console.debug('[LLM DEBUG] Single-pass processing enabled');
+        writeDebugLine('PROCESS SINGLE-PASS', { enabled: true });
       }
-      const singlePrompt = this.buildSinglePassPrompt(cleanedInput, cleaningOptions, speakerConfig, customInstructions, options.extendedExamples);
+      const singlePrompt = this.buildSinglePassPrompt(
+        cleanedInput,
+        cleaningOptions,
+        speakerConfig,
+        customInstructions,
+        options.extendedExamples,
+        options.llmCleaningDisabled === true
+      );
+      if (DEBUG_ENABLED) writeDebugBlock('SINGLE-PASS PROMPT', singlePrompt);
       const r = await this.runInference(singlePrompt, options);
       if (r.text) {
         processedText = r.text;
@@ -700,16 +733,19 @@ IMPORTANT:
       totalInTokens += r.usage.inputTokens; totalOutTokens += r.usage.outputTokens;
       totalInCost += r.usage.inputCost; totalOutCost += r.usage.outputCost;
     } else {
-      const useConcise = options.concisePrompts !== false;
-      const cleaningPrompt = useConcise
-        ? this.buildCleaningPromptConcise(cleanedInput, cleaningOptions, customInstructions)
-        : this.buildCleaningPrompt(cleanedInput, cleaningOptions, customInstructions);
-      const r1 = await this.runInference(cleaningPrompt, options);
-      if (r1.text) {
-        processedText = r1.text;
+      if (options.llmCleaningDisabled === true) {
+        // Skip LLM cleaning; rely on local deterministic cleaning
+        if (DEBUG_ENABLED) writeDebugLine('CLEANING', { mode: 'local-only' });
+      } else {
+        const cleaningPrompt = this.buildCleaningPrompt(cleanedInput, cleaningOptions, customInstructions);
+        if (DEBUG_ENABLED) writeDebugBlock('CLEANING PROMPT', cleaningPrompt);
+        const r1 = await this.runInference(cleaningPrompt, options);
+        if (r1.text) {
+          processedText = r1.text;
+        }
+        totalInTokens += r1.usage.inputTokens; totalOutTokens += r1.usage.outputTokens;
+        totalInCost += r1.usage.inputCost; totalOutCost += r1.usage.outputCost;
       }
-      totalInTokens += r1.usage.inputTokens; totalOutTokens += r1.usage.outputTokens;
-      totalInCost += r1.usage.inputCost; totalOutCost += r1.usage.outputCost;
     }
 
     if (!processedText) {
@@ -719,6 +755,7 @@ IMPORTANT:
     // Stage 2: Speaker formatting (if configured and mode is not "none")
     if (speakerConfig && speakerConfig.mode !== "none" && !options.singlePass) {
       const speakerPrompt = this.buildSpeakerPrompt(processedText, speakerConfig, customInstructions, options.extendedExamples);
+      if (DEBUG_ENABLED) writeDebugBlock('SPEAKER PROMPT', speakerPrompt);
       const r2 = await this.runInference(speakerPrompt, options);
       const stage2Text = r2.text;
       totalInTokens += r2.usage.inputTokens; totalOutTokens += r2.usage.outputTokens;
@@ -730,6 +767,10 @@ IMPORTANT:
     }
 
     const finalPass = applyDeterministicCleaning(processedText, cleaningOptions, "post");
+    if (DEBUG_ENABLED) {
+      writeDebugLine('PROCESS USAGE', { inputTokens: totalInTokens, outputTokens: totalOutTokens, inputCost: totalInCost, outputCost: totalOutCost });
+      writeDebugBlock('PROCESS OUTPUT', finalPass.text);
+    }
     return {
       text: finalPass.text,
       usage: {
@@ -780,14 +821,12 @@ IMPORTANT:
     speakerConfig?: SpeakerConfig,
     customInstructions?: string,
     singlePass?: boolean,
-    concisePrompts?: boolean,
-    extendedExamples?: boolean
+    extendedExamples?: boolean,
+    llmCleaningDisabled?: boolean
   ): { stage1: string; stage2?: string } {
     const stage1 = speakerConfig && speakerConfig.mode !== 'none' && singlePass
-      ? this.buildSinglePassPrompt(sampleText, cleaningOptions, speakerConfig, customInstructions, extendedExamples)
-      : (concisePrompts !== false
-          ? this.buildCleaningPromptConcise(sampleText, cleaningOptions, customInstructions)
-          : this.buildCleaningPrompt(sampleText, cleaningOptions, customInstructions));
+      ? this.buildSinglePassPrompt(sampleText, cleaningOptions, speakerConfig, customInstructions, extendedExamples, llmCleaningDisabled === true)
+      : this.buildCleaningPrompt(sampleText, cleaningOptions, customInstructions);
     
     const result: { stage1: string; stage2?: string } = { stage1 };
 
@@ -805,8 +844,9 @@ IMPORTANT:
     modelName: string;
     localModelName?: string;
     ollamaModelName?: string;
+    temperature?: number;
   }): Promise<{ characters: Array<{ name: string; speakerNumber: number }>; narratorCharacterName?: string }> {
-    const { text, includeNarrator, modelSource = 'api', modelName, localModelName, ollamaModelName } = options;
+    const { text, includeNarrator, modelSource = 'api', modelName, localModelName, ollamaModelName, temperature } = options;
     const resolvedModelName = normalizeHuggingFaceModelId(modelName);
 
     const prompt = `You are a character extraction assistant for multi-speaker TTS systems. Analyze the following text sample and extract character/speaker names and narrator identity.
@@ -828,6 +868,16 @@ JSON only:`;
 
     let content: string;
 
+    if (DEBUG_ENABLED) {
+      writeDebugBlock('CHARACTER EXTRACTION PROMPT', prompt);
+    }
+
+    const clampTemp = (t: number | undefined, def: number) => {
+      const v = typeof t === 'number' && Number.isFinite(t) ? t : def;
+      return Math.max(0, Math.min(2, v));
+    };
+    const tempExtract = clampTemp(temperature as any, 0.2);
+
     if (modelSource === 'ollama') {
       const model = ollamaModelName || "llama3.1:8b";
       const url = `${OLLAMA_BASE_URL}/api/generate`;
@@ -838,13 +888,14 @@ JSON only:`;
           num_ctx: 6144,
         },
         modelSource,
-        model
+        model,
+        (typeof temperature === 'number' ? { temperature: tempExtract } : undefined)
       );
       const isThinking = isThinkingOllamaModel(model);
       const init: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt, stream: false, keep_alive: isThinking ? '15m' : '5m', options }),
+        body: JSON.stringify({ model, prompt, stream: false, keep_alive: isThinking ? '15m' : '5m', options, format: 'json' }),
       };
       logRequest("Ollama.generate", url, init);
       const res = await fetch(url, init);
@@ -858,7 +909,17 @@ JSON only:`;
         throw new Error(`Ollama request failed (${res.status}): ${body}`);
       }
       const json: any = await res.json();
-      content = json.response || json.final_response || json?.message?.content || "[]";
+      content = json.response || json.final_response || json?.message?.content || "";
+      if (!content || !String(content).trim()) {
+        const think = typeof json.thinking === 'string' ? json.thinking : undefined;
+        if (think && think.trim()) {
+          writeDebugLine('OLLAMA EMPTY RESPONSE; USING THINKING FALLBACK', { bytes: think.length });
+          content = sanitizeModelOutput(think);
+        }
+      }
+      if (!content || !String(content).trim()) {
+        content = "[]";
+      }
     } else {
       // Check if API token is available
       if (!apiToken) {
@@ -886,7 +947,7 @@ JSON only:`;
               messages: [
                 { role: 'user', content: prompt },
               ],
-              temperature: 0.2,
+              temperature: tempExtract,
               max_tokens: 500,
             },
             { fetch: createLoggingFetch('HF.chatCompletion.extractCharacters.Fireworks') }
@@ -910,7 +971,7 @@ JSON only:`;
                 inputs: prompt,
                 parameters: {
                   max_new_tokens: 500,
-                  temperature: 0.2,
+                  temperature: tempExtract,
                   return_full_text: false,
                 },
                 provider: HF_PROVIDER as any,
@@ -932,7 +993,7 @@ JSON only:`;
                   provider: prov as any,
                   model: resolvedModelName,
                   messages: [ { role: 'user', content: prompt } ],
-                  temperature: 0.2,
+                  temperature: tempExtract,
                   max_tokens: 500,
                 },
                 { fetch: createLoggingFetch('HF.chatCompletion.extractCharacters.fallback') }
@@ -968,20 +1029,28 @@ JSON only:`;
       }
     }
     
+    // Sanitize and log raw content from extraction
+    const rawContent = content || "";
+    const sanitizedContent = sanitizeModelOutput(rawContent);
+    if (DEBUG_ENABLED) {
+      writeDebugBlock('CHARACTER EXTRACTION RAW', rawContent || '[empty]');
+      writeDebugBlock('CHARACTER EXTRACTION SANITIZED', sanitizedContent || '[empty]');
+    }
+
     // Parse JSON. Support either the new object format or legacy array format.
     let parsed: any;
     let characterNames: string[] = [];
     let narratorCharacterName: string | undefined = undefined;
     try {
-      parsed = JSON.parse(content.trim());
+      parsed = JSON.parse(sanitizedContent.trim());
     } catch {
       // Try to extract JSON code block/object first
-      const objMatch = content.match(/\{[\s\S]*\}/);
+      const objMatch = sanitizedContent.match(/\{[\s\S]*\}/);
       if (objMatch) {
         try { parsed = JSON.parse(objMatch[0]); } catch {}
       }
       if (!parsed) {
-        const arrMatch = content.match(/\[[\s\S]*?\]/);
+        const arrMatch = sanitizedContent.match(/\[[\s\S]*?\]/);
         if (arrMatch) {
           try { parsed = JSON.parse(arrMatch[0]); } catch {}
         }
@@ -997,10 +1066,20 @@ JSON only:`;
     }
     if (!Array.isArray(characterNames)) characterNames = [];
 
-    const characters = characterNames.map((name, index) => ({
-      name: String(name).trim(),
-      speakerNumber: index + 1,
-    }));
+    // Deduplicate characters while preserving order; exclude literal 'Narrator'
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const n of characterNames) {
+      const nm = String(n).trim();
+      if (!nm) continue;
+      if (/^narrator$/i.test(nm)) continue;
+      const key = nm.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); ordered.push(nm); }
+    }
+    const characters = ordered.map((name, index) => ({ name, speakerNumber: index + 1 }));
+    if (DEBUG_ENABLED) {
+      writeDebugLine('CHARACTER EXTRACTION RESULT', { characters, narratorCharacterName });
+    }
     return { characters, narratorCharacterName };
   }
 }

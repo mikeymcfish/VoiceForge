@@ -91,9 +91,10 @@ export default function Home() {
   const [modelSource, setModelSource] = useState<"api" | "ollama">("api");
   const [modelName, setModelName] = useState("meta-llama/Llama-3.1-8B-Instruct");
   const [ollamaModelName, setOllamaModelName] = useState<string>();
+  const [temperature, setTemperature] = useState<number>(0.3);
+  const [llmCleaningDisabled, setLlmCleaningDisabled] = useState<boolean>(false);
   const [customInstructions, setCustomInstructions] = useState("");
   const [singlePass, setSinglePass] = useState(false);
-  const [concisePrompts, setConcisePrompts] = useState(false);
   const [extendedExamples, setExtendedExamples] = useState(false);
 
   const [isProcessing, setIsProcessing] = useState(false);
@@ -114,7 +115,28 @@ export default function Home() {
 
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Auto-select first API model from good_models.json and default batch size
+  // Load settings from localStorage (persisted between runs)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('vf_settings');
+      if (raw) {
+        const cfg = JSON.parse(raw);
+        if (typeof cfg.batchSize === 'number') setBatchSize(cfg.batchSize);
+        if (cfg.cleaningOptions) setCleaningOptions(ensureFixHyphenation(cfg.cleaningOptions));
+        if (cfg.speakerConfig) setSpeakerConfig(ensureNarratorDefaults(cfg.speakerConfig));
+        if (cfg.modelSource === 'api' || cfg.modelSource === 'ollama') setModelSource(cfg.modelSource);
+        if (typeof cfg.modelName === 'string') setModelName(cfg.modelName);
+        if (typeof cfg.ollamaModelName === 'string') setOllamaModelName(cfg.ollamaModelName);
+        if (typeof cfg.customInstructions === 'string') setCustomInstructions(cfg.customInstructions);
+        if (typeof cfg.singlePass === 'boolean') setSinglePass(cfg.singlePass);
+        if (typeof cfg.extendedExamples === 'boolean') setExtendedExamples(cfg.extendedExamples);
+        if (typeof cfg.temperature === 'number') setTemperature(cfg.temperature);
+        if (typeof cfg.llmCleaningDisabled === 'boolean') setLlmCleaningDisabled(cfg.llmCleaningDisabled);
+      }
+    } catch {}
+  }, []);
+
+  // Auto-select first API model from good_models.json and default batch size (only if not set)
   useEffect(() => {
     if (modelSource !== 'api') return;
     (async () => {
@@ -127,17 +149,58 @@ export default function Home() {
         if (!first) return;
         const id = typeof first === 'string' ? first : first.id;
         const rec = typeof first === 'string' ? undefined : first.recommendedChunkSize;
-        // Set default only if still on initial default
-        if (modelName === 'meta-llama/Llama-3.1-8B-Instruct') {
+        // Set default only if still on initial default and no saved preference
+        if (!localStorage.getItem('vf_settings') && modelName === 'meta-llama/Llama-3.1-8B-Instruct') {
           setModelName(id);
         }
         if (typeof rec === 'number') {
-          setBatchSize(rec);
+          if (!localStorage.getItem('vf_settings')) setBatchSize(rec);
         }
       } catch {}
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Persist settings to localStorage on change
+  useEffect(() => {
+    try {
+      const cfg = {
+        batchSize,
+        cleaningOptions,
+        speakerConfig,
+        modelSource,
+        modelName,
+        ollamaModelName,
+        customInstructions,
+        singlePass,
+        extendedExamples,
+        temperature,
+        llmCleaningDisabled,
+      };
+      localStorage.setItem('vf_settings', JSON.stringify(cfg));
+    } catch {}
+  }, [batchSize, cleaningOptions, speakerConfig, modelSource, modelName, ollamaModelName, customInstructions, singlePass, extendedExamples, temperature, llmCleaningDisabled]);
+
+  // When switching to Ollama, attempt to select the first installed model
+  useEffect(() => {
+    if (modelSource !== 'ollama') return;
+    if (ollamaModelName && ollamaModelName.trim().length > 0) return;
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/ollama/models');
+        if (!res.ok) return;
+        const data = await res.json();
+        const models: string[] = Array.isArray(data?.models)
+          ? data.models.map((m: any) => (typeof m === 'string' ? m : m?.id)).filter(Boolean)
+          : [];
+        if (mounted && models.length > 0) {
+          setOllamaModelName(models[0]);
+        }
+      } catch {}
+    })();
+    return () => { mounted = false; };
+  }, [modelSource, ollamaModelName]);
 
   const addLog = (
     type: LogEntry["type"],
@@ -227,9 +290,10 @@ export default function Home() {
             modelSource,
             modelName,
             ollamaModelName,
+            temperature,
+            llmCleaningDisabled,
             customInstructions: customInstructions || undefined,
             singlePass,
-            concisePrompts,
             extendedExamples,
           },
         })
@@ -454,9 +518,10 @@ export default function Home() {
             modelSource,
             modelName,
             ollamaModelName,
+            temperature,
+            llmCleaningDisabled,
             customInstructions: customInstructions || undefined,
             singlePass,
-            concisePrompts,
             extendedExamples,
           },
         }),
@@ -618,7 +683,7 @@ export default function Home() {
               speakerConfig={speakerConfig}
               customInstructions={customInstructions}
               singlePass={singlePass}
-              concisePrompts={concisePrompts}
+              llmCleaningDisabled={llmCleaningDisabled}
               extendedExamples={extendedExamples}
               disabled={isProcessing || isCleaning}
             />
@@ -628,11 +693,13 @@ export default function Home() {
             onBatchSizeChange={setBatchSize}
             modelName={modelName}
             onModelNameChange={setModelName}
+            temperature={temperature}
+            onTemperatureChange={setTemperature}
+            llmCleaningDisabled={llmCleaningDisabled}
+            onLlmCleaningDisabledChange={setLlmCleaningDisabled}
             estimatedTotalCost={estimatedTotalCost}
             singlePass={singlePass}
             onSinglePassChange={setSinglePass}
-            concisePrompts={concisePrompts}
-            onConcisePromptsChange={setConcisePrompts}
             extendedExamples={extendedExamples}
             onExtendedExamplesChange={setExtendedExamples}
             onStart={handleStartProcessing}

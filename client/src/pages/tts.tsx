@@ -16,6 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
@@ -162,7 +163,7 @@ export default function TtsPage() {
   const [isWsConnected, setIsWsConnected] = useState(false);
   const [logs, setLogs] = useState<TtsLogEntry[]>([]);
 
-  const [vibeAudioFile, setVibeAudioFile] = useState<File | null>(null);
+  // replaced by multi-voice inputs
   const [vibeScriptFile, setVibeScriptFile] = useState<File | null>(null);
   const [vibeScriptText, setVibeScriptText] = useState("");
   const [vibeStyle, setVibeStyle] = useState("");
@@ -424,11 +425,21 @@ export default function TtsPage() {
   const canStart =
     Boolean(audioFile) && scriptText.trim().length > 0 && !isSubmitting && status?.downloadStatus === "completed";
 
-  const handleVibeAudioChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+  const handleVibeAudioChange1 = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
-      setVibeAudioFile(file);
-    }
+    if (file) setVibeAudioFile1(file);
+  }, []);
+  const handleVibeAudioChange2 = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) setVibeAudioFile2(file);
+  }, []);
+  const handleVibeAudioChange3 = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) setVibeAudioFile3(file);
+  }, []);
+  const handleVibeAudioChange4 = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) setVibeAudioFile4(file);
   }, []);
 
   const handleVibeScriptFile = useCallback((event: ChangeEvent<HTMLInputElement>) => {
@@ -501,9 +512,10 @@ export default function TtsPage() {
     setIsVibeSubmitting(true);
     try {
       const formData = new FormData();
-      if (vibeAudioFile) {
-        formData.append("voice", vibeAudioFile);
-      }
+      if (vibeAudioFile1) formData.append("voice1", vibeAudioFile1);
+      if (vibeAudioFile2) formData.append("voice2", vibeAudioFile2);
+      if (vibeAudioFile3) formData.append("voice3", vibeAudioFile3);
+      if (vibeAudioFile4) formData.append("voice4", vibeAudioFile4);
       if (vibeScriptFile) {
         formData.append("script", vibeScriptFile);
       } else {
@@ -514,6 +526,9 @@ export default function TtsPage() {
       }
       if (Number.isFinite(vibeTemperature)) {
         formData.append("temperature", String(vibeTemperature));
+      }
+      if (vibeModelId && vibeModelId.trim().length > 0) {
+        formData.append("modelId", vibeModelId.trim());
       }
 
       const res = await fetch("/api/vibevoice/synthesize", {
@@ -542,9 +557,16 @@ export default function TtsPage() {
     } finally {
       setIsVibeSubmitting(false);
     }
-  }, [toast, vibeAudioFile, vibeScriptFile, vibeScriptText, vibeStatus?.ready, vibeStyle, vibeTemperature]);
+  }, [toast, vibeAudioFile1, vibeAudioFile2, vibeAudioFile3, vibeAudioFile4, vibeScriptFile, vibeScriptText, vibeStatus?.ready, vibeStyle, vibeTemperature, vibeModelId]);
 
   const canStartVibe = vibeScriptText.trim().length > 0 && !isVibeSubmitting && Boolean(vibeStatus?.ready);
+
+  // VibeVoice state: model + up to 4 voices
+  const [vibeModelId, setVibeModelId] = useState<string>("");
+  const [vibeAudioFile1, setVibeAudioFile1] = useState<File | undefined>(undefined);
+  const [vibeAudioFile2, setVibeAudioFile2] = useState<File | undefined>(undefined);
+  const [vibeAudioFile3, setVibeAudioFile3] = useState<File | undefined>(undefined);
+  const [vibeAudioFile4, setVibeAudioFile4] = useState<File | undefined>(undefined);
 
   return (
     <div className="h-full overflow-auto">
@@ -924,16 +946,69 @@ export default function TtsPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="vibe-voice" className="flex items-center gap-2">
-                      <Headphones className="h-4 w-4" />
-                      Voice reference (optional)
-                    </Label>
-                    <Input id="vibe-voice" type="file" accept="audio/*" onChange={handleVibeAudioChange} />
-                    {vibeAudioFile && (
-                      <p className="text-xs text-muted-foreground">
-                        Selected: {vibeAudioFile.name} ({(vibeAudioFile.size / 1024 / 1024).toFixed(2)} MB)
-                      </p>
-                    )}
+                    <Label htmlFor="vibe-model">Model</Label>
+                    <Select value={vibeModelId} onValueChange={setVibeModelId}>
+                      <SelectTrigger id="vibe-model" className="w-full">
+                        <SelectValue placeholder="Select model (optional)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(
+                          (vibeStatus?.availableModels ?? []).length > 0
+                            ? vibeStatus?.availableModels
+                            : [
+                                { id: "microsoft/VibeVoice-1.5B", path: "" },
+                                { id: "aoi-ot/VibeVoice-Large", path: "" },
+                              ]
+                        ).map((m) => (
+                          <SelectItem key={m.id} value={m.id}>
+                            {m.id}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="vibe-voice1" className="flex items-center gap-2">
+                        <Headphones className="h-4 w-4" />
+                        Voice 1 (optional)
+                      </Label>
+                      <Input id="vibe-voice1" type="file" accept="audio/*" onChange={handleVibeAudioChange1} />
+                      {vibeAudioFile1 && (
+                        <p className="text-xs text-muted-foreground">Selected: {vibeAudioFile1.name}</p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="vibe-voice2" className="flex items-center gap-2">
+                        <Headphones className="h-4 w-4" />
+                        Voice 2 (optional)
+                      </Label>
+                      <Input id="vibe-voice2" type="file" accept="audio/*" onChange={handleVibeAudioChange2} />
+                      {vibeAudioFile2 && (
+                        <p className="text-xs text-muted-foreground">Selected: {vibeAudioFile2.name}</p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="vibe-voice3" className="flex items-center gap-2">
+                        <Headphones className="h-4 w-4" />
+                        Voice 3 (optional)
+                      </Label>
+                      <Input id="vibe-voice3" type="file" accept="audio/*" onChange={handleVibeAudioChange3} />
+                      {vibeAudioFile3 && (
+                        <p className="text-xs text-muted-foreground">Selected: {vibeAudioFile3.name}</p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="vibe-voice4" className="flex items-center gap-2">
+                        <Headphones className="h-4 w-4" />
+                        Voice 4 (optional)
+                      </Label>
+                      <Input id="vibe-voice4" type="file" accept="audio/*" onChange={handleVibeAudioChange4} />
+                      {vibeAudioFile4 && (
+                        <p className="text-xs text-muted-foreground">Selected: {vibeAudioFile4.name}</p>
+                      )}
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -1016,6 +1091,10 @@ export default function TtsPage() {
                       <div className="text-xs text-muted-foreground space-y-1">
                         <p>{job.message || "Waiting…"}</p>
                         {job.style && <p>Style: {job.style}</p>}
+                        {job.selectedModel && <p>Model: {job.selectedModel}</p>}
+                        {job.voiceFileNames && job.voiceFileNames.length > 0 && (
+                          <p>Voices: {job.voiceFileNames.join(", ")}</p>
+                        )}
                       </div>
                       {job.status === "completed" && job.outputFile && (
                         <Button variant="outline" size="sm" className="w-full" asChild>

@@ -126,6 +126,75 @@ def try_download_assets(repo_dir: str) -> None:
     emit("log", level="info", message="No dedicated download script detected; assuming manual model management")
 
 
+def ensure_hf_hub_installed() -> None:
+    try:
+        import huggingface_hub  # noqa: F401
+    except Exception:
+        emit("log", level="info", message="Installing huggingface_hub for model downloads…")
+        run_process([sys.executable, "-m", "pip", "install", "--upgrade", "huggingface_hub>=0.23.0"], stream=True)
+
+
+def parse_model_ids_from_env() -> List[str]:
+    raw = os.environ.get("VIBEVOICE_MODELS") or os.environ.get("VIBEVOICE_MODEL_IDS")
+    if raw and raw.strip():
+        # allow comma, semicolon or whitespace separators
+        parts = [p.strip() for p in raw.replace(";", ",").replace("\n", ",").split(",")]
+        return [p for p in parts if p]
+    # sensible defaults per user request
+    return [
+        "microsoft/VibeVoice-1.5B",
+        "aoi-ot/VibeVoice-Large",
+    ]
+
+
+def download_hf_models(models_dir: str) -> None:
+    models = parse_model_ids_from_env()
+    if not models:
+        emit("log", level="info", message="No VibeVoice models specified; skipping HF download")
+        return
+
+    ensure_hf_hub_installed()
+
+    # Import after potential install
+    from huggingface_hub import snapshot_download  # type: ignore
+
+    token = os.environ.get("HUGGINGFACE_API_TOKEN") or os.environ.get("HF_TOKEN")
+
+    total = len(models)
+    for idx, repo_id in enumerate(models, start=1):
+        safe_name = repo_id.replace("/", "__")
+        local_dir = os.path.join(models_dir, safe_name)
+        os.makedirs(local_dir, exist_ok=True)
+
+        base_prog = 0.6  # start progress after repo setup stage
+        end_prog = 0.95
+        prog = base_prog + (idx / max(total, 1)) * (end_prog - base_prog)
+        emit("progress", progress=prog, message=f"Downloading {repo_id}…")
+
+        try:
+            snapshot_download(
+                repo_id,
+                local_dir=local_dir,
+                local_dir_use_symlinks=False,
+                token=token,
+                resume_download=True,
+                max_workers=8,
+            )
+            try:
+                with open(os.path.join(local_dir, "repo_id.txt"), "w", encoding="utf-8") as f:
+                    f.write(repo_id)
+            except Exception:
+                pass
+            emit("log", level="info", message=f"Downloaded {repo_id} -> {local_dir}")
+            emit("log", level="info", message=f"Downloaded {repo_id} → {local_dir}")
+        except Exception as exc:  # noqa: BLE001
+            emit(
+                "log",
+                level="warn",
+                message=f"Failed to download {repo_id}: {exc}. You can pre-download manually or adjust VIBEVOICE_MODELS.",
+            )
+
+
 def setup(args: argparse.Namespace) -> None:
     prepare_environment(args.root_dir)
     repo_url = args.repo_url or "https://github.com/vibevoice-community/VibeVoice.git"
@@ -134,6 +203,8 @@ def setup(args: argparse.Namespace) -> None:
     ensure_repo(repo_url, branch, args.repo_dir)
     install_requirements(args.repo_dir)
     try_download_assets(args.repo_dir)
+    # Attempt to fetch baseline models for VibeVoice
+    download_hf_models(os.path.join(args.root_dir, "models"))
 
     emit("complete", progress=1.0, message="VibeVoice setup complete", output_path=args.repo_dir)
 
@@ -248,27 +319,66 @@ def synthesize(args: argparse.Namespace) -> None:
     if not text_content:
         raise ValueError("Text input is empty")
 
-    if args.voice and not os.path.isfile(args.voice):
-        raise FileNotFoundError(f"Voice reference not found: {args.voice}")
+    voices: List[str] = []
+    if args.voice:
+        for v in args.voice:
+            if not os.path.isfile(v):
+                raise FileNotFoundError(f"Voice reference not found: {v}")
+            voices.append(v)
 
     job_dir = os.path.dirname(os.path.abspath(args.text))
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+
+    # Resolve selected model directory, if requested
+    selected_model_dir: Optional[str] = None
+    if getattr(args, "model_id", None):
+        models_root = os.path.join(args.root_dir, "models")
+        safe_name = args.model_id.replace("/", "__")
+        candidate = os.path.join(models_root, safe_name)
+        if os.path.isdir(candidate):
+            selected_model_dir = candidate
+        else:
+            try:
+                for name in os.listdir(models_root):
+                    sub = os.path.join(models_root, name)
+                    if not os.path.isdir(sub):
+                        continue
+                    try:
+                        with open(os.path.join(sub, "repo_id.txt"), "r", encoding="utf-8") as fh:
+                            rid = fh.read().strip()
+                            if rid == args.model_id:
+                                selected_model_dir = sub
+                                break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
 
     replacements: Dict[str, Optional[str]] = {
         "python": sys.executable,
         "text_path": args.text,
         "output_path": args.output,
-        "voice_path": args.voice,
-        "style": args.style,
-        "temperature": str(args.temperature) if args.temperature is not None else None,
+        "voice_path": voices[0] if voices else None,
+        "style": getattr(args, "style", None),
+        "temperature": str(args.temperature) if getattr(args, "temperature", None) is not None else None,
         "job_id": args.job_id,
         "job_dir": job_dir,
         "repo_dir": args.repo_dir,
         "root_dir": args.root_dir,
         "models_dir": os.path.join(args.root_dir, "models"),
-        "voice_arg": f"--voice {args.voice}" if args.voice else None,
-        "style_arg": f"--style {args.style}" if args.style else None,
-        "temperature_arg": f"--temperature {args.temperature}" if args.temperature is not None else None,
+        "model_id": getattr(args, "model_id", None),
+        "model_dir": selected_model_dir,
+        "voice1": voices[0] if len(voices) > 0 else None,
+        "voice2": voices[1] if len(voices) > 1 else None,
+        "voice3": voices[2] if len(voices) > 2 else None,
+        "voice4": voices[3] if len(voices) > 3 else None,
+        "voice_arg": f"--voice {voices[0]}" if voices else None,
+        "voices_arg": " ".join([f"--voice {p}" for p in voices]) if voices else None,
+        "ref_args": " ".join([f"--ref {p}" for p in voices]) if voices else None,
+        "ref_audio_args": " ".join([f"--ref_audio {p}" for p in voices]) if voices else None,
+        "reference_audio_args": " ".join([f"--reference-audio {p}" for p in voices]) if voices else None,
+        "style_arg": f"--style {getattr(args, 'style', '')}" if getattr(args, "style", None) else None,
+        "temperature_arg": f"--temperature {getattr(args, 'temperature', '')}" if getattr(args, "temperature", None) is not None else None,
     }
 
     command = build_command(args.repo_dir, replacements)
@@ -302,9 +412,10 @@ def main():
     synth_parser.add_argument("--job-id", required=True)
     synth_parser.add_argument("--text", required=True)
     synth_parser.add_argument("--output", required=True)
-    synth_parser.add_argument("--voice")
+    synth_parser.add_argument("--voice", action="append")
     synth_parser.add_argument("--style")
     synth_parser.add_argument("--temperature", type=float)
+    synth_parser.add_argument("--model-id")
 
     args = parser.parse_args()
 

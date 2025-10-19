@@ -14,11 +14,13 @@ interface ProcessingControlsProps {
   onBatchSizeChange: (size: number) => void;
   modelName: string;
   onModelNameChange: (name: string) => void;
+  temperature?: number;
+  onTemperatureChange?: (t: number) => void;
+  llmCleaningDisabled?: boolean;
+  onLlmCleaningDisabledChange?: (val: boolean) => void;
   estimatedTotalCost?: number;
   singlePass?: boolean;
   onSinglePassChange?: (val: boolean) => void;
-  concisePrompts?: boolean;
-  onConcisePromptsChange?: (val: boolean) => void;
   extendedExamples?: boolean;
   onExtendedExamplesChange?: (val: boolean) => void;
   onStart: () => void;
@@ -34,11 +36,13 @@ export function ProcessingControls({
   onBatchSizeChange,
   modelName,
   onModelNameChange,
+  temperature = 0.3,
+  onTemperatureChange,
+  llmCleaningDisabled = false,
+  onLlmCleaningDisabledChange,
   estimatedTotalCost,
   singlePass = false,
   onSinglePassChange,
-  concisePrompts = true,
-  onConcisePromptsChange,
   extendedExamples = false,
   onExtendedExamplesChange,
   onStart,
@@ -116,16 +120,16 @@ export function ProcessingControls({
         <div className="flex items-center justify-between py-1">
           <div className="space-y-0.5">
             <div className="flex items-center gap-2">
-              <Label className="text-sm font-medium">Concise Prompts</Label>
+              <Label className="text-sm font-medium">Bypass LLM Cleaning</Label>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
                 </TooltipTrigger>
-                <TooltipContent>Use shorter instructions to reduce input tokens</TooltipContent>
+                <TooltipContent>Skip LLM cleaning and use only local deterministic cleaning</TooltipContent>
               </Tooltip>
             </div>
           </div>
-          <Switch checked={concisePrompts} onCheckedChange={(val) => onConcisePromptsChange?.(val === true)} disabled={isProcessing} data-testid="switch-concise-prompts" />
+          <Switch checked={llmCleaningDisabled} onCheckedChange={(val) => onLlmCleaningDisabledChange?.(val === true)} disabled={isProcessing} data-testid="switch-bypass-llm-cleaning" />
         </div>
 
         <div className="flex items-center justify-between py-1">
@@ -187,6 +191,26 @@ export function ProcessingControls({
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="space-y-1">
+                  <Label htmlFor="temperature" className="text-xs text-muted-foreground">Temperature (0–2)</Label>
+                  <Input
+                    id="temperature"
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={Number.isFinite(temperature) ? String(temperature) : "0.3"}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      if (!onTemperatureChange) return;
+                      if (Number.isFinite(v)) {
+                        onTemperatureChange(Math.min(2, Math.max(0, v)));
+                      }
+                    }}
+                    disabled={isProcessing}
+                    className="h-9"
+                  />
+                </div>
               </div>
             </div>
           </CollapsibleContent>
@@ -216,4 +240,3 @@ export function ProcessingControls({
     </Card>
   );
 }
-
