@@ -441,34 +441,79 @@ Rules:
     const mapping = (config.characterMapping && config.characterMapping.length > 0)
       ? config.characterMapping.map((c) => `${c.name} = Speaker ${c.speakerNumber}`).join('; ')
       : 'none';
-    const preprocessing = 'Preprocessing: already applied before this step.';
+    // Do not include any preprocessing/transformation instructions in Stage 2
+    const preprocessing = '';
+    const includeNarrator = Boolean(config.includeNarrator);
+    const narratorName = (config as any).narratorCharacterName && String((config as any).narratorCharacterName).trim() || undefined;
+    const labelFormat = (config.labelFormat || 'speaker');
+    const speakerLabelExample = labelFormat === 'bracket' ? '[1]:' : 'Speaker 1:';
+    const speakerLabelInstructions = labelFormat === 'bracket'
+      ? 'Identify all unique speaking characters. Assign them labels dynamically using bracket format: the first character to speak becomes [1]:, the second becomes [2]:, and so on.'
+      : 'Identify all unique speaking characters. Assign them labels dynamically: the first character to speak becomes Speaker 1:, the second becomes Speaker 2:, and so on.';
+    const narratorRule = includeNarrator
+      ? 'All non‑quoted narrative, descriptive, or action text MUST be labeled using the Narrator: tag — never as any Speaker X:. Do not attribute narration content to speakers.'
+      : 'Omit non‑quoted narrative, descriptive, or action text. Output only spoken dialogue labeled with the chosen speaker format.';
+    const narratorIdentity = narratorName
+      ? `Narrator Identity: The narrator is "${narratorName}". For narration, write from first‑person ("I") from that character’s perspective. Do not include the narrator’s name inside narration.`
+      : '';
+    const narratorAttr = (config as any).narratorAttribution || 'contextual';
+    let attributionRule: string;
+    if (config.mode === 'format') {
+      attributionRule = 'Do not transform attribution tags. Preserve the original text and punctuation. Only add speaker labels and remove surrounding quotation marks for dialogue.';
+    } else {
+      attributionRule = narratorAttr === 'remove'
+        ? 'Remove simple attribution tags (e.g., he said, Alice asked) entirely. The Speaker label makes them redundant.'
+        : narratorAttr === 'verbatim'
+          ? 'Move attribution tags (e.g., he said, Alice asked) into a separate Narrator: line immediately after the spoken line (preserve punctuation).'
+          : 'Transform attribution and action: if attribution is paired with action, convert it into a concise Narrator: line (omit the attribution verb); if attribution is simple and provides no new action, omit it. Preserve the first‑person narrator exception.';
+    }
+
+    // Examples: prefer actual mapped names to guide the model
+    let examples = '';
+    if (extendedExamples && config.mode === 'intelligent') {
+      const names = (config.characterMapping || []).map(c => c.name).filter(Boolean);
+      const n1 = names[0] || 'Alice';
+      const n2 = names[1] || 'Bob';
+      const n3 = names[2] || 'Charlie';
+      const exSpeaker1 = speakerLabelExample;
+      const exSpeaker2 = labelFormat === 'bracket' ? '[2]:' : 'Speaker 2:';
+      const ex: string[] = [];
+      ex.push('Examples:');
+      ex.push(`Input: "Are you coming to the party?" ${n1} asked.`);
+      ex.push(`Output: ${exSpeaker1} Are you coming to the party?`);
+      ex.push(`Input: "It's a beautiful day," ${n2} said, looking up at the sky.`);
+      ex.push(`Output: ${exSpeaker2} It's a beautiful day.`);
+      ex.push('Narrator: ' + `${n2} looked up at the sky.`);
+      if (includeNarrator) {
+        ex.push(`Input: I nodded in agreement.`);
+        ex.push(`Output: Narrator: I nodded in agreement.`);
+      }
+      examples = ex.join('\n');
+    }
+
     if (tpl) {
       return renderTemplate(tpl, {
         mapping,
         preprocessing,
         text,
+        speaker_label_example: speakerLabelExample,
+        speaker_label_instructions: speakerLabelInstructions,
+        narrator_rule: narratorRule,
+        narrator_identity: narratorIdentity,
+        attribution_rule: attributionRule,
+        examples,
       });
     }
 
-    // Fallback to inline prompt if template missing
-    const includeNarrator = Boolean(config.includeNarrator);
-    const narratorName = (config as any).narratorCharacterName && String((config as any).narratorCharacterName).trim() || undefined;
+    // Fallback inline prompt if template missing
     const parts: string[] = [];
-    parts.push('You are a dialogue structuring assistant for multi-speaker TTS. Cleaned text is provided. Format into strict Speaker and Narrator lines.');
-    parts.push('- Assign labels dynamically: first speaker -> Speaker 1:, second -> Speaker 2:, etc.');
-    if (includeNarrator) {
-      parts.push('- Label narration, descriptions, and actions with Narrator:.');
-      if (narratorName) parts.push(`- Narration should reflect first-person perspective when clearly from "${narratorName}"; do not insert their name in narration.`);
-    } else {
-      parts.push('- Omit narrative-only lines (no Narrator: lines).');
-    }
-    parts.push('- Put spoken dialogue on its own Speaker line and remove quotes.');
-    parts.push('- Merge dialogue from the same speaker if separated only by attribution.');
-    parts.push('- Attribution+action -> Narrator line (omit "said"/"asked"); attribution-only -> omit.');
-    parts.push('- First-person narrator exception: keep narrator\'s own first-person attributions inline.');
-    if (config.characterMapping?.length) {
-      parts.push(`Mapping: ${mapping}`);
-    }
+    parts.push('You are a dialogue structuring assistant for multi-speaker TTS. Format into strict Speaker/Narrator lines.');
+    parts.push(speakerLabelInstructions);
+    parts.push(narratorRule);
+    parts.push('Remove quotation marks from dialogue.');
+    parts.push('Merge dialogue from the same speaker when separated only by an attribution.');
+    parts.push(attributionRule);
+    if (narratorIdentity) parts.push(narratorIdentity);
     parts.push(`\nText:\n${text}\n\nFormatted:`);
     return parts.join('\n');
   }
@@ -708,10 +753,57 @@ Rules:
       if (cleaning.addPunctuation) parts.push(`* Ensure punctuation after headers/loose numbers for TTS.`);
       preprocessing = ['Preprocessing Steps:', ...parts].join('\n');
     }
-    if (tpl) {
-      return renderTemplate(tpl, { mapping, preprocessing, text });
+
+    const includeNarrator = Boolean(config.includeNarrator);
+    const narratorName = (config as any).narratorCharacterName && String((config as any).narratorCharacterName).trim() || undefined;
+    const labelFormat = (config.labelFormat || 'speaker');
+    const speakerLabelExample = labelFormat === 'bracket' ? '[1]:' : 'Speaker 1:';
+    const speakerLabelInstructions = labelFormat === 'bracket'
+      ? 'Identify all unique speaking characters. Assign them labels dynamically using bracket format: the first character to speak becomes [1]:, the second becomes [2]:, and so on.'
+      : 'Identify all unique speaking characters. Assign them labels dynamically: the first character to speak becomes Speaker 1:, the second becomes Speaker 2:, and so on.';
+    const narratorRule = includeNarrator
+      ? 'All non‑quoted narrative, descriptive, or action text MUST be labeled using the Narrator: tag — never as any Speaker X:. Do not attribute narration content to speakers.'
+      : 'Omit non‑quoted narrative, descriptive, or action text. Output only spoken dialogue labeled with the chosen speaker format.';
+    const narratorIdentity = narratorName
+      ? `Narrator Identity: The narrator is "${narratorName}". For narration, write from first‑person ("I") from that character’s perspective. Do not include the narrator’s name inside narration.`
+      : '';
+    const narratorAttr = (config as any).narratorAttribution || 'contextual';
+    let attributionRule: string;
+    if (config.mode === 'format') {
+      attributionRule = 'Do not transform attribution tags. Preserve the original text and punctuation. Only add speaker labels and remove surrounding quotation marks for dialogue.';
+    } else {
+      attributionRule = narratorAttr === 'remove'
+        ? 'Remove simple attribution tags (e.g., he said, Alice asked) entirely. The Speaker label makes them redundant.'
+        : narratorAttr === 'verbatim'
+          ? 'Move attribution tags (e.g., he said, Alice asked) into a separate Narrator: line immediately after the spoken line (preserve punctuation).'
+          : 'Transform attribution and action: if attribution is paired with action, convert it into a concise Narrator: line (omit the attribution verb); if attribution is simple and provides no new action, omit it. Preserve the first‑person narrator exception.';
     }
-    // Fallback to speaker prompt if template not found
+
+    let examples = '';
+    if (extendedExamples && config.mode === 'intelligent') {
+      examples = [
+        'Examples:',
+        `Input: "Where are we going?" she whispered as she picked up a map.`,
+        `Output: ${speakerLabelExample} Where are we going?`,
+        'Narrator: She whispered as she picked up a map.',
+        `Input: "To the park," I replied.`,
+        `Output: ${speakerLabelExample.replace('1', '2')} To the park, I replied.`
+      ].join('\n');
+    }
+
+    if (tpl) {
+      return renderTemplate(tpl, {
+        mapping,
+        preprocessing,
+        text,
+        speaker_label_example: speakerLabelExample,
+        speaker_label_instructions: speakerLabelInstructions,
+        narrator_rule: narratorRule,
+        narrator_identity: narratorIdentity,
+        attribution_rule: attributionRule,
+        examples,
+      });
+    }
     return this.buildSpeakerPrompt(text, config, customInstructions, extendedExamples);
   }
 
