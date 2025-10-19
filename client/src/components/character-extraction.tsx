@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -7,8 +7,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, Users, Trash2, CircleHelp } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { clampCharacterSampleSize, getCharacterSampleCeiling, isThinkingOllamaModel } from "@shared/model-utils";
 
 interface CharacterMapping {
   name: string;
@@ -47,6 +48,19 @@ export function CharacterExtraction({
   const [isExtracting, setIsExtracting] = useState(false);
   const { toast } = useToast();
   const [newCharacterName, setNewCharacterName] = useState("");
+  const [sampleInput, setSampleInput] = useState(String(sampleSize));
+  const maxSampleSize = getCharacterSampleCeiling(modelSource, ollamaModelName);
+  const isThinking = modelSource === "ollama" && isThinkingOllamaModel(ollamaModelName);
+
+  useEffect(() => {
+    if (sampleSize > maxSampleSize) {
+      onSampleSizeChange(maxSampleSize);
+    }
+  }, [maxSampleSize, onSampleSizeChange, sampleSize]);
+
+  useEffect(() => {
+    setSampleInput(String(sampleSize));
+  }, [sampleSize]);
 
   const handleExtractCharacters = async () => {
     if (!text) {
@@ -73,6 +87,7 @@ export function CharacterExtraction({
         characters: CharacterMapping[];
         narratorCharacterName?: string;
         sampleSentenceCount: number;
+        sampleLimit?: number;
       };
 
       onCharactersExtracted(response.characters);
@@ -132,13 +147,30 @@ export function CharacterExtraction({
             id="sample-size"
             type="number"
             min={5}
-            max={100}
-            value={sampleSize}
-            onChange={(e) => onSampleSizeChange(parseInt(e.target.value) || 20)}
+            max={maxSampleSize}
+            value={sampleInput}
+            onChange={(e) => setSampleInput(e.target.value)}
+            onBlur={() => {
+              const parsed = parseInt(sampleInput, 10);
+              if (Number.isNaN(parsed)) {
+                setSampleInput(String(sampleSize));
+                return;
+              }
+              const normalized = clampCharacterSampleSize(parsed, modelSource, ollamaModelName);
+              setSampleInput(String(normalized));
+              if (normalized !== sampleSize) {
+                onSampleSizeChange(normalized);
+              }
+            }}
             disabled={disabled || isExtracting}
             data-testid="input-sample-size"
             className="h-9"
           />
+          <p className="text-xs text-muted-foreground">
+            {isThinking
+              ? `Thinking Ollama models can scan up to ${maxSampleSize} sentences at once.`
+              : `Maximum sample size: ${maxSampleSize} sentences.`}
+          </p>
         </div>
 
         <div className="flex items-center gap-2">
