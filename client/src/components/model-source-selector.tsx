@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Cloud, HardDrive, CircleHelp } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ModelSource } from "@shared/schema";
+import { HuggingFaceTokenSettings } from "./huggingface-token-settings";
 
 interface ModelSourceSelectorProps {
   modelSource: ModelSource;
@@ -60,7 +61,7 @@ export function ModelSourceSelector({
         </RadioGroup>
 
         {modelSource === 'api' && (
-          <div className="pl-6">
+          <div className="pl-6 space-y-3">
             <div className="flex items-center gap-2">
               <Label className="text-sm">HuggingFace API</Label>
               <Tooltip>
@@ -70,6 +71,10 @@ export function ModelSourceSelector({
                 <TooltipContent>Uses HuggingFace Inference API with your API token. Best for large, powerful models.</TooltipContent>
               </Tooltip>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Paste a HuggingFace API token to authenticate requests made from this server.
+            </p>
+            <HuggingFaceTokenSettings disabled={disabled} />
           </div>
         )}
 

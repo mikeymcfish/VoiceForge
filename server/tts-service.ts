@@ -188,11 +188,11 @@ class IndexTtsService extends EventEmitter {
     const pythonArgs = [
       "-u",
       this.workerScript,
-      command,
       "--root-dir",
       this.rootDir,
       "--models-dir",
       this.modelsDir,
+      command,
       ...args,
     ];
 

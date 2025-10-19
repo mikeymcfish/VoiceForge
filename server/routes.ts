@@ -5,13 +5,16 @@ import { WebSocketServer, WebSocket } from "ws";
 import AdmZip from "adm-zip";
 import { parse } from "node-html-parser";
 import { textProcessor } from "./text-processor";
-import { llmService } from "./llm-service";
+import { llmService, setHuggingFaceApiToken, getHuggingFaceApiToken } from "./llm-service";
 import { nanoid } from "nanoid";
-import type { ProcessingConfig, LogEntry, WSMessage } from "@shared/schema";
+import type { ProcessingConfig, LogEntry, WSMessage, HuggingFaceTokenStatus } from "@shared/schema";
+import { huggingFaceTokenUpdateSchema, deterministicCleanRequestSchema } from "@shared/schema";
+import { clampCharacterSampleSize, getCharacterSampleCeiling } from "@shared/model-utils";
 import { indexTtsService } from "./tts-service";
 import { vibevoiceService } from "./vibevoice-service";
 import fs from "fs";
 import path from "path";
+import { applyDeterministicCleaning } from "./text-cleaner";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -81,8 +84,122 @@ async function parseEpub(buffer: Buffer): Promise<string> {
   }
 }
 
+function createTokenPreview(token: string): string {
+  if (token.length <= 8) {
+    return `${token.slice(0, Math.min(4, token.length))}…`;
+  }
+  return `${token.slice(0, 4)}…${token.slice(-4)}`;
+}
+
+function buildTokenStatus(): HuggingFaceTokenStatus {
+  const token = getHuggingFaceApiToken();
+  return {
+    configured: Boolean(token),
+    tokenPreview: token ? createTokenPreview(token) : undefined,
+  };
+}
+
+async function upsertEnvValue(filePath: string, key: string, value: string | undefined): Promise<void> {
+  const normalizedValue = value?.trim();
+  const exists = fs.existsSync(filePath);
+  if (!exists && (!normalizedValue || normalizedValue.length === 0)) {
+    return;
+  }
+
+  const raw = exists ? await fs.promises.readFile(filePath, "utf-8") : "";
+  const lines = raw.length > 0 ? raw.split(/\r?\n/) : [];
+  let updated = false;
+  const output: string[] = [];
+
+  for (const line of lines) {
+    if (line === undefined) continue;
+    const match = line.match(/^\s*(export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (match && match[2] === key) {
+      updated = true;
+      if (normalizedValue && normalizedValue.length > 0) {
+        const prefix = match[1] ?? "";
+        output.push(`${prefix}${key}=${normalizedValue}`);
+      }
+    } else {
+      output.push(line);
+    }
+  }
+
+  if (!updated && normalizedValue && normalizedValue.length > 0) {
+    output.push(`${key}=${normalizedValue}`);
+  }
+
+  while (output.length > 0 && output[output.length - 1].trim() === "") {
+    output.pop();
+  }
+
+  const content = output.join("\n");
+  await fs.promises.writeFile(filePath, content ? `${content}\n` : "");
+}
+
+async function persistHuggingFaceToken(token: string | undefined): Promise<void> {
+  const envPath = path.resolve(process.cwd(), ".env");
+  const envTxtPath = path.resolve(process.cwd(), "env.txt");
+  await Promise.all([
+    upsertEnvValue(envPath, "HUGGINGFACE_API_TOKEN", token),
+    upsertEnvValue(envPath, "HF_TOKEN", token),
+    upsertEnvValue(envTxtPath, "HUGGINGFACE_API_TOKEN", token),
+    upsertEnvValue(envTxtPath, "HF_TOKEN", token),
+  ]);
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
+
+  app.get("/api/settings/huggingface-token", (_req, res) => {
+    res.json(buildTokenStatus());
+  });
+
+  app.post("/api/settings/huggingface-token", async (req, res) => {
+    const parsed = huggingFaceTokenUpdateSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+
+    const value = parsed.data.token;
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    const nextToken = trimmed.length > 0 ? trimmed : undefined;
+
+    try {
+      setHuggingFaceApiToken(nextToken);
+      await persistHuggingFaceToken(nextToken);
+      res.json(buildTokenStatus());
+    } catch (error) {
+      console.error("Failed to update HuggingFace token:", error);
+      res.status(500).json({
+        error: "Failed to update HuggingFace token",
+      });
+    }
+  });
+
+  app.post("/api/text/clean", (req, res) => {
+    const parsed = deterministicCleanRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+
+    try {
+      const { text, options } = parsed.data;
+      const pre = applyDeterministicCleaning(text, options, "pre");
+      const post = applyDeterministicCleaning(pre.text, options, "post");
+      const appliedSteps = Array.from(new Set([...pre.applied, ...post.applied]));
+      res.json({
+        cleanedText: post.text,
+        appliedSteps,
+      });
+    } catch (error) {
+      console.error("Deterministic cleaning failed:", error);
+      res.status(500).json({
+        error: "Failed to clean text",
+        details: error instanceof Error ? error.message : undefined,
+      });
+    }
+  });
 
   // Good models list (JSON with pricing preferred; fallback to TXT)
   app.get("/api/good-models", async (_req, res) => {
@@ -204,15 +321,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Missing text or sample size" });
       }
 
+      const resolvedSource = ((modelSource as any) || 'api') as 'api' | 'ollama';
+      const maxSample = getCharacterSampleCeiling(resolvedSource, ollamaModelName);
+      const effectiveSampleSize = clampCharacterSampleSize(sampleSize, resolvedSource, ollamaModelName);
+
       // Extract sample from text
       const sentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) || [text];
-      const sampleText = sentences.slice(0, sampleSize).join(" ");
+      const sampleText = sentences.slice(0, effectiveSampleSize).join(" ");
 
       // Use LLM to extract character names and narrator identity
       const { characters, narratorCharacterName } = await llmService.extractCharacters({
         text: sampleText,
         includeNarrator,
-        modelSource: (modelSource as any) || 'api',
+        modelSource: resolvedSource,
         modelName: modelName || "meta-llama/Meta-Llama-3.1-8B-Instruct",
         ollamaModelName,
       });
@@ -220,7 +341,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         characters,
         narratorCharacterName,
-        sampleSentenceCount: Math.min(sentences.length, sampleSize),
+        sampleSentenceCount: Math.min(sentences.length, effectiveSampleSize),
+        sampleLimit: maxSample,
       });
     } catch (error) {
       console.error("Character extraction error:", error);

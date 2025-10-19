@@ -1,10 +1,13 @@
 import { HfInference } from "@huggingface/inference";
 import type { CleaningOptions, SpeakerConfig, ModelSource } from "@shared/schema";
+import { buildOllamaOptions, isThinkingOllamaModel } from "@shared/model-utils";
 import fs from "fs";
 import path from "path";
+import { applyDeterministicCleaning } from "./text-cleaner";
 
 // Check if HuggingFace API token is available
-const apiToken = process.env.HUGGINGFACE_API_TOKEN;
+let apiToken: string | undefined =
+  (process.env.HUGGINGFACE_API_TOKEN || process.env.HF_TOKEN || "").trim() || undefined;
 if (!apiToken) {
   console.warn("⚠️  HUGGINGFACE_API_TOKEN not found in environment variables!");
   console.warn("   API mode will not work. Please either:");
@@ -12,7 +15,24 @@ if (!apiToken) {
   console.warn("   2. Use Ollama as the model source");
 }
 
-const hf = new HfInference(apiToken);
+let hf = new HfInference(apiToken);
+
+export function getHuggingFaceApiToken(): string | undefined {
+  return apiToken;
+}
+
+export function setHuggingFaceApiToken(token: string | undefined) {
+  const trimmed = token?.trim();
+  apiToken = trimmed && trimmed.length > 0 ? trimmed : undefined;
+  if (apiToken) {
+    process.env.HUGGINGFACE_API_TOKEN = apiToken;
+    process.env.HF_TOKEN = apiToken;
+  } else {
+    delete process.env.HUGGINGFACE_API_TOKEN;
+    delete process.env.HF_TOKEN;
+  }
+  hf = new HfInference(apiToken);
+}
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
 const HF_PROVIDER = (process.env.HF_PROVIDER || "hf-inference").trim();
 
@@ -430,6 +450,16 @@ IMPORTANT:
     if (modelSource === 'ollama') {
       const model = ollamaModelName || "llama3.1:8b";
       const url = `${OLLAMA_BASE_URL}/api/generate`;
+      const isThinking = isThinkingOllamaModel(model);
+      const options = buildOllamaOptions(
+        {
+          temperature: 0.3,
+          num_predict: 2000,
+          num_ctx: 8192,
+        },
+        modelSource,
+        model
+      );
       const init: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -437,10 +467,8 @@ IMPORTANT:
           model,
           prompt,
           stream: false,
-          options: {
-            temperature: 0.3,
-            num_predict: 2000,
-          },
+          keep_alive: isThinking ? '15m' : '5m',
+          options,
         }),
       };
       logRequest("Ollama.generate", url, init);
@@ -456,7 +484,7 @@ IMPORTANT:
         throw new Error(`Ollama request failed (${res.status}): ${body}`);
       }
       const json: any = await res.json();
-      output = json.response || '';
+      output = json.response || json.final_response || json?.message?.content || '';
     } else {
       // Check if API token is available
       if (!apiToken) {
@@ -654,32 +682,38 @@ IMPORTANT:
 
   async processChunk(options: ProcessChunkOptions): Promise<{ text: string; usage: InferenceUsage }> {
     const { text, cleaningOptions, speakerConfig, customInstructions } = options;
+    const deterministic = applyDeterministicCleaning(text, cleaningOptions, "pre");
+    const cleanedInput = deterministic.text;
 
     // Stage 1: Text cleaning
-    let processedText = '';
+    let processedText = cleanedInput;
     let totalInTokens = 0, totalOutTokens = 0, totalInCost = 0, totalOutCost = 0;
     if (speakerConfig && speakerConfig.mode !== "none" && options.singlePass) {
       if (DEBUG_ENABLED) {
         console.debug('[LLM DEBUG] Single-pass processing enabled');
       }
-      const singlePrompt = this.buildSinglePassPrompt(text, cleaningOptions, speakerConfig, customInstructions, options.extendedExamples);
+      const singlePrompt = this.buildSinglePassPrompt(cleanedInput, cleaningOptions, speakerConfig, customInstructions, options.extendedExamples);
       const r = await this.runInference(singlePrompt, options);
-      processedText = r.text;
+      if (r.text) {
+        processedText = r.text;
+      }
       totalInTokens += r.usage.inputTokens; totalOutTokens += r.usage.outputTokens;
       totalInCost += r.usage.inputCost; totalOutCost += r.usage.outputCost;
     } else {
       const useConcise = options.concisePrompts !== false;
       const cleaningPrompt = useConcise
-        ? this.buildCleaningPromptConcise(text, cleaningOptions, customInstructions)
-        : this.buildCleaningPrompt(text, cleaningOptions, customInstructions);
+        ? this.buildCleaningPromptConcise(cleanedInput, cleaningOptions, customInstructions)
+        : this.buildCleaningPrompt(cleanedInput, cleaningOptions, customInstructions);
       const r1 = await this.runInference(cleaningPrompt, options);
-      processedText = r1.text;
+      if (r1.text) {
+        processedText = r1.text;
+      }
       totalInTokens += r1.usage.inputTokens; totalOutTokens += r1.usage.outputTokens;
       totalInCost += r1.usage.inputCost; totalOutCost += r1.usage.outputCost;
     }
 
     if (!processedText) {
-      processedText = text;
+      processedText = cleanedInput;
     }
 
     // Stage 2: Speaker formatting (if configured and mode is not "none")
@@ -695,8 +729,9 @@ IMPORTANT:
       }
     }
 
+    const finalPass = applyDeterministicCleaning(processedText, cleaningOptions, "post");
     return {
-      text: processedText.trim(),
+      text: finalPass.text,
       usage: {
         inputTokens: totalInTokens,
         outputTokens: totalOutTokens,
@@ -796,10 +831,20 @@ JSON only:`;
     if (modelSource === 'ollama') {
       const model = ollamaModelName || "llama3.1:8b";
       const url = `${OLLAMA_BASE_URL}/api/generate`;
+      const options = buildOllamaOptions(
+        {
+          temperature: 0.2,
+          num_predict: 800,
+          num_ctx: 6144,
+        },
+        modelSource,
+        model
+      );
+      const isThinking = isThinkingOllamaModel(model);
       const init: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt, stream: false, options: { temperature: 0.2, num_predict: 500 } }),
+        body: JSON.stringify({ model, prompt, stream: false, keep_alive: isThinking ? '15m' : '5m', options }),
       };
       logRequest("Ollama.generate", url, init);
       const res = await fetch(url, init);
@@ -813,7 +858,7 @@ JSON only:`;
         throw new Error(`Ollama request failed (${res.status}): ${body}`);
       }
       const json: any = await res.json();
-      content = json.response || "[]";
+      content = json.response || json.final_response || json?.message?.content || "[]";
     } else {
       // Check if API token is available
       if (!apiToken) {
@@ -961,4 +1006,3 @@ JSON only:`;
 }
 
 export const llmService = new LLMService();
-

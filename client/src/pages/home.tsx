@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { FileUpload } from "@/components/file-upload";
+import { Button } from "@/components/ui/button";
 import { CleaningOptionsPanel } from "@/components/cleaning-options";
 import { SpeakerConfigPanel } from "@/components/speaker-config";
 import { CharacterExtraction } from "@/components/character-extraction";
@@ -12,12 +13,25 @@ import { OutputDisplay } from "@/components/output-display";
 import { ActivityLog } from "@/components/activity-log";
 import { useToast } from "@/hooks/use-toast";
 import { nanoid } from "nanoid";
+import { Loader2, Wand2 } from "lucide-react";
 import type {
   CleaningOptions,
   SpeakerConfig,
   LogEntry,
   FileUploadResponse,
+  DeterministicCleanResponse,
 } from "@shared/schema";
+
+const ensureFixHyphenation = (options: CleaningOptions): CleaningOptions => ({
+  ...options,
+  fixHyphenation: options.fixHyphenation ?? false,
+});
+
+const ensureNarratorDefaults = (config: SpeakerConfig): SpeakerConfig => ({
+  ...config,
+  narratorAttribution: config.narratorAttribution ?? "remove",
+  characterMapping: config.characterMapping ?? [],
+});
 
 export default function Home() {
   const { toast } = useToast();
@@ -28,26 +42,50 @@ export default function Home() {
   } | null>(null);
   const [originalText, setOriginalText] = useState("");
   
-  const [cleaningOptions, setCleaningOptions] = useState<CleaningOptions>({
-    replaceSmartQuotes: true,
-    fixOcrErrors: true,
-    correctSpelling: false,
-    removeUrls: true,
-    removeFootnotes: true,
-    addPunctuation: true,
-    fixHyphenation: false,
-  });
+  const [cleaningOptions, setCleaningOptions] = useState<CleaningOptions>(() =>
+    ensureFixHyphenation({
+      replaceSmartQuotes: true,
+      fixOcrErrors: true,
+      correctSpelling: false,
+      removeUrls: true,
+      removeFootnotes: true,
+      addPunctuation: true,
+      fixHyphenation: false,
+    })
+  );
 
-  const [speakerConfig, setSpeakerConfig] = useState<SpeakerConfig>({
-    mode: "format",
-    speakerCount: 2,
-    labelFormat: "speaker",
-    extractCharacters: false,
-    sampleSize: 50,
-    includeNarrator: false,
-    narratorAttribution: "remove",
-    characterMapping: [],
-  });
+  const updateCleaningOptions = useCallback(
+    (updater: CleaningOptions | ((prev: CleaningOptions) => CleaningOptions)) => {
+      setCleaningOptions((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        return ensureFixHyphenation(next);
+      });
+    },
+    []
+  );
+
+  const [speakerConfig, setSpeakerConfig] = useState<SpeakerConfig>(() =>
+    ensureNarratorDefaults({
+      mode: "format",
+      speakerCount: 2,
+      labelFormat: "speaker",
+      extractCharacters: false,
+      sampleSize: 50,
+      includeNarrator: false,
+      narratorAttribution: "remove",
+      characterMapping: [],
+    })
+  );
+
+  const updateSpeakerConfig = useCallback(
+    (updater: SpeakerConfig | ((prev: SpeakerConfig) => SpeakerConfig)) => {
+      setSpeakerConfig((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        return ensureNarratorDefaults(next);
+      });
+    },
+    []
+  );
 
   const [batchSize, setBatchSize] = useState(10);
   const [modelSource, setModelSource] = useState<"api" | "ollama">("api");
@@ -59,6 +97,7 @@ export default function Home() {
   const [extendedExamples, setExtendedExamples] = useState(false);
 
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentChunk, setCurrentChunk] = useState(0);
   const [totalChunks, setTotalChunks] = useState(0);
@@ -321,6 +360,81 @@ export default function Home() {
     setLogs([]);
   };
 
+  const handleDeterministicClean = async () => {
+    if (!originalText.trim()) {
+      toast({
+        title: "No text to clean",
+        description: "Upload or paste text before running deterministic cleaning.",
+        variant: "destructive",
+      });
+      addLog("warning", "Deterministic cleaning skipped", "No text available");
+      return;
+    }
+
+    setIsCleaning(true);
+    addLog("info", "Running deterministic cleaning (no LLM)...");
+
+    try {
+      const response = await fetch("/api/text/clean", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: originalText,
+          options: cleaningOptions,
+        }),
+      });
+
+      let payload: unknown = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok || !payload || typeof payload !== "object" || payload === null) {
+        const message =
+          payload && typeof payload === "object" && "error" in payload && typeof (payload as any).error === "string"
+            ? (payload as any).error
+            : `Failed to clean text (${response.status})`;
+        throw new Error(message);
+      }
+
+      const data = payload as DeterministicCleanResponse;
+      const cleaned = data.cleanedText ?? "";
+      const applied = Array.isArray(data.appliedSteps) ? data.appliedSteps.filter((step) => typeof step === "string" && step.length > 0) : [];
+
+      setOriginalText(cleaned);
+      setProcessedText(cleaned);
+      setProgress(0);
+      setCurrentChunk(0);
+      setTotalChunks(0);
+      setEtaMs(undefined);
+      setLastChunkMs(undefined);
+      setAvgChunkMs(undefined);
+      setTotalInputTokens(undefined);
+      setTotalOutputTokens(undefined);
+      setTotalCost(undefined);
+      setEstimatedTotalCost(undefined);
+
+      const appliedSummary = applied.length > 0 ? `Applied: ${applied.join(", ")}` : undefined;
+      addLog("success", "Deterministic cleaning applied", appliedSummary);
+      toast({
+        title: "Text cleaned",
+        description: appliedSummary ?? "Selected cleaning options applied without using the LLM.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to clean text";
+      addLog("error", "Deterministic cleaning failed", message);
+      toast({
+        title: "Cleaning failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsCleaning(false);
+    }
+  };
+
   const handleTestChunk = async () => {
     if (!originalText) return;
 
@@ -416,21 +530,36 @@ export default function Home() {
                   selectedFile={selectedFile}
                   onClear={handleClearFile}
                   fileStats={fileStats || undefined}
-                  isProcessing={isProcessing}
+                  isProcessing={isProcessing || isCleaning}
                 />
               </div>
             </div>
 
             <CleaningOptionsPanel
               options={cleaningOptions}
-              onChange={setCleaningOptions}
-              disabled={isProcessing}
+              onChange={updateCleaningOptions}
+              disabled={isProcessing || isCleaning}
             />
+
+            <Button
+              onClick={handleDeterministicClean}
+              disabled={!originalText || isProcessing || isCleaning}
+              variant="secondary"
+              className="w-full"
+              data-testid="button-clean-deterministic"
+            >
+              {isCleaning ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Wand2 className="mr-2 h-4 w-4" />
+              )}
+              {isCleaning ? "Cleaning..." : "Apply Cleaning (No LLM)"}
+            </Button>
 
             <SpeakerConfigPanel
               config={speakerConfig}
-              onChange={setSpeakerConfig}
-              disabled={isProcessing}
+              onChange={updateSpeakerConfig}
+              disabled={isProcessing || isCleaning}
             />
 
             {speakerConfig.mode === "intelligent" && (
@@ -438,32 +567,34 @@ export default function Home() {
                 text={originalText}
                 modelSource={modelSource}
                 modelName={modelName}
-                
                 ollamaModelName={ollamaModelName}
                 characterMapping={speakerConfig.characterMapping}
                 sampleSize={speakerConfig.sampleSize}
                 includeNarrator={speakerConfig.includeNarrator}
-                onSampleSizeChange={(size) =>
-                  setSpeakerConfig((prev) => ({ ...prev, sampleSize: size }))
-                }
-                onIncludeNarratorChange={(include) =>
-                  setSpeakerConfig((prev) => ({ ...prev, includeNarrator: include }))
-                }
-                onCharactersExtracted={(characters) => {
-                  setSpeakerConfig((prev) => ({ ...prev, characterMapping: characters }));
-                  addLog(
-                    "success",
-                    `Characters extracted: ${characters.length} character(s)`,
-                    characters.map(c => `${c.name} = Speaker ${c.speakerNumber}`).join(", ")
-                  );
-                }}
-                onNarratorCharacterNameChange={(name) => {
-                  setSpeakerConfig((prev) => ({ ...prev, narratorCharacterName: name || undefined }));
-                  if (name) {
-                    addLog("info", `Narrator identified as: ${name}`);
+                  onSampleSizeChange={(size) =>
+                    updateSpeakerConfig((prev) => ({ ...prev, sampleSize: size }))
                   }
-                }}
-                disabled={isProcessing}
+                  onIncludeNarratorChange={(include) =>
+                    updateSpeakerConfig((prev) => ({ ...prev, includeNarrator: include }))
+                  }
+                  onCharactersExtracted={(characters) => {
+                    updateSpeakerConfig((prev) => ({ ...prev, characterMapping: characters }));
+                    addLog(
+                      "success",
+                      `Characters extracted: ${characters.length} character(s)`,
+                      characters.map(c => `${c.name} = Speaker ${c.speakerNumber}`).join(", ")
+                    );
+                  }}
+                  onNarratorCharacterNameChange={(name) => {
+                    updateSpeakerConfig((prev) => ({
+                      ...prev,
+                      narratorCharacterName: name || undefined,
+                    }));
+                    if (name) {
+                      addLog("info", `Narrator identified as: ${name}`);
+                    }
+                  }}
+                disabled={isProcessing || isCleaning}
               />
             )}
 
@@ -472,13 +603,13 @@ export default function Home() {
               ollamaModelName={ollamaModelName}
               onModelSourceChange={setModelSource}
               onOllamaModelChange={setOllamaModelName}
-              disabled={isProcessing}
+              disabled={isProcessing || isCleaning}
             />
 
             <CustomInstructions
               value={customInstructions}
               onChange={setCustomInstructions}
-              disabled={isProcessing}
+              disabled={isProcessing || isCleaning}
             />
 
             <PromptPreview
@@ -489,7 +620,7 @@ export default function Home() {
               singlePass={singlePass}
               concisePrompts={concisePrompts}
               extendedExamples={extendedExamples}
-              disabled={isProcessing}
+              disabled={isProcessing || isCleaning}
             />
 
             <ProcessingControls
@@ -508,7 +639,7 @@ export default function Home() {
             onStop={handleStopProcessing}
             onTest={handleTestChunk}
             isProcessing={isProcessing}
-            canStart={!!originalText && !isProcessing}
+            canStart={!!originalText && !isProcessing && !isCleaning}
             isTesting={isTesting}
           />
           </div>
