@@ -1,5 +1,6 @@
 import { HfInference } from "@huggingface/inference";
 import type { CleaningOptions, SpeakerConfig, ModelSource } from "@shared/schema";
+import { buildOllamaOptions, isThinkingOllamaModel } from "@shared/model-utils";
 import fs from "fs";
 import path from "path";
 import { applyDeterministicCleaning } from "./text-cleaner";
@@ -449,6 +450,16 @@ IMPORTANT:
     if (modelSource === 'ollama') {
       const model = ollamaModelName || "llama3.1:8b";
       const url = `${OLLAMA_BASE_URL}/api/generate`;
+      const isThinking = isThinkingOllamaModel(model);
+      const options = buildOllamaOptions(
+        {
+          temperature: 0.3,
+          num_predict: 2000,
+          num_ctx: 8192,
+        },
+        modelSource,
+        model
+      );
       const init: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -456,10 +467,8 @@ IMPORTANT:
           model,
           prompt,
           stream: false,
-          options: {
-            temperature: 0.3,
-            num_predict: 2000,
-          },
+          keep_alive: isThinking ? '15m' : '5m',
+          options,
         }),
       };
       logRequest("Ollama.generate", url, init);
@@ -475,7 +484,7 @@ IMPORTANT:
         throw new Error(`Ollama request failed (${res.status}): ${body}`);
       }
       const json: any = await res.json();
-      output = json.response || '';
+      output = json.response || json.final_response || json?.message?.content || '';
     } else {
       // Check if API token is available
       if (!apiToken) {
@@ -822,10 +831,20 @@ JSON only:`;
     if (modelSource === 'ollama') {
       const model = ollamaModelName || "llama3.1:8b";
       const url = `${OLLAMA_BASE_URL}/api/generate`;
+      const options = buildOllamaOptions(
+        {
+          temperature: 0.2,
+          num_predict: 800,
+          num_ctx: 6144,
+        },
+        modelSource,
+        model
+      );
+      const isThinking = isThinkingOllamaModel(model);
       const init: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt, stream: false, options: { temperature: 0.2, num_predict: 500 } }),
+        body: JSON.stringify({ model, prompt, stream: false, keep_alive: isThinking ? '15m' : '5m', options }),
       };
       logRequest("Ollama.generate", url, init);
       const res = await fetch(url, init);
@@ -839,7 +858,7 @@ JSON only:`;
         throw new Error(`Ollama request failed (${res.status}): ${body}`);
       }
       const json: any = await res.json();
-      content = json.response || "[]";
+      content = json.response || json.final_response || json?.message?.content || "[]";
     } else {
       // Check if API token is available
       if (!apiToken) {

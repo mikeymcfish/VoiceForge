@@ -9,6 +9,7 @@ import { llmService, setHuggingFaceApiToken, getHuggingFaceApiToken } from "./ll
 import { nanoid } from "nanoid";
 import type { ProcessingConfig, LogEntry, WSMessage, HuggingFaceTokenStatus } from "@shared/schema";
 import { huggingFaceTokenUpdateSchema, deterministicCleanRequestSchema } from "@shared/schema";
+import { clampCharacterSampleSize, getCharacterSampleCeiling } from "@shared/model-utils";
 import { indexTtsService } from "./tts-service";
 import fs from "fs";
 import path from "path";
@@ -312,15 +313,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Missing text or sample size" });
       }
 
+      const resolvedSource = ((modelSource as any) || 'api') as 'api' | 'ollama';
+      const maxSample = getCharacterSampleCeiling(resolvedSource, ollamaModelName);
+      const effectiveSampleSize = clampCharacterSampleSize(sampleSize, resolvedSource, ollamaModelName);
+
       // Extract sample from text
       const sentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) || [text];
-      const sampleText = sentences.slice(0, sampleSize).join(" ");
+      const sampleText = sentences.slice(0, effectiveSampleSize).join(" ");
 
       // Use LLM to extract character names and narrator identity
       const { characters, narratorCharacterName } = await llmService.extractCharacters({
         text: sampleText,
         includeNarrator,
-        modelSource: (modelSource as any) || 'api',
+        modelSource: resolvedSource,
         modelName: modelName || "meta-llama/Meta-Llama-3.1-8B-Instruct",
         ollamaModelName,
       });
@@ -328,7 +333,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         characters,
         narratorCharacterName,
-        sampleSentenceCount: Math.min(sentences.length, sampleSize),
+        sampleSentenceCount: Math.min(sentences.length, effectiveSampleSize),
+        sampleLimit: maxSample,
       });
     } catch (error) {
       console.error("Character extraction error:", error);
