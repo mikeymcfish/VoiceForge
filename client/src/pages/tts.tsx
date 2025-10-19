@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -163,7 +163,12 @@ export default function TtsPage() {
   const [isWsConnected, setIsWsConnected] = useState(false);
   const [logs, setLogs] = useState<TtsLogEntry[]>([]);
 
-  // replaced by multi-voice inputs
+  // VibeVoice multi-voice + model state
+  const [vibeModelId, setVibeModelId] = useState<string>("");
+  const [vibeAudioFile1, setVibeAudioFile1] = useState<File | undefined>(undefined);
+  const [vibeAudioFile2, setVibeAudioFile2] = useState<File | undefined>(undefined);
+  const [vibeAudioFile3, setVibeAudioFile3] = useState<File | undefined>(undefined);
+  const [vibeAudioFile4, setVibeAudioFile4] = useState<File | undefined>(undefined);
   const [vibeScriptFile, setVibeScriptFile] = useState<File | null>(null);
   const [vibeScriptText, setVibeScriptText] = useState("");
   const [vibeStyle, setVibeStyle] = useState("");
@@ -561,13 +566,6 @@ export default function TtsPage() {
 
   const canStartVibe = vibeScriptText.trim().length > 0 && !isVibeSubmitting && Boolean(vibeStatus?.ready);
 
-  // VibeVoice state: model + up to 4 voices
-  const [vibeModelId, setVibeModelId] = useState<string>("");
-  const [vibeAudioFile1, setVibeAudioFile1] = useState<File | undefined>(undefined);
-  const [vibeAudioFile2, setVibeAudioFile2] = useState<File | undefined>(undefined);
-  const [vibeAudioFile3, setVibeAudioFile3] = useState<File | undefined>(undefined);
-  const [vibeAudioFile4, setVibeAudioFile4] = useState<File | undefined>(undefined);
-
   return (
     <div className="h-full overflow-auto">
       <div className="max-w-6xl mx-auto p-6 space-y-6">
@@ -715,7 +713,7 @@ export default function TtsPage() {
                     </Label>
                     <Input id="script-file" type="file" accept=".txt" onChange={handleScriptFile} />
                     <Textarea
-                      placeholder="Paste or edit the text to synthesize…"
+                      placeholder="Paste or edit the text to synthesizeâ€¦"
                       value={scriptText}
                       onChange={(event) => setScriptText(event.target.value)}
                       className="min-h-[120px]"
@@ -776,7 +774,7 @@ export default function TtsPage() {
                       </div>
                       <Progress value={job.progress} />
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>{job.message || "Waiting…"}</span>
+                        <span>{job.message || "Waitingâ€¦"}</span>
                         {job.steps && <span>{job.steps} steps</span>}
                       </div>
                       {job.status === "completed" && job.outputFile && (
@@ -954,7 +952,7 @@ export default function TtsPage() {
                       <SelectContent>
                         {(
                           (vibeStatus?.availableModels ?? []).length > 0
-                            ? vibeStatus?.availableModels
+                            ? (vibeStatus?.availableModels ?? [])
                             : [
                                 { id: "microsoft/VibeVoice-1.5B", path: "" },
                                 { id: "aoi-ot/VibeVoice-Large", path: "" },
@@ -1018,7 +1016,7 @@ export default function TtsPage() {
                     </Label>
                     <Input id="vibe-script" type="file" accept=".txt" onChange={handleVibeScriptFile} />
                     <Textarea
-                      placeholder="Paste the book chapter or narration text…"
+                      placeholder="Paste the book chapter or narration textâ€¦"
                       value={vibeScriptText}
                       onChange={(event) => setVibeScriptText(event.target.value)}
                       className="min-h-[140px]"
@@ -1089,7 +1087,7 @@ export default function TtsPage() {
                       </div>
                       <Progress value={job.progress} />
                       <div className="text-xs text-muted-foreground space-y-1">
-                        <p>{job.message || "Waiting…"}</p>
+                        <p>{job.message || "Waitingâ€¦"}</p>
                         {job.style && <p>Style: {job.style}</p>}
                         {job.selectedModel && <p>Model: {job.selectedModel}</p>}
                         {job.voiceFileNames && job.voiceFileNames.length > 0 && (
@@ -1150,3 +1148,4 @@ export default function TtsPage() {
     </div>
   );
 }
+

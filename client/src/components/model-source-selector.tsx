@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -21,6 +21,8 @@ interface ModelSourceSelectorProps {
   ollamaModelName?: string;
   onModelSourceChange: (source: ModelSource) => void;
   onOllamaModelChange: (modelId: string) => void;
+  temperature?: number;
+  onTemperatureChange?: (t: number) => void;
   disabled?: boolean;
 }
 
@@ -29,6 +31,8 @@ export function ModelSourceSelector({
   ollamaModelName,
   onModelSourceChange,
   onOllamaModelChange,
+  temperature,
+  onTemperatureChange,
   disabled,
 }: ModelSourceSelectorProps) {
   const [installedModels, setInstalledModels] = useState<string[] | null>(null);
@@ -101,6 +105,34 @@ export function ModelSourceSelector({
               Paste a HuggingFace API token to authenticate requests made from this server.
             </p>
             <HuggingFaceTokenSettings disabled={disabled} />
+            <div className="space-y-1.5 pt-1">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="api-temperature" className="text-xs text-muted-foreground">Temperature (0–2)</Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent>Controls randomness of the model output</TooltipContent>
+                </Tooltip>
+              </div>
+              <Input
+                id="api-temperature"
+                type="number"
+                min={0}
+                max={2}
+                step={0.1}
+                value={Number.isFinite(temperature as number) ? String(temperature) : "0.3"}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!onTemperatureChange) return;
+                  if (Number.isFinite(v)) {
+                    onTemperatureChange(Math.min(2, Math.max(0, v)));
+                  }
+                }}
+                disabled={disabled}
+                className="h-9 w-40"
+              />
+            </div>
           </div>
         )}
 
@@ -136,27 +168,38 @@ export function ModelSourceSelector({
             </Select>
             <div className="space-y-1.5 pt-2">
               <div className="flex items-center gap-2">
-                <Label htmlFor="ollama-model-custom" className="text-sm">Or type a custom model</Label>
+                <Label htmlFor="ollama-temperature" className="text-xs text-muted-foreground">Temperature (0–2)</Label>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
                   </TooltipTrigger>
-                  <TooltipContent>Examples: qwen2.5:32b-instruct, codellama:7b</TooltipContent>
+                  <TooltipContent>Controls randomness of the model output</TooltipContent>
                 </Tooltip>
               </div>
               <Input
-                id="ollama-model-custom"
-                value={ollamaModelName || ''}
-                onChange={(e) => onOllamaModelChange(e.target.value)}
-                placeholder="e.g., qwen2.5:32b-instruct, codellama:7b"
+                id="ollama-temperature"
+                type="number"
+                min={0}
+                max={2}
+                step={0.1}
+                value={Number.isFinite(temperature as number) ? String(temperature) : "0.3"}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!onTemperatureChange) return;
+                  if (Number.isFinite(v)) {
+                    onTemperatureChange(Math.min(2, Math.max(0, v)));
+                  }
+                }}
                 disabled={disabled}
-                className="h-9"
+                className="h-9 w-40"
               />
             </div>
-            
           </div>
         )}
       </div>
     </Card>
   );
 }
+
+
+

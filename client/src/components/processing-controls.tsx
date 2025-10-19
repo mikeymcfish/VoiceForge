@@ -1,4 +1,4 @@
-import { Play, Square, Settings, TestTube, CircleHelp } from "lucide-react";
+﻿import { Play, Square, Settings, TestTube, CircleHelp } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -13,10 +13,7 @@ interface ProcessingControlsProps {
   batchSize: number;
   onBatchSizeChange: (size: number) => void;
   modelName: string;
-  onModelNameChange: (name: string) => void;
-  temperature?: number;
-  onTemperatureChange?: (t: number) => void;
-  llmCleaningDisabled?: boolean;
+  onModelNameChange: (name: string) => void;  llmCleaningDisabled?: boolean;
   onLlmCleaningDisabledChange?: (val: boolean) => void;
   estimatedTotalCost?: number;
   singlePass?: boolean;
@@ -35,10 +32,7 @@ export function ProcessingControls({
   batchSize,
   onBatchSizeChange,
   modelName,
-  onModelNameChange,
-  temperature = 0.3,
-  onTemperatureChange,
-  llmCleaningDisabled = false,
+  onModelNameChange,  llmCleaningDisabled = false,
   onLlmCleaningDisabledChange,
   estimatedTotalCost,
   singlePass = false,
@@ -105,7 +99,7 @@ export function ProcessingControls({
         <div className="flex items-center justify-between py-1">
           <div className="space-y-0.5">
             <div className="flex items-center gap-2">
-              <Label className="text-sm font-medium">Single‑Pass Processing</Label>
+              <Label className="text-sm font-medium">Singleâ€‘Pass Processing</Label>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
@@ -166,7 +160,7 @@ export function ProcessingControls({
                 </Tooltip>
               </div>
               <Input id="model-name" value={modelName} onChange={(e) => onModelNameChange(normalizeModelId(e.target.value))} disabled={isProcessing} data-testid="input-model-name" className="h-9" placeholder="e.g., meta-llama/Llama-3.1-8B-Instruct" />
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2">
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Quick Pick</Label>
                   <Select value="" onValueChange={(val) => {
@@ -191,26 +185,6 @@ export function ProcessingControls({
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1">
-                  <Label htmlFor="temperature" className="text-xs text-muted-foreground">Temperature (0–2)</Label>
-                  <Input
-                    id="temperature"
-                    type="number"
-                    min={0}
-                    max={2}
-                    step={0.1}
-                    value={Number.isFinite(temperature) ? String(temperature) : "0.3"}
-                    onChange={(e) => {
-                      const v = parseFloat(e.target.value);
-                      if (!onTemperatureChange) return;
-                      if (Number.isFinite(v)) {
-                        onTemperatureChange(Math.min(2, Math.max(0, v)));
-                      }
-                    }}
-                    disabled={isProcessing}
-                    className="h-9"
-                  />
-                </div>
               </div>
             </div>
           </CollapsibleContent>
@@ -226,7 +200,7 @@ export function ProcessingControls({
             ) : (
               <Button onClick={onStart} disabled={!canStart} className="flex-1" data-testid="button-start-processing">
                 <Play className="h-4 w-4 mr-2" />
-                {`Start Processing${typeof estimatedTotalCost === 'number' ? ` — Est $${estimatedTotalCost.toFixed(4)}` : ''}`}
+                {`Start Processing${typeof estimatedTotalCost === 'number' ? ` â€” Est $${estimatedTotalCost.toFixed(4)}` : ''}`}
               </Button>
             )}
           </div>
@@ -240,3 +214,4 @@ export function ProcessingControls({
     </Card>
   );
 }
+

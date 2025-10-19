@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+﻿import { useState, useEffect, useRef, useCallback } from "react";
 import { FileUpload } from "@/components/file-upload";
 import { Button } from "@/components/ui/button";
 import { CleaningOptionsPanel } from "@/components/cleaning-options";
@@ -370,7 +370,7 @@ export default function Home() {
               "success",
               "Processing completed",
               `${message.payload.totalChunks} chunks processed successfully` +
-              (typeof totalCost === 'number' ? ` — total cost: $${totalCost.toFixed(4)}` : '')
+              (typeof totalCost === 'number' ? ` â€” total cost: $${totalCost.toFixed(4)}` : '')
             );
             toast({
               title: "Processing complete",
@@ -543,13 +543,13 @@ export default function Home() {
           }
           setProcessedText(
         `=== TEST RESULT (${data.sentenceCount} sentences) ===\n\nOriginal:\n${data.originalChunk}\n\n---\n\nProcessed:\n${data.processedChunk}` +
-        (data.usage ? `\n\n---\nUsage: in ${data.usage.inputTokens} tok, out ${data.usage.outputTokens} tok — cost: $${(((data.usage.inputCost||0)+(data.usage.outputCost||0)).toFixed(4))}` : '')
+        (data.usage ? `\n\n---\nUsage: in ${data.usage.inputTokens} tok, out ${data.usage.outputTokens} tok â€” cost: $${(((data.usage.inputCost||0)+(data.usage.outputCost||0)).toFixed(4))}` : '')
           );
 
           addLog(
             "success",
             "Test completed",
-            `Processed ${data.sentenceCount} sentences` + (data.usage ? ` — cost: $${(((data.usage.inputCost||0)+(data.usage.outputCost||0)).toFixed(4))}` : '')
+            `Processed ${data.sentenceCount} sentences` + (data.usage ? ` â€” cost: $${(((data.usage.inputCost||0)+(data.usage.outputCost||0)).toFixed(4))}` : '')
           );
 
       toast({
@@ -663,11 +663,13 @@ export default function Home() {
               />
             )}
 
-            <ModelSourceSelector
+                        <ModelSourceSelector
               modelSource={modelSource}
               ollamaModelName={ollamaModelName}
               onModelSourceChange={setModelSource}
               onOllamaModelChange={setOllamaModelName}
+              temperature={temperature}
+              onTemperatureChange={setTemperature}
               disabled={isProcessing || isCleaning}
             />
 
@@ -693,8 +695,6 @@ export default function Home() {
             onBatchSizeChange={setBatchSize}
             modelName={modelName}
             onModelNameChange={setModelName}
-            temperature={temperature}
-            onTemperatureChange={setTemperature}
             llmCleaningDisabled={llmCleaningDisabled}
             onLlmCleaningDisabledChange={setLlmCleaningDisabled}
             estimatedTotalCost={estimatedTotalCost}
@@ -743,3 +743,5 @@ export default function Home() {
     </div>
   );
 }
+
+

@@ -1,0 +1,120 @@
+*** Begin Patch
+*** Update File: client/src/components/model-source-selector.tsx
+@@
+ interface ModelSourceSelectorProps {
+   modelSource: ModelSource;
+   ollamaModelName?: string;
+   onModelSourceChange: (source: ModelSource) => void;
+   onOllamaModelChange: (modelId: string) => void;
++  temperature?: number;
++  onTemperatureChange?: (t: number) => void;
+   disabled?: boolean;
+ }
+ 
+ export function ModelSourceSelector({
+   modelSource,
+   ollamaModelName,
+   onModelSourceChange,
+   onOllamaModelChange,
++  temperature,
++  onTemperatureChange,
+   disabled,
+ }: ModelSourceSelectorProps) {
+   const [installedModels, setInstalledModels] = useState<string[] | null>(null);
+@@
+-        {modelSource === 'api' && (
++        {modelSource === 'api' && (
+               <Tooltip>
+                 <TooltipTrigger asChild>
+                 </TooltipTrigger>
+                 <TooltipContent>Uses HuggingFace Inference API with your API token. Best for large, powerful models.</TooltipContent>
+               </Tooltip>
+             </div>
+               Paste a HuggingFace API token to authenticate requests made from this server.
+             </p>
+             <HuggingFaceTokenSettings disabled={disabled} />
++                <Tooltip>
++                  <TooltipTrigger asChild>
++                  </TooltipTrigger>
++                  <TooltipContent>Controls randomness of the model output</TooltipContent>
++                </Tooltip>
++              </div>
++              <Input
++                min={0}
++                max={2}
++                step={0.1}
++                onChange={(e) => {
++                  const v = parseFloat(e.target.value);
++                  if (!onTemperatureChange) return;
++                  if (Number.isFinite(v)) {
++                    onTemperatureChange(Math.min(2, Math.max(0, v)));
++                  }
++                }}
++                disabled={disabled}
++              />
++            </div>
+           </div>
+         )}
+@@
+-        {modelSource === 'ollama' && (
++        {modelSource === 'ollama' && (
+               <Tooltip>
+                 <TooltipTrigger asChild>
+                 </TooltipTrigger>
+                 <TooltipContent>Select or type an Ollama model name (requires Ollama running locally)</TooltipContent>
+               </Tooltip>
+             </div>
+             <Select
+               value={ollamaModelName || ''}
+               onValueChange={onOllamaModelChange}
+               disabled={disabled}
+             >
+               </SelectTrigger>
+               <SelectContent>
+                 {((installedModels && installedModels.length > 0
+                   ? installedModels
+                 ).map((m: string) => (
+                   <SelectItem key={m} value={m}>{m}</SelectItem>
+                 ))}
+               </SelectContent>
+             </Select>
+-                <Tooltip>
+-                  <TooltipTrigger asChild>
+-                  </TooltipTrigger>
+-                  <TooltipContent>Examples: qwen2.5:32b-instruct, codellama:7b</TooltipContent>
+-                </Tooltip>
+-              </div>
+-              <Input
+-                value={ollamaModelName || ''}
+-                onChange={(e) => onOllamaModelChange(e.target.value)}
+-                disabled={disabled}
+-              />
+-            </div>
++                <Tooltip>
++                  <TooltipTrigger asChild>
++                  </TooltipTrigger>
++                  <TooltipContent>Controls randomness of the model output</TooltipContent>
++                </Tooltip>
++              </div>
++              <Input
++                min={0}
++                max={2}
++                step={0.1}
++                onChange={(e) => {
++                  const v = parseFloat(e.target.value);
++                  if (!onTemperatureChange) return;
++                  if (Number.isFinite(v)) {
++                    onTemperatureChange(Math.min(2, Math.max(0, v)));
++                  }
++                }}
++                disabled={disabled}
++              />
++            </div>
+             
+           </div>
+         )}
+       </div>
+     </Card>
+   );
+ }
+*** End Patch
