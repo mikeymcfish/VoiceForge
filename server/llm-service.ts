@@ -288,12 +288,24 @@ function normalizeHuggingFaceModelId(model: string): string {
 }
 
 function parseProviderFromTaskError(message: string): string | undefined {
-  const m = message.match(/Task 'text-generation' not supported for provider '([^']+)'/i);
-  return m?.[1];
+  const patterns = [
+    /Task ['"]?text[-_ ]generation['"]? not supported for provider ['"]?([^'"\s]+)['"]?/i,
+    /provider ['"]?([^'"\s]+)['"]? does not support task ['"]?text[-_ ]generation['"]?/i,
+    /text[-_ ]generation (?:isn't|is not|not) (?:supported|available) for provider ['"]?([^'"\s]+)['"]?/i,
+  ];
+  for (const re of patterns) {
+    const m = message.match(re);
+    if (m && m[1]) return m[1];
+  }
+  return undefined;
 }
 
 function supportsConversationalFromError(message: string): boolean {
-  return /Available tasks:\s*conversational/i.test(message);
+  return (
+    /Available tasks:\s*(?:.*\bconversational\b|.*\bchat[-_ ]?completion\b)/i.test(message) ||
+    /Supported tasks:\s*(?:.*\bconversational\b|.*\bchat[-_ ]?completion\b)/i.test(message) ||
+    /Try ['"]?(?:conversational|chat[-_ ]?completion)['"]?/i.test(message)
+  );
 }
 
 function getProviderAccessToken(provider: string): string | undefined {
@@ -602,7 +614,7 @@ Rules:
                 inputs: prompt,
                 parameters: {
                   max_new_tokens: 2000,
-                  temperature: 0.3,
+                  temperature: tempGen,
                   return_full_text: false,
                 },
                 provider: HF_PROVIDER as any,
@@ -615,25 +627,24 @@ Rules:
             output = response.generated_text || '';
           } catch (e) {
             const err = e as Error;
-            const prov = parseProviderFromTaskError(err.message);
-            if (prov && supportsConversationalFromError(err.message)) {
-              if (DEBUG_ENABLED) {
-                console.debug('[LLM DEBUG] Falling back to HF.chatCompletion due to unsupported text-generation', { provider: prov });
-              }
-              const response = await hf.chatCompletion(
-                {
-                  provider: prov as any,
-                  model: resolvedModelName,
-                  messages: [ { role: 'user', content: prompt } ],
-                  temperature: tempGen,
-                  max_tokens: 2000,
-                },
-                { fetch: createLoggingFetch('HF.chatCompletion.fallback') }
-              );
-              output = response.choices?.[0]?.message?.content || '';
-            } else {
-              throw e;
+            const prov = parseProviderFromTaskError(err.message) || HF_PROVIDER || 'auto';
+            if (DEBUG_ENABLED) {
+              console.debug('[LLM DEBUG] Falling back to HF.chatCompletion after textGeneration error', {
+                provider: prov,
+                message: err.message,
+              });
             }
+            const response = await hf.chatCompletion(
+              {
+                provider: prov as any,
+                model: resolvedModelName,
+                messages: [ { role: 'user', content: prompt } ],
+                temperature: tempGen,
+                max_tokens: 2000,
+              },
+              { fetch: createLoggingFetch('HF.chatCompletion.fallback') }
+            );
+            output = response.choices?.[0]?.message?.content || '';
           }
         }
       } catch (error) {
@@ -961,7 +972,7 @@ JSON only:`;
               model: resolvedModelName,
               tokenPresent: Boolean(apiToken),
               promptPreview: prompt.length > 500 ? `${prompt.slice(0, 500)}… [truncated ${prompt.length - 500} chars]` : prompt,
-              parameters: { max_new_tokens: 500, temperature: 0.2, return_full_text: false },
+              parameters: { max_new_tokens: 500, temperature: tempExtract, return_full_text: false },
             });
           }
           try {
@@ -983,25 +994,21 @@ JSON only:`;
             content = response.generated_text || "[]";
           } catch (e) {
             const err = e as Error;
-            const prov = parseProviderFromTaskError(err.message);
-            if (prov && supportsConversationalFromError(err.message)) {
-              if (DEBUG_ENABLED) {
-                console.debug('[LLM DEBUG] Falling back to HF.chatCompletion (extractCharacters) due to unsupported text-generation', { provider: prov });
-              }
-              const response = await hf.chatCompletion(
-                {
-                  provider: prov as any,
-                  model: resolvedModelName,
-                  messages: [ { role: 'user', content: prompt } ],
-                  temperature: tempExtract,
-                  max_tokens: 500,
-                },
-                { fetch: createLoggingFetch('HF.chatCompletion.extractCharacters.fallback') }
-              );
-              content = response.choices?.[0]?.message?.content || "[]";
-            } else {
-              throw e;
+            const prov = parseProviderFromTaskError(err.message) || HF_PROVIDER || 'auto';
+            if (DEBUG_ENABLED) {
+              console.debug('[LLM DEBUG] Falling back to HF.chatCompletion (extractCharacters) after textGeneration error', { provider: prov, message: err.message });
             }
+            const response = await hf.chatCompletion(
+              {
+                provider: prov as any,
+                model: resolvedModelName,
+                messages: [ { role: 'user', content: prompt } ],
+                temperature: tempExtract,
+                max_tokens: 500,
+              },
+              { fetch: createLoggingFetch('HF.chatCompletion.extractCharacters.fallback') }
+            );
+            content = response.choices?.[0]?.message?.content || "[]";
           }
         }
       } catch (error) {

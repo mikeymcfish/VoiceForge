@@ -24,6 +24,10 @@ Assign Labels:
 Label all narration, descriptions, and actions using the Narrator: tag.
 Identify all unique speaking characters. Assign them labels dynamically: the first character to speak becomes Speaker 1:, the second unique character becomes Speaker 2:, and so on.
 
+Force Narrator Tag:
+
+All non‑quoted narrative, descriptive, or action text MUST be labeled using the `Narrator:` tag — never as any `Speaker X:`. Do not attribute narration content to speakers.
+
 Format Dialogue:
 
 Place all spoken dialogue (the text inside the quotes) on its own line with the corresponding speaker's label (e.g., Speaker 1: Are you coming?).

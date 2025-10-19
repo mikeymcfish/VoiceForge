@@ -230,6 +230,11 @@ declare -A env_values=(
 [[ -n "${OLLAMA_BASE_URL:-}" ]] && env_values["OLLAMA_BASE_URL"]="${OLLAMA_BASE_URL}"
 [[ -n "${INDEX_TTS_REPO:-}" ]] && env_values["INDEX_TTS_REPO"]="${INDEX_TTS_REPO}"
 [[ -n "${INDEX_TTS_PYTHON:-}" ]] && env_values["INDEX_TTS_PYTHON"]="${INDEX_TTS_PYTHON}"
+[[ -n "${HF_PROVIDER:-}" ]] && env_values["HF_PROVIDER"]="${HF_PROVIDER}"
+[[ -n "${LLM_DEBUG:-}" ]] && env_values["LLM_DEBUG"]="${LLM_DEBUG}"
+[[ -n "${LLM_DEBUG_FULL:-}" ]] && env_values["LLM_DEBUG_FULL"]="${LLM_DEBUG_FULL}"
+[[ -n "${LLM_DEBUG_FILE:-}" ]] && env_values["LLM_DEBUG_FILE"]="${LLM_DEBUG_FILE}"
+[[ -n "${REUSE_PORT:-}" ]] && env_values["REUSE_PORT"]="${REUSE_PORT}"
 
 if [[ -f "env.txt" ]]; then
   log "Found env.txt; merging values into ${ENV_FILE}"
