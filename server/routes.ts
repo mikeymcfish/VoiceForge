@@ -9,6 +9,7 @@ import { llmService } from "./llm-service";
 import { nanoid } from "nanoid";
 import type { ProcessingConfig, LogEntry, WSMessage } from "@shared/schema";
 import { indexTtsService } from "./tts-service";
+import { vibevoiceService } from "./vibevoice-service";
 import fs from "fs";
 import path from "path";
 
@@ -23,6 +24,13 @@ const ttsUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 120 * 1024 * 1024, // 120MB limit for audio/text assets
+  },
+});
+
+const vibevoiceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 120 * 1024 * 1024,
   },
 });
 
@@ -361,6 +369,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.sendFile(filePath);
   });
 
+  // VibeVoice control endpoints
+  app.get("/api/vibevoice/status", (_req, res) => {
+    res.json(vibevoiceService.getStatus());
+  });
+
+  app.post("/api/vibevoice/setup", (req, res) => {
+    const status = vibevoiceService.getStatus();
+    if (status.setupStatus === "in-progress") {
+      return res.status(409).json({ error: "Setup already in progress" });
+    }
+    const { repoUrl, branch } = (req.body ?? {}) as { repoUrl?: string; branch?: string };
+    vibevoiceService
+      .startSetup(repoUrl, branch)
+      .catch((error) => console.error("VibeVoice setup failed:", error));
+    res.json(vibevoiceService.getStatus());
+  });
+
+  app.post(
+    "/api/vibevoice/synthesize",
+    vibevoiceUpload.fields([
+      { name: "voice", maxCount: 1 },
+      { name: "script", maxCount: 1 },
+    ]),
+    async (req, res) => {
+      try {
+        const files = (req.files || {}) as Record<string, Express.Multer.File[]>;
+        const voiceFile = files.voice?.[0];
+        const scriptFile = files.script?.[0];
+
+        let textContent = typeof req.body?.text === "string" ? req.body.text : "";
+        let textFileName = scriptFile?.originalname ?? "script.txt";
+        if (scriptFile) {
+          textContent = scriptFile.buffer.toString("utf-8");
+        }
+
+        if (!textContent || textContent.trim().length === 0) {
+          return res.status(400).json({ error: "Text input is required" });
+        }
+
+        const rawTemperature = req.body?.temperature;
+        const parsedTemperature =
+          typeof rawTemperature === "string" && rawTemperature.trim().length > 0
+            ? Number(rawTemperature)
+            : undefined;
+        const temperature = Number.isFinite(parsedTemperature) ? parsedTemperature : undefined;
+        const style =
+          typeof req.body?.style === "string" && req.body.style.trim().length > 0
+            ? req.body.style.trim()
+            : undefined;
+
+        const job = await vibevoiceService.startSynthesis({
+          voiceBuffer: voiceFile?.buffer,
+          voiceFileName: voiceFile?.originalname,
+          textContent,
+          textFileName,
+          style,
+          temperature,
+        });
+
+        res.json({ job });
+      } catch (error) {
+        console.error("VibeVoice synthesis error:", error);
+        res.status(500).json({
+          error: error instanceof Error ? error.message : "Failed to start synthesis",
+        });
+      }
+    }
+  );
+
+  app.get("/api/vibevoice/jobs/:id", (req, res) => {
+    const job = vibevoiceService.getJob(req.params.id);
+    if (!job) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    res.json({ job });
+  });
+
+  app.get("/api/vibevoice/jobs/:id/audio", (req, res) => {
+    const job = vibevoiceService.getJob(req.params.id);
+    if (!job || job.status !== "completed" || !job.outputFile) {
+      return res.status(404).json({ error: "Audio not ready" });
+    }
+    const filePath = path.resolve(job.outputFile);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Audio file missing" });
+    }
+    res.type("audio/wav");
+    res.setHeader("Content-Disposition", `attachment; filename="vibevoice-${job.id}.wav"`);
+    res.sendFile(filePath);
+  });
+
   // WebSocket server for IndexTTS updates
   const ttsWss = new WebSocketServer({ noServer: true });
 
@@ -381,6 +480,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     ws.on("error", (error) => {
       console.error("IndexTTS WebSocket error:", error);
+    });
+  });
+
+  const vibevoiceWss = new WebSocketServer({ noServer: true });
+
+  vibevoiceWss.on("connection", (ws: WebSocket) => {
+    const unsubscribe = vibevoiceService.subscribe((message) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(message));
+        } catch (error) {
+          console.error("VibeVoice WebSocket send error:", error);
+        }
+      }
+    });
+
+    ws.on("close", () => {
+      unsubscribe();
+    });
+
+    ws.on("error", (error) => {
+      console.error("VibeVoice WebSocket error:", error);
     });
   });
 
@@ -560,6 +681,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Handle WebSocket upgrade
   httpServer.on("upgrade", (request, socket, head) => {
+    if (!request.url) {
+      socket.destroy();
+      return;
+    }
+
     if (request.url === "/ws/process") {
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit("connection", ws, request);
@@ -567,6 +693,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } else if (request.url === "/ws/tts") {
       ttsWss.handleUpgrade(request, socket, head, (ws) => {
         ttsWss.emit("connection", ws, request);
+      });
+    } else if (request.url === "/ws/vibevoice") {
+      vibevoiceWss.handleUpgrade(request, socket, head, (ws) => {
+        vibevoiceWss.emit("connection", ws, request);
       });
     } else {
       socket.destroy();

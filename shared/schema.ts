@@ -224,3 +224,61 @@ export const ttsWsMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export type TtsWsMessage = z.infer<typeof ttsWsMessageSchema>;
+
+// VibeVoice integration schemas
+export const vibevoiceSetupStatusSchema = z.enum([
+  "idle",
+  "in-progress",
+  "completed",
+  "failed",
+]);
+
+export type VibevoiceSetupStatus = z.infer<typeof vibevoiceSetupStatusSchema>;
+
+export const vibevoiceJobStatusSchema = z.object({
+  id: z.string(),
+  status: z.enum(["queued", "running", "completed", "failed"]),
+  progress: z.number().min(0).max(100),
+  message: z.string().optional(),
+  outputFile: z.string().optional(),
+  voiceFileName: z.string().optional(),
+  textFileName: z.string().optional(),
+  style: z.string().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  error: z.string().optional(),
+});
+
+export type VibevoiceJobStatus = z.infer<typeof vibevoiceJobStatusSchema>;
+
+export const vibevoiceStatusSchema = z.object({
+  setupStatus: vibevoiceSetupStatusSchema,
+  ready: z.boolean(),
+  repoPath: z.string(),
+  lastSetupError: z.string().optional(),
+  jobs: z.array(vibevoiceJobStatusSchema),
+});
+
+export type VibevoiceStatus = z.infer<typeof vibevoiceStatusSchema>;
+
+export const vibevoiceWsMessageSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("status"),
+    payload: vibevoiceStatusSchema,
+  }),
+  z.object({
+    type: z.literal("job"),
+    payload: vibevoiceJobStatusSchema,
+  }),
+  z.object({
+    type: z.literal("log"),
+    payload: z.object({
+      id: z.string(),
+      level: z.enum(["info", "warn", "error"]),
+      message: z.string(),
+      timestamp: z.number(),
+    }),
+  }),
+]);
+
+export type VibevoiceWsMessage = z.infer<typeof vibevoiceWsMessageSchema>;
