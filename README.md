@@ -54,6 +54,24 @@ A professional text preprocessing application for multi-speaker TTS (text-to-spe
   - Narrator adds context (intelligent rewrite)
 - **Fix Hyphenation**: Merge words split by line breaks or hyphens (PDF/EPUB artifacts)
 
+
+## 🐍 Python / Gradio Edition
+
+A fully self-contained Python implementation of the text preprocessing workflow is available in `gradio_app/`.
+It re-creates the deterministic cleaning pipeline, HuggingFace-powered LLM processing, and multi-speaker formatting
+inside a Gradio interface.
+
+### Running the Gradio app
+
+```bash
+pip install -r gradio_app/requirements.txt
+python -m gradio_app
+```
+
+By default the app expects a HuggingFace Inference API token. You can supply it via the UI accordion, or by exporting
+`HUGGINGFACE_API_TOKEN` before launching. The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs,
+and full multi-speaker processing that mirrors the behaviour of the TypeScript version.
+
 ## 📋 Prerequisites
 
 - Node.js 20 LTS (or newer) and npm 10+
