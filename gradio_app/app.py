@@ -28,6 +28,8 @@ except Exception:  # noqa: BLE001 - import error will be surfaced during use
 
 
 processor = TextProcessor()
+index_tts_service = IndexTTSService()
+vibe_voice_service = VibeVoiceService()
 
 
 def _read_txt(path: Path) -> str:
@@ -127,6 +129,7 @@ def _build_processing_config(
     batch_size: int,
     model_source: str,
     model_name: str,
+    ollama_model_name: str,
     temperature: float,
     llm_cleaning_disabled: bool,
     custom_instructions: str,
@@ -142,6 +145,7 @@ def _build_processing_config(
         speaker_config=speaker_config,
         model_source=ModelSource(model_source),
         model_name=model_name,
+        ollama_model_name=ollama_model_name or None,
         temperature=temperature,
         llm_cleaning_disabled=llm_cleaning_disabled,
         custom_instructions=custom_instructions or None,
@@ -199,6 +203,7 @@ def run_processing(
     batch_size: int,
     model_source: str,
     model_name: str,
+    ollama_model_name: str,
     temperature: float,
     llm_cleaning_disabled: bool,
     custom_instructions: str,
@@ -238,6 +243,7 @@ def run_processing(
         batch_size,
         model_source,
         model_name,
+        ollama_model_name,
         temperature,
         llm_cleaning_disabled,
         custom_instructions,
@@ -255,6 +261,67 @@ def configure_token(token: str) -> str:
     if token.strip():
         return "HuggingFace token configured"
     return "Token cleared"
+
+
+def _coerce_file_path(file_obj) -> Path:
+    if isinstance(file_obj, dict) and file_obj.get("name"):
+        path = Path(file_obj["name"])
+    elif hasattr(file_obj, "name"):
+        path = Path(file_obj.name)
+    elif isinstance(file_obj, (str, Path)):
+        path = Path(file_obj)
+    else:
+        raise gr.Error("Unsupported file input")
+    if not path.exists():
+        raise gr.Error(f"File not found: {path}")
+    return path
+
+
+def _coerce_file_paths(file_objs) -> List[Path]:
+    if not file_objs:
+        return []
+    if isinstance(file_objs, (list, tuple)):
+        return [_coerce_file_path(obj) for obj in file_objs]
+    return [_coerce_file_path(file_objs)]
+
+
+def _toggle_model_fields(source: str):
+    selected = ModelSource(source)
+    return (
+        gr.update(visible=selected == ModelSource.API),
+        gr.update(visible=selected == ModelSource.OLLAMA),
+    )
+
+
+def run_indextts_download(repo_id: str) -> Tuple[str, str]:
+    return index_tts_service.download_models(repo_id)
+
+
+def run_indextts_load() -> Tuple[str, str]:
+    return index_tts_service.load_models()
+
+
+def run_indextts_synthesize(voice_file, text: str, steps: float) -> Tuple[str, str, Optional[str]]:
+    path = _coerce_file_path(voice_file)
+    summary, log, output = index_tts_service.synthesize(path, text, int(steps))
+    return summary, log, str(output) if output else None
+
+
+def run_vibevoice_setup(repo_url: str, branch: str) -> Tuple[str, str]:
+    return vibe_voice_service.setup(repo_url, branch)
+
+
+def run_vibevoice_synthesize(
+    text: str,
+    voice_files,
+    style: str,
+    temperature: float,
+    model_id: str,
+) -> Tuple[str, str, Optional[str]]:
+    voices = _coerce_file_paths(voice_files)
+    temp = float(temperature) if temperature is not None else None
+    summary, log, output = vibe_voice_service.synthesize(text, voices, style or None, temp, model_id or None)
+    return summary, log, str(output) if output else None
 
 
 def create_app() -> gr.Blocks:
@@ -330,13 +397,20 @@ def create_app() -> gr.Blocks:
         with gr.Row():
             batch_size = gr.Slider(1, 20, value=10, step=1, label="Batch size (sentences per chunk)")
             model_source = gr.Dropdown(
-                choices=[ModelSource.API.value],
+                choices=[source.value for source in ModelSource],
                 value=ModelSource.API.value,
                 label="Model Source",
             )
             model_name = gr.Textbox(
                 value="meta-llama/Meta-Llama-3.1-8B-Instruct",
-                label="Model Name",
+                label="HuggingFace Model",
+                visible=True,
+            )
+            ollama_model_name = gr.Textbox(
+                value=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
+                label="Ollama Model",
+                placeholder="e.g. llama3.1:8b",
+                visible=False,
             )
             temperature = gr.Slider(0.0, 1.5, value=0.3, step=0.05, label="Temperature")
             llm_cleaning_disabled = gr.Checkbox(False, label="Disable LLM cleaning")
@@ -383,6 +457,7 @@ def create_app() -> gr.Blocks:
                 batch_size,
                 model_source,
                 model_name,
+                ollama_model_name,
                 temperature,
                 llm_cleaning_disabled,
                 custom_instructions,
@@ -399,5 +474,78 @@ def create_app() -> gr.Blocks:
             ],
             outputs=[output_text, summary_box, log_box],
         )
+
+        model_source.change(
+            _toggle_model_fields,
+            inputs=[model_source],
+            outputs=[model_name, ollama_model_name],
+        )
+
+        gr.Markdown("## Speech Synthesis Backends")
+        with gr.Tabs():
+            with gr.Tab("IndexTTS"):
+                indextts_repo = gr.Textbox(
+                    value=os.getenv("INDEX_TTS_REPO", "IndexTeam/IndexTTS-2"),
+                    label="IndexTTS Repo ID",
+                )
+                with gr.Row():
+                    indextts_download = gr.Button("Download Models")
+                    indextts_load = gr.Button("Load Models")
+                indextts_voice = gr.File(label="Voice Prompt", file_types=[".wav", ".mp3", ".flac", ".ogg"])
+                indextts_text = gr.Textbox(label="Synthesis Text", lines=6)
+                indextts_steps = gr.Slider(5, 50, value=25, step=1, label="Diffusion Steps")
+                indextts_synthesize = gr.Button("Run IndexTTS Synthesis", variant="primary")
+                indextts_status = gr.Textbox(label="IndexTTS Status", lines=2)
+                indextts_logs = gr.Textbox(label="IndexTTS Logs", lines=6)
+                indextts_audio = gr.File(label="Generated Audio", interactive=False)
+
+                indextts_download.click(
+                    run_indextts_download,
+                    inputs=[indextts_repo],
+                    outputs=[indextts_status, indextts_logs],
+                )
+                indextts_load.click(
+                    run_indextts_load,
+                    inputs=None,
+                    outputs=[indextts_status, indextts_logs],
+                )
+                indextts_synthesize.click(
+                    run_indextts_synthesize,
+                    inputs=[indextts_voice, indextts_text, indextts_steps],
+                    outputs=[indextts_status, indextts_logs, indextts_audio],
+                )
+
+            with gr.Tab("VibeVoice"):
+                vibe_repo_url = gr.Textbox(
+                    value=os.getenv("VIBEVOICE_REPO_URL", "https://github.com/vibevoice-community/VibeVoice.git"),
+                    label="Repository URL",
+                )
+                vibe_repo_branch = gr.Textbox(
+                    value=os.getenv("VIBEVOICE_REPO_BRANCH", "main"),
+                    label="Repository Branch",
+                )
+                vibe_setup = gr.Button("Run Setup")
+                vibe_text = gr.Textbox(label="Synthesis Text", lines=6)
+                vibe_voice_files = gr.File(
+                    label="Voice References", file_count="multiple", file_types=[".wav", ".mp3", ".flac", ".ogg"]
+                )
+                vibe_style = gr.Textbox(label="Style Hint", placeholder="Optional style prompt")
+                vibe_temperature = gr.Slider(0.0, 2.0, value=0.7, step=0.1, label="Temperature")
+                vibe_model = gr.Textbox(label="Model ID", placeholder="Optional model override")
+                vibe_synthesize = gr.Button("Run VibeVoice Synthesis", variant="primary")
+                vibe_status = gr.Textbox(label="VibeVoice Status", lines=2)
+                vibe_logs = gr.Textbox(label="VibeVoice Logs", lines=6)
+                vibe_audio = gr.File(label="Generated Audio", interactive=False)
+
+                vibe_setup.click(
+                    run_vibevoice_setup,
+                    inputs=[vibe_repo_url, vibe_repo_branch],
+                    outputs=[vibe_status, vibe_logs],
+                )
+                vibe_synthesize.click(
+                    run_vibevoice_synthesize,
+                    inputs=[vibe_text, vibe_voice_files, vibe_style, vibe_temperature, vibe_model],
+                    outputs=[vibe_status, vibe_logs, vibe_audio],
+                )
 
     return demo

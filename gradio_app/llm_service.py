@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
+import requests
+
 from huggingface_hub import InferenceClient
 
 from .models import (
@@ -36,6 +38,7 @@ class ProcessOptions:
     speaker_config: Optional[SpeakerConfig] = None
     model_source: ModelSource = ModelSource.API
     model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    ollama_model_name: Optional[str] = None
     temperature: float = 0.3
     custom_instructions: Optional[str] = None
     single_pass: bool = False
@@ -199,11 +202,8 @@ class LLMService:
     # Core processing
     # ------------------------------------------------------------------
     def process_chunk(self, options: ProcessOptions) -> ProcessChunkResult:
-        if options.model_source != ModelSource.API:
-            raise ValueError("Only HuggingFace API mode is supported in the Python Gradio app")
-
         self._update_client_from_env()
-        if not self._client:
+        if options.model_source == ModelSource.API and not self._client:
             raise RuntimeError(
                 "HuggingFace API token not configured. Set HUGGINGFACE_API_TOKEN or provide a token in the UI."
             )
@@ -225,7 +225,7 @@ class LLMService:
         else:
             prompt = self._build_cleaning_prompt(text, options.cleaning_options, options.custom_instructions)
 
-        generated, usage = self._generate_text(prompt, options.model_name, options.temperature)
+        generated, usage = self._generate_text(prompt, options)
 
         if options.speaker_config and options.speaker_config.is_enabled():
             if options.single_pass:
@@ -244,7 +244,7 @@ class LLMService:
                     options.extended_examples,
                 )
                 generated, usage_stage2 = self._generate_text(
-                    speaker_prompt, options.model_name, options.temperature
+                    speaker_prompt, options
                 )
                 usage = {
                     "input_tokens": usage["input_tokens"] + usage_stage2["input_tokens"],
@@ -268,8 +268,15 @@ class LLMService:
         )
 
     # ------------------------------------------------------------------
-    def _generate_text(self, prompt: str, model_name: str, temperature: float) -> Tuple[str, Dict[str, float]]:
-        LOGGER.debug("Generating with model=%s temperature=%s", model_name, temperature)
+    def _generate_text(self, prompt: str, options: ProcessOptions) -> Tuple[str, Dict[str, float]]:
+        if options.model_source == ModelSource.OLLAMA:
+            return self._generate_with_ollama(prompt, options)
+        return self._generate_with_hf(prompt, options.model_name, options.temperature)
+
+    def _generate_with_hf(self, prompt: str, model_name: str, temperature: float) -> Tuple[str, Dict[str, float]]:
+        if not self._client:
+            raise RuntimeError("HuggingFace client not configured")
+        LOGGER.debug("Generating with HuggingFace model=%s temperature=%s", model_name, temperature)
         start = time.perf_counter()
         response = self._client.text_generation(
             model=model_name,
@@ -281,8 +288,76 @@ class LLMService:
             return_full_text=False,
         )
         duration = time.perf_counter() - start
-        LOGGER.debug("Generation completed in %.2fs", duration)
+        LOGGER.debug("HuggingFace generation completed in %.2fs", duration)
         text = response.strip() if isinstance(response, str) else str(response)
+        usage = {
+            "input_tokens": estimate_tokens(prompt),
+            "output_tokens": estimate_tokens(text),
+            "input_cost": 0.0,
+            "output_cost": 0.0,
+        }
+        return text, usage
+
+    def _generate_with_ollama(self, prompt: str, options: ProcessOptions) -> Tuple[str, Dict[str, float]]:
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+        model = (
+            options.ollama_model_name
+            or os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+            or options.model_name
+        )
+        temperature = max(0.0, min(options.temperature, 2.0)) if options.temperature is not None else 0.3
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "keep_alive": "15m",
+            "options": {
+                "temperature": temperature,
+                "num_predict": 2000,
+                "num_ctx": 8192,
+            },
+        }
+        url = f"{base_url}/api/generate"
+        LOGGER.debug("Generating with Ollama model=%s at %s", model, url)
+        try:
+            response = requests.post(url, json=payload, timeout=600)
+        except requests.RequestException as exc:  # noqa: BLE001
+            raise RuntimeError(f"Failed to reach Ollama at {url}: {exc}") from exc
+        if not response.ok:
+            raise RuntimeError(f"Ollama request failed ({response.status_code}): {response.text}")
+        text = ""
+        try:
+            data = response.json()
+        except ValueError as exc:  # noqa: BLE001
+            raise RuntimeError("Ollama response was not valid JSON") from exc
+        text = (
+            data.get("response")
+            or data.get("final_response")
+            or data.get("message", {}).get("content")
+            or ""
+        )
+        if not text.strip():
+            chat_payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "keep_alive": "15m",
+                "options": payload["options"],
+            }
+            chat_url = f"{base_url}/api/chat"
+            try:
+                chat_response = requests.post(chat_url, json=chat_payload, timeout=600)
+            except requests.RequestException as exc:  # noqa: BLE001
+                raise RuntimeError(f"Failed to reach Ollama chat endpoint at {chat_url}: {exc}") from exc
+            if not chat_response.ok:
+                raise RuntimeError(
+                    f"Ollama chat request failed ({chat_response.status_code}): {chat_response.text}"
+                )
+            try:
+                chat_data = chat_response.json()
+            except ValueError as exc:  # noqa: BLE001
+                raise RuntimeError("Ollama chat response was not valid JSON") from exc
+            text = chat_data.get("message", {}).get("content") or chat_data.get("response", "")
         usage = {
             "input_tokens": estimate_tokens(prompt),
             "output_tokens": estimate_tokens(text),

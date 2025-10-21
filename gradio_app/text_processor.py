@@ -64,6 +64,7 @@ class TextProcessor:
                         speaker_config=config.speaker_config,
                         model_source=config.model_source,
                         model_name=config.model_name,
+                        ollama_model_name=config.ollama_model_name,
                         temperature=config.temperature,
                         custom_instructions=config.custom_instructions,
                         single_pass=config.single_pass,

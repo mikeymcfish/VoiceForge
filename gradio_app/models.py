@@ -24,7 +24,7 @@ class NarratorAttribution(str, Enum):
 
 class ModelSource(str, Enum):
     API = "api"
-    OFFLINE = "offline"
+    OLLAMA = "ollama"
 
 
 @dataclass
@@ -68,6 +68,7 @@ class ProcessingConfig:
     speaker_config: Optional[SpeakerConfig] = None
     model_source: ModelSource = ModelSource.API
     model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    ollama_model_name: Optional[str] = None
     temperature: float = 0.3
     llm_cleaning_disabled: bool = False
     custom_instructions: Optional[str] = None

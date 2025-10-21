@@ -58,6 +58,16 @@ A professional text preprocessing application for multi-speaker TTS (text-to-spe
 ## 🐍 Python / Gradio Edition
 
 A fully self-contained Python implementation of the text preprocessing workflow is available in `gradio_app/`.
+It re-creates the deterministic cleaning pipeline, supports HuggingFace **and** local Ollama LLMs, mirrors the
+multi-speaker formatting logic, and now exposes the IndexTTS and VibeVoice speech synthesis workflows inside a
+Gradio interface.
+
+### Highlights
+
+- Deterministic text cleaning with the same rules as the TypeScript app
+- LLM-driven cleaning & dialogue formatting via HuggingFace Inference or a local Ollama instance
+- Built-in management screens for IndexTTS (model download/load and synthesis)
+- Built-in management screens for VibeVoice (repo setup and synthesis)
 It re-creates the deterministic cleaning pipeline, HuggingFace-powered LLM processing, and multi-speaker formatting
 inside a Gradio interface.
 
@@ -69,6 +79,12 @@ python -m gradio_app
 ```
 
 By default the app expects a HuggingFace Inference API token. You can supply it via the UI accordion, or by exporting
+`HUGGINGFACE_API_TOKEN` before launching. Selecting **Ollama** as the model source will call a local Ollama server (defaults
+to `http://localhost:11434`; override with `OLLAMA_BASE_URL`). Set `OLLAMA_MODEL` to change the default local model.
+
+The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs, full multi-speaker processing, and
+optional audio generation through IndexTTS and VibeVoice. The Python workers will install any missing dependencies when
+you trigger download/setup actions from the UI.
 `HUGGINGFACE_API_TOKEN` before launching. The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs,
 and full multi-speaker processing that mirrors the behaviour of the TypeScript version.
 
@@ -76,6 +92,8 @@ and full multi-speaker processing that mirrors the behaviour of the TypeScript v
 
 - Node.js 20 LTS (or newer) and npm 10+
 - (Optional) HuggingFace API token for cloud models
+- (Optional) [Ollama](https://ollama.com/) running locally for offline LLMs
+- (Optional) Git & Python 3.10+ for IndexTTS/VibeVoice worker setup
 - Storage space for local models (300MB - 800MB per model)
 
 ## 🚀 Installation
