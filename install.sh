@@ -69,12 +69,20 @@ is_truthy() {
   esac
 }
 install_tts_requirements() {
-  if ! have python3; then
-    log "Python 3 not found; skipping IndexTTS dependency installation."
+  local python_bin="${PYTHON_BIN:-python3}"
+  if [[ "${python_bin}" == */* ]]; then
+    if [ ! -x "${python_bin}" ]; then
+      log "Python executable ${python_bin} not found; skipping IndexTTS dependency installation."
+      return 0
+    fi
+  elif command -v "${python_bin}" >/dev/null 2>&1; then
+    python_bin="$(command -v "${python_bin}")"
+  else
+    log "Python executable ${python_bin} not found; skipping IndexTTS dependency installation."
     return 0
   fi
-  log "Installing IndexTTS python dependencies..."
-  python3 - <<'PY'
+  log "Installing IndexTTS python dependencies with ${python_bin}..."
+  "${python_bin}" - <<'PY'
 import sys
 import traceback
 import subprocess
@@ -117,16 +125,13 @@ REPO_URL="${REPO_URL:-https://github.com/mikeymcfish/VoiceForge.git}"
 APP_DIR="${APP_DIR:-$SCRIPT_DIR}"
 PORT="${PORT:-5000}"
 NODE_MAJOR="${NODE_MAJOR:-20}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 log "Installing base OS deps..."
 apt-get update -y
 apt-get install -y --no-install-recommends \
   ca-certificates curl git gnupg python3 python3-pip python3-venv build-essential openssl ffmpeg
 rm -rf /var/lib/apt/lists/*
-
-log "Installing Python utilities..."
-python3 -m pip install --upgrade pip >/dev/null
-python3 -m pip install --no-cache-dir hf_transfer >/dev/null
 
 # Install Node.js ${NODE_MAJOR}.x if missing or too old.
 need_node=true
@@ -171,6 +176,30 @@ fi
 
 cd "${APP_DIR}"
 
+VENV_DIR="${APP_DIR}/.venv"
+if [ ! -d "${VENV_DIR}" ]; then
+  log "Creating Python virtual environment at ${VENV_DIR}..."
+  python3 -m venv "${VENV_DIR}"
+else
+  log "Reusing Python virtual environment at ${VENV_DIR}."
+fi
+
+PYTHON_BIN="${VENV_DIR}/bin/python3"
+if [ ! -x "${PYTHON_BIN}" ]; then
+  log "Python virtual environment is missing an executable at ${PYTHON_BIN}."
+  exit 1
+fi
+
+log "Upgrading pip inside the virtual environment..."
+"${PYTHON_BIN}" -m pip install --upgrade pip >/dev/null
+
+log "Installing Python helper utilities in the virtual environment..."
+"${PYTHON_BIN}" -m pip install --no-cache-dir hf_transfer >/dev/null
+
+if [[ -z "${INDEX_TTS_PYTHON:-}" ]]; then
+  INDEX_TTS_PYTHON="${PYTHON_BIN}"
+fi
+
 log "Installing npm dependencies..."
 if [ -f package-lock.json ]; then
   npm ci || { log "npm ci failed; falling back to npm install"; npm install; }
@@ -210,7 +239,9 @@ if [[ -z "${SESSION_SECRET:-}" && -f "env.txt" ]]; then
 fi
 
 if [[ -z "${SESSION_SECRET:-}" ]]; then
-  if have python3; then
+  if [[ -n "${PYTHON_BIN:-}" && -x "${PYTHON_BIN}" ]]; then
+    SESSION_SECRET="$("${PYTHON_BIN}" -c 'import secrets; print(secrets.token_hex(32))')"
+  elif have python3; then
     SESSION_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
   else
     SESSION_SECRET="$(openssl rand -hex 32)"
