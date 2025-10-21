@@ -2,13 +2,11 @@
 import argparse
 import importlib
 import importlib.metadata as importlib_metadata
-import inspect
 import json
 import os
 import shutil
 import subprocess
 import sys
-import textwrap
 import traceback
 import tempfile
 import urllib.request
@@ -19,11 +17,13 @@ from typing import Any, Callable, Optional, Sequence, Tuple
 DEFAULT_INDEXTTS_REPO_ZIP = "https://github.com/index-tts/index-tts/archive/refs/heads/main.zip"
 INDEXTTS_MODULE_NAME = "indextts"
 _TORCH_PLACEHOLDER = {"spec": "__TORCH__", "module": "torch"}
+_TORCHAUDIO_PLACEHOLDER = {"spec": "__TORCHAUDIO__", "module": "torchaudio"}
 _DEEPSPEED_PLACEHOLDER = {"spec": "__DEEPSPEED__", "module": "deepspeed"}
 
 _BASE_DEPENDENCIES: Tuple[dict[str, Any], ...] = (
     {"spec": "numpy==1.24.3", "module": "numpy"},
     _TORCH_PLACEHOLDER,
+    _TORCHAUDIO_PLACEHOLDER,
     {"spec": "accelerate==1.8.1", "module": "accelerate"},
     {"spec": "descript-audiotools==0.7.2", "module": "audiotools"},
     {"spec": "transformers==4.52.1", "module": "transformers"},
@@ -44,6 +44,10 @@ _BASE_DEPENDENCIES: Tuple[dict[str, Any], ...] = (
     {"spec": "tensorboard==2.13.0", "module": "tensorboard"},
     {"spec": "librosa==0.10.2.post1", "module": "librosa"},
     {"spec": "safetensors==0.5.2", "module": "safetensors"},
+    {"spec": "scipy==1.11.4", "module": "scipy"},
+    {"spec": "einops==0.7.0", "module": "einops"},
+    {"spec": "soundfile==0.12.1", "module": "soundfile"},
+    {"spec": "pyyaml==6.0.2", "module": "yaml"},
     _DEEPSPEED_PLACEHOLDER,
     {"spec": "modelscope==1.27.0", "module": "modelscope"},
     {"spec": "omegaconf>=2.3.0", "module": "omegaconf"},
@@ -123,6 +127,8 @@ def _get_additional_dependencies() -> Tuple[dict[str, Any], ...]:
     torch_spec = os.environ.get("INDEX_TTS_TORCH_SPEC")
     torch_index_url = os.environ.get("INDEX_TTS_TORCH_INDEX_URL")
     torch_extra_indexes: Optional[Tuple[str, ...]] = None
+    torchaudio_spec = os.environ.get("INDEX_TTS_TORCHAUDIO_SPEC")
+    torchaudio_index_url = os.environ.get("INDEX_TTS_TORCHAUDIO_INDEX_URL")
 
     if use_cuda:
         torch_spec = torch_spec or "torch==2.3.1"
@@ -152,6 +158,24 @@ def _get_additional_dependencies() -> Tuple[dict[str, Any], ...]:
     deepspeed_spec = os.environ.get("INDEX_TTS_DEEPSPEED_SPEC", "deepspeed==0.17.1")
 
     resolved: list[dict[str, Any]] = []
+    # Derive torchaudio spec from torch if not explicitly provided
+    default_torchaudio_version = "2.3.1"
+    if "==" in torch_spec:
+        _, version_part = torch_spec.split("==", 1)
+        default_torchaudio_version = version_part
+    if not torchaudio_spec:
+        torchaudio_spec = f"torchaudio=={default_torchaudio_version}"
+    if not use_cuda:
+        if "+cpu" not in torchaudio_spec:
+            if "==" in torchaudio_spec:
+                name, version = torchaudio_spec.split("==", 1)
+                if "+" not in version:
+                    torchaudio_spec = f"{name}=={version}+cpu"
+            elif "@" not in torchaudio_spec:
+                torchaudio_spec = f"{torchaudio_spec}+cpu"
+    if not torchaudio_index_url and not use_cuda:
+        torchaudio_index_url = torch_index_url
+
     for dep in _BASE_DEPENDENCIES:
         if dep is _TORCH_PLACEHOLDER:
             entry = {
@@ -160,6 +184,16 @@ def _get_additional_dependencies() -> Tuple[dict[str, Any], ...]:
             }
             if torch_index_url:
                 entry["index_url"] = torch_index_url
+            if torch_extra_indexes:
+                entry["extra_index_urls"] = torch_extra_indexes
+            resolved.append(entry)
+        elif dep is _TORCHAUDIO_PLACEHOLDER:
+            entry = {
+                "spec": torchaudio_spec,
+                "module": dep["module"],
+            }
+            if torchaudio_index_url:
+                entry["index_url"] = torchaudio_index_url
             if torch_extra_indexes:
                 entry["extra_index_urls"] = torch_extra_indexes
             resolved.append(entry)
@@ -336,22 +370,6 @@ def find_config(models_dir: str) -> Tuple[str, str]:
     raise FileNotFoundError("Unable to locate config.yaml under models directory")
 
 
-def patch_diffusion_steps():
-    import indextts.infer_v2 as infer_v2_module
-
-    source = inspect.getsource(infer_v2_module.IndexTTS2.infer_generator)
-    if "getattr(self, '_diffusion_steps', 25)" in source:
-        return
-
-    patched_source = source.replace(
-        "diffusion_steps = 25",
-        "diffusion_steps = getattr(self, '_diffusion_steps', 25)",
-    )
-    exec_namespace = {}
-    exec(textwrap.dedent(patched_source), infer_v2_module.__dict__, exec_namespace)
-    infer_v2_module.IndexTTS2.infer_generator = exec_namespace["infer_generator"]
-
-
 def prepare_environment(models_dir: str):
     os.makedirs(models_dir, exist_ok=True)
     cache_dir = os.path.join(models_dir, "hf_cache")
@@ -387,19 +405,39 @@ def init_model(models_dir: str):
     import indextts.infer_v2 as infer_v2
 
     prepare_environment(models_dir)
-    patch_diffusion_steps()
     cfg_path, checkpoint_dir = find_config(models_dir)
     emit("progress", progress=0.15, message="Initializing IndexTTS2")
-    tts = infer_v2.IndexTTS2(cfg_path=cfg_path, model_dir=checkpoint_dir, use_fp16=False)
+
+    use_fp16 = is_truthy(os.environ.get("INDEX_TTS_USE_FP16"))
+    use_cuda_kernel = os.environ.get("INDEX_TTS_USE_CUDA_KERNEL")
+    use_deepspeed = is_truthy(os.environ.get("INDEX_TTS_ENABLE_DEEPSPEED"))
+    hybrid_mode = is_truthy(os.environ.get("INDEX_TTS_HYBRID_MODE"))
+    device_override = os.environ.get("INDEX_TTS_DEVICE")
+
+    if use_cuda_kernel is not None:
+        use_cuda_kernel = is_truthy(use_cuda_kernel)
+
+    tts = infer_v2.IndexTTS2(
+        cfg_path=cfg_path,
+        model_dir=checkpoint_dir,
+        use_fp16=use_fp16,
+        use_cuda_kernel=use_cuda_kernel,
+        use_deepspeed=use_deepspeed,
+        hybrid_model_device=hybrid_mode,
+        device=device_override,
+    )
     return tts
 
 
 def handle_load(args):
     tts = init_model(args.models_dir)
-    emit("progress", progress=0.6, message="Warm loading completed")
-    # free CUDA / GPU memory if used
-    if hasattr(tts, "gpt"):
-        del tts
+    try:
+        tts.load_models()
+        emit("progress", progress=0.6, message="Warm loading completed")
+    finally:
+        # free CUDA / GPU memory if used
+        if hasattr(tts, "gpt"):
+            del tts
     emit("complete", progress=1.0, message="Models loaded")
 
 
@@ -415,7 +453,14 @@ def handle_synthesize(args):
         raise ValueError("Text input is empty")
 
     tts = init_model(args.models_dir)
-    tts._diffusion_steps = int(args.steps)
+    diffusion_steps = max(1, int(args.steps))
+    inference_cfg_rate = float(os.environ.get("INDEX_TTS_INFERENCE_CFG_RATE", "0.7"))
+    interval_silence = os.environ.get("INDEX_TTS_INTERVAL_SILENCE")
+    if interval_silence is not None:
+        try:
+            interval_silence = int(interval_silence)
+        except ValueError:
+            interval_silence = None
 
     def gr_progress(value, desc=None):
         try:
@@ -431,6 +476,9 @@ def handle_synthesize(args):
         text=text,
         output_path=args.output,
         verbose=True,
+        diffusion_steps=diffusion_steps,
+        inference_cfg_rate=inference_cfg_rate,
+        interval_silence=interval_silence if interval_silence is not None else 200,
     )
     emit("complete", progress=1.0, message="Synthesis complete", output_path=args.output)
 
