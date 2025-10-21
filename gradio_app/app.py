@@ -18,7 +18,6 @@ from .models import (
     SpeakerMode,
 )
 from .text_processor import TextProcessor
-from .tts_services import IndexTTSService, VibeVoiceService
 
 try:
     from ebooklib import epub  # type: ignore

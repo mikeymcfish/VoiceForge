@@ -68,6 +68,8 @@ Gradio interface.
 - LLM-driven cleaning & dialogue formatting via HuggingFace Inference or a local Ollama instance
 - Built-in management screens for IndexTTS (model download/load and synthesis)
 - Built-in management screens for VibeVoice (repo setup and synthesis)
+It re-creates the deterministic cleaning pipeline, HuggingFace-powered LLM processing, and multi-speaker formatting
+inside a Gradio interface.
 
 ### Running the Gradio app
 
@@ -83,6 +85,8 @@ to `http://localhost:11434`; override with `OLLAMA_BASE_URL`). Set `OLLAMA_MODEL
 The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs, full multi-speaker processing, and
 optional audio generation through IndexTTS and VibeVoice. The Python workers will install any missing dependencies when
 you trigger download/setup actions from the UI.
+`HUGGINGFACE_API_TOKEN` before launching. The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs,
+and full multi-speaker processing that mirrors the behaviour of the TypeScript version.
 
 ## 📋 Prerequisites
 
