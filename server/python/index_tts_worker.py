@@ -14,7 +14,10 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, Tuple
 
-DEFAULT_INDEXTTS_REPO_ZIP = "https://github.com/index-tts/index-tts/archive/refs/heads/main.zip"
+# Upstream Premium IndexTTS2 sources used to provide the `indextts` package.
+DEFAULT_INDEXTTS_REPO_ZIP = (
+    "https://github.com/FurkanGozukara/Premium_IndexTTS2_SECourses/archive/refs/heads/main.zip"
+)
 INDEXTTS_MODULE_NAME = "indextts"
 _TORCH_PLACEHOLDER = {"spec": "__TORCH__", "module": "torch"}
 _TORCHAUDIO_PLACEHOLDER = {"spec": "__TORCHAUDIO__", "module": "torchaudio"}
