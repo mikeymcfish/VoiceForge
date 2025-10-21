@@ -10,3 +10,6 @@ logs/
 *llm-debug*.txt
 /attached_assets/vibevoice
 env.txt
+
+__pycache__/
+*.pyc
