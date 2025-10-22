@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 # Upstream Premium IndexTTS2 sources used to provide the `indextts` package.
-DEFAULT_INDEXTTS_REPO_ZIP = (
-    "https://github.com/FurkanGozukara/Premium_IndexTTS2_SECourses/archive/refs/heads/main.zip"
+_INDEXTTS_REPO_ZIP_CANDIDATES = (
+    "https://github.com/FurkanGozukara/Premium_IndexTTS2_SECourses/archive/refs/heads/main.zip",
+    "https://github.com/FurkanGozukara/Premium_IndexTTS2_SECourses/archive/refs/heads/master.zip",
 )
 INDEXTTS_MODULE_NAME = "indextts"
 _TORCH_PLACEHOLDER = {"spec": "__TORCH__", "module": "torch"}
@@ -305,7 +306,12 @@ def install_indextts_module():
 
     module_parent.mkdir(parents=True, exist_ok=True)
 
-    repo_zip_url = os.environ.get("INDEX_TTS_PY_MODULE_ZIP_URL", DEFAULT_INDEXTTS_REPO_ZIP)
+    configured_url = os.environ.get("INDEX_TTS_PY_MODULE_ZIP_URL")
+    if configured_url:
+        candidate_urls = (configured_url,)
+    else:
+        candidate_urls = _INDEXTTS_REPO_ZIP_CANDIDATES
+
     emit(
         "log",
         level="info",
@@ -316,8 +322,23 @@ def install_indextts_module():
         tmp_path = Path(tmpdir)
         zip_path = tmp_path / "indextts.zip"
 
-        with urllib.request.urlopen(repo_zip_url) as response:
-            zip_path.write_bytes(response.read())
+        last_error: Optional[Exception] = None
+        for repo_zip_url in candidate_urls:
+            try:
+                emit("log", level="info", message=f"Downloading IndexTTS archive: {repo_zip_url}")
+                with urllib.request.urlopen(repo_zip_url) as response:
+                    zip_path.write_bytes(response.read())
+                break
+            except Exception as exc:  # noqa: BLE001 - surface the original failure if all candidates fail
+                last_error = exc
+                emit(
+                    "log",
+                    level="warning",
+                    message=f"Failed to download IndexTTS archive from {repo_zip_url}: {exc}",
+                )
+                zip_path.unlink(missing_ok=True)
+        else:
+            raise RuntimeError("Unable to download IndexTTS python sources") from last_error
 
         with zipfile.ZipFile(zip_path) as archive:
             archive.extractall(tmp_path)
