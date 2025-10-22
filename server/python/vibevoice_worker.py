@@ -1,11 +1,14 @@
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
-from typing import Dict, List, Optional, Sequence, Tuple
+import time
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 def emit(event: str, **payload):
@@ -105,7 +108,46 @@ def install_requirements(repo_dir: str) -> None:
             run_process([sys.executable, "-m", "pip", "install", "-r", req_path], cwd=repo_dir)
             return
 
-    emit("log", level="warn", message="No requirements file found; skipping dependency installation")
+    pyproject_path = Path(repo_dir) / "pyproject.toml"
+    if pyproject_path.is_file():
+        emit("progress", progress=0.32, message="Installing VibeVoice package (editable)…")
+        run_process([sys.executable, "-m", "pip", "install", "--no-deps", "-e", str(repo_dir)], cwd=repo_dir)
+
+        try:
+            import tomllib  # type: ignore[attr-defined]
+        except ModuleNotFoundError:
+            import tomli as tomllib  # type: ignore
+
+        with pyproject_path.open("rb") as fh:
+            data = tomllib.load(fh)
+
+        raw_dependencies: Iterable[str] = data.get("project", {}).get("dependencies", [])
+        dependencies: List[str] = []
+        for spec in raw_dependencies:
+            clean = spec.strip()
+            if not clean:
+                continue
+            # Avoid overriding torch installations supplied by the environment.
+            if clean.split("[")[0].strip().startswith("torch"):
+                continue
+            dependencies.append(clean)
+
+        if dependencies:
+            emit(
+                "progress",
+                progress=0.36,
+                message="Installing runtime dependencies from pyproject…",
+            )
+            run_process([sys.executable, "-m", "pip", "install", *dependencies], cwd=repo_dir)
+        else:
+            emit(
+                "log",
+                level="info",
+                message="No additional dependencies declared in pyproject.toml",
+            )
+        return
+
+    emit("log", level="warn", message="No requirements or pyproject file found; skipping dependency installation")
 
 
 def try_download_assets(repo_dir: str) -> None:
@@ -114,6 +156,7 @@ def try_download_assets(repo_dir: str) -> None:
         ([sys.executable, "download_models.py"], "download_models.py"),
         ([sys.executable, "tools/download_models.py"], "tools/download_models.py"),
         ([sys.executable, "scripts/download_assets.py"], "scripts/download_assets.py"),
+        ([sys.executable, "demo", "download_models.py"], "demo/download_models.py"),
     ]
 
     for cmd, relative in download_candidates:
@@ -195,9 +238,322 @@ def download_hf_models(models_dir: str) -> None:
             )
 
 
+def _normalize_speaker_id(raw_id: int) -> int:
+    return raw_id - 1 if raw_id > 0 else raw_id
+
+
+def _extract_speaker_sequence(text_path: str) -> List[int]:
+    sequence: List[int] = []
+    seen: set[int] = set()
+    pattern = re.compile(r"^Speaker\s+(\d+)\s*:")
+
+    try:
+        with open(text_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                match = pattern.match(line)
+                if match:
+                    speaker = _normalize_speaker_id(int(match.group(1)))
+                else:
+                    speaker = 0
+                if speaker not in seen:
+                    seen.add(speaker)
+                    sequence.append(speaker)
+    except FileNotFoundError:
+        return []
+
+    return sequence
+
+
+def _prepare_voice_prompts(text_path: str, voices: Optional[Sequence[str]]) -> Optional[List[str]]:
+    if not voices:
+        return None
+
+    unique_speakers = _extract_speaker_sequence(text_path)
+    if not unique_speakers:
+        unique_speakers = [0]
+
+    planned: List[str] = []
+    voice_list = [os.path.abspath(v) for v in voices if v]
+    if not voice_list:
+        return None
+
+    for index in range(len(unique_speakers)):
+        if index < len(voice_list):
+            planned.append(voice_list[index])
+        else:
+            planned.append(voice_list[-1])
+
+    return planned
+
+
+def _candidate_model_dirs(root_dir: str, model_id: str) -> List[str]:
+    safe_name = model_id.replace("/", "__")
+    models_root = os.path.join(root_dir, "models")
+    return [
+        os.path.join(models_root, safe_name),
+        os.path.join(models_root, model_id),
+    ]
+
+
+def _resolve_local_model(root_dir: str, model_id: str) -> Optional[str]:
+    if not model_id:
+        return None
+
+    for candidate in _candidate_model_dirs(root_dir, model_id):
+        if os.path.isdir(candidate):
+            return candidate
+
+    models_root = os.path.join(root_dir, "models")
+    try:
+        for name in os.listdir(models_root):
+            sub = os.path.join(models_root, name)
+            if not os.path.isdir(sub):
+                continue
+            marker = os.path.join(sub, "repo_id.txt")
+            if os.path.isfile(marker):
+                try:
+                    with open(marker, "r", encoding="utf-8") as handle:
+                        repo_id = handle.read().strip()
+                except Exception:
+                    continue
+                if repo_id == model_id:
+                    return sub
+    except Exception:
+        pass
+    return None
+
+
+def resolve_model_path(root_dir: str, requested: Optional[str]) -> Tuple[str, Optional[str]]:
+    env_override = os.environ.get("VIBEVOICE_MODEL_PATH")
+    if env_override:
+        return env_override, os.environ.get("VIBEVOICE_MODEL_ID")
+
+    if requested:
+        local = _resolve_local_model(root_dir, requested)
+        if local:
+            return local, requested
+        if os.path.isdir(requested):
+            return requested, requested
+        return requested, requested
+
+    defaults = parse_model_ids_from_env()
+    for model_id in defaults:
+        local = _resolve_local_model(root_dir, model_id)
+        if local:
+            return local, model_id
+
+    if defaults:
+        return defaults[0], defaults[0]
+
+    raise RuntimeError(
+        "No VibeVoice model configured. Set VIBEVOICE_MODEL_PATH or provide --model-id."
+    )
+
+
+def choose_device() -> str:
+    preferred = os.environ.get("VIBEVOICE_DEVICE")
+
+    try:
+        import torch
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("PyTorch is required for VibeVoice inference but is not installed") from exc
+
+    def available(name: str) -> bool:
+        if name == "cuda":
+            return torch.cuda.is_available()
+        if name == "mps":
+            return getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available()
+        return True
+
+    if preferred and available(preferred):
+        return preferred
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _load_vibevoice_modules(repo_dir: str):
+    if repo_dir not in sys.path:
+        sys.path.insert(0, repo_dir)
+
+    from vibevoice.modular.modeling_vibevoice_inference import (  # noqa: PLC0415
+        VibeVoiceForConditionalGenerationInference,
+    )
+    from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor  # noqa: PLC0415
+
+    return VibeVoiceProcessor, VibeVoiceForConditionalGenerationInference
+
+
+def run_inprocess_inference(
+    args: argparse.Namespace,
+    *,
+    model_path: str,
+    model_id: Optional[str],
+    voice_samples: Optional[List[str]],
+) -> None:
+    emit("progress", progress=0.18, message="Preparing VibeVoice runtime…")
+
+    VibeVoiceProcessor, VibeVoiceForConditionalGenerationInference = _load_vibevoice_modules(args.repo_dir)
+
+    import torch
+
+    device = choose_device()
+    emit("log", level="info", message=f"Using VibeVoice device: {device}")
+
+    emit("progress", progress=0.28, message="Loading processor…")
+    processor = VibeVoiceProcessor.from_pretrained(model_path)
+
+    emit("progress", progress=0.38, message="Loading model weights…")
+    if device == "mps":
+        torch_dtype = torch.float32
+        attn_impl = "sdpa"
+        model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+            model_path,
+            torch_dtype=torch_dtype,
+            attn_implementation=attn_impl,
+            device_map=None,
+        )
+        model.to("mps")
+    elif device == "cuda":
+        torch_dtype = torch.bfloat16
+        attn_impl = "flash_attention_2"
+        try:
+            model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                model_path,
+                torch_dtype=torch_dtype,
+                device_map="cuda",
+                attn_implementation=attn_impl,
+            )
+        except Exception:
+            emit(
+                "log",
+                level="warn",
+                message="Falling back to SDPA attention implementation for VibeVoice",
+            )
+            attn_impl = "sdpa"
+            model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                model_path,
+                torch_dtype=torch_dtype,
+                device_map="cuda",
+                attn_implementation=attn_impl,
+            )
+    else:
+        torch_dtype = torch.float32
+        attn_impl = "sdpa"
+        model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+            model_path,
+            torch_dtype=torch_dtype,
+            device_map="cpu",
+            attn_implementation=attn_impl,
+        )
+
+    model.eval()
+
+    steps_env = os.environ.get("VIBEVOICE_INFERENCE_STEPS") or os.environ.get("VIBEVOICE_DIFFUSION_STEPS")
+    try:
+        diffusion_steps = int(steps_env) if steps_env else 10
+    except ValueError:
+        diffusion_steps = 10
+    model.set_ddpm_inference_steps(num_steps=diffusion_steps)
+
+    cfg_scale = os.environ.get("VIBEVOICE_CFG_SCALE")
+    cfg_value: Optional[float] = None
+    if cfg_scale:
+        try:
+            cfg_value = float(cfg_scale)
+        except ValueError:
+            cfg_value = None
+    if cfg_value is None and getattr(args, "temperature", None) is not None:
+        cfg_value = float(args.temperature)
+    if cfg_value is None:
+        cfg_value = 1.3
+
+    emit("progress", progress=0.48, message="Preparing synthesis inputs…")
+
+    voice_batch: Optional[List[List[str]]] = None
+    if voice_samples:
+        voice_batch = [voice_samples]
+
+    inputs = processor(
+        text=[args.text],
+        voice_samples=voice_batch,
+        padding=True,
+        return_tensors="pt",
+        return_attention_mask=True,
+    )
+
+    target_device = device if device in {"cuda", "mps"} else "cpu"
+    for key, value in list(inputs.items()):
+        if hasattr(value, "to") and callable(value.to):
+            inputs[key] = value.to(target_device)
+
+    emit("progress", progress=0.68, message="Running VibeVoice generation…")
+
+    start = time.time()
+    with torch.inference_mode():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=None,
+            cfg_scale=cfg_value,
+            tokenizer=processor.tokenizer,
+            generation_config={"do_sample": False},
+            verbose=True,
+        )
+    end = time.time()
+
+    speech_outputs = getattr(outputs, "speech_outputs", None)
+    if not speech_outputs or speech_outputs[0] is None:
+        raise RuntimeError("VibeVoice did not return any audio output")
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+    saved_paths = processor.save_audio(
+        speech_outputs[0],
+        output_path=args.output,
+        normalize=True,
+    )
+
+    final_path = saved_paths[0] if saved_paths else args.output
+    duration = None
+    try:
+        waveform = speech_outputs[0]
+        if hasattr(waveform, "detach"):
+            waveform = waveform.detach()
+        array = waveform.cpu().numpy() if hasattr(waveform, "cpu") else waveform
+        if array.ndim > 1:
+            array = array.squeeze(0)
+        sample_rate = 24000
+        duration = array.shape[-1] / float(sample_rate)
+    except Exception:
+        duration = None
+
+    elapsed = end - start
+    if duration and duration > 0:
+        emit(
+            "log",
+            level="info",
+            message=f"Generation completed in {elapsed:.2f}s (RTF {elapsed / duration:.2f}×)",
+        )
+    else:
+        emit("log", level="info", message=f"Generation completed in {elapsed:.2f}s")
+
+    emit(
+        "complete",
+        progress=1.0,
+        message="Synthesis complete",
+        output_path=final_path,
+        model_id=model_id or model_path,
+    )
+
+
 def setup(args: argparse.Namespace) -> None:
     prepare_environment(args.root_dir)
-    repo_url = args.repo_url or "https://github.com/vibevoice-community/VibeVoice.git"
+    repo_url = args.repo_url or "https://github.com/FurkanGozukara/VibeVoice.git"
     branch = args.repo_branch or "main"
 
     ensure_repo(repo_url, branch, args.repo_dir)
@@ -260,7 +616,7 @@ def candidate_commands() -> List[Tuple[str, List[Tuple[str, str, bool]]]]:
 
 def build_default_command(
     repo_dir: str,
-    replacements: Dict[str, Optional[str]],
+    replacements: Dict[str, Optional[object]],
 ) -> List[str]:
     python_bin = replacements.get("python") or sys.executable
     for script, args in candidate_commands():
@@ -273,7 +629,11 @@ def build_default_command(
         for flag, key, optional in args:
             value = replacements.get(key)
             if value:
-                command.extend([flag, value])
+                if isinstance(value, (list, tuple)):
+                    command.append(flag)
+                    command.extend(str(item) for item in value if item is not None)
+                else:
+                    command.extend([flag, str(value)])
             elif not optional:
                 missing_required = True
                 break
@@ -287,7 +647,7 @@ def build_default_command(
 
 def build_command(
     repo_dir: str,
-    replacements: Dict[str, Optional[str]],
+    replacements: Dict[str, Optional[object]],
 ) -> List[str]:
     template = os.environ.get("VIBEVOICE_COMMAND_TEMPLATE")
     if template:
@@ -302,6 +662,8 @@ def build_command(
         return command_tokens
 
     return build_default_command(repo_dir, replacements)
+
+
 
 
 def synthesize(args: argparse.Namespace) -> None:
@@ -329,35 +691,38 @@ def synthesize(args: argparse.Namespace) -> None:
     job_dir = os.path.dirname(os.path.abspath(args.text))
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
-    # Resolve selected model directory, if requested
-    selected_model_dir: Optional[str] = None
-    if getattr(args, "model_id", None):
-        models_root = os.path.join(args.root_dir, "models")
-        safe_name = args.model_id.replace("/", "__")
-        candidate = os.path.join(models_root, safe_name)
-        if os.path.isdir(candidate):
-            selected_model_dir = candidate
-        else:
-            try:
-                for name in os.listdir(models_root):
-                    sub = os.path.join(models_root, name)
-                    if not os.path.isdir(sub):
-                        continue
-                    try:
-                        with open(os.path.join(sub, "repo_id.txt"), "r", encoding="utf-8") as fh:
-                            rid = fh.read().strip()
-                            if rid == args.model_id:
-                                selected_model_dir = sub
-                                break
-                    except Exception:
-                        continue
-            except Exception:
-                pass
+    voice_samples = _prepare_voice_prompts(args.text, voices)
+    if voice_samples and len(set(voice_samples)) < len(voice_samples):
+        emit(
+            "log",
+            level="info",
+            message="Reusing voice prompts for speakers without dedicated references",
+        )
 
-    replacements: Dict[str, Optional[str]] = {
+    model_path, resolved_model_id = resolve_model_path(args.root_dir, getattr(args, "model_id", None))
+
+    try:
+        run_inprocess_inference(
+            args,
+            model_path=model_path,
+            model_id=resolved_model_id,
+            voice_samples=voice_samples,
+        )
+        return
+    except Exception as exc:  # noqa: BLE001
+        emit(
+            "log",
+            level="warn",
+            message=f"In-process VibeVoice inference failed ({exc}); attempting CLI fallback",
+        )
+
+    selected_model_dir = _resolve_local_model(args.root_dir, getattr(args, "model_id", "") or "")
+
+    replacements: Dict[str, Optional[object]] = {
         "python": sys.executable,
         "text_path": args.text,
         "output_path": args.output,
+        "output_dir": os.path.dirname(args.output),
         "voice_path": voices[0] if voices else None,
         "style": getattr(args, "style", None),
         "temperature": str(args.temperature) if getattr(args, "temperature", None) is not None else None,
@@ -368,6 +733,7 @@ def synthesize(args: argparse.Namespace) -> None:
         "models_dir": os.path.join(args.root_dir, "models"),
         "model_id": getattr(args, "model_id", None),
         "model_dir": selected_model_dir,
+        "model_path": model_path,
         "voice1": voices[0] if len(voices) > 0 else None,
         "voice2": voices[1] if len(voices) > 1 else None,
         "voice3": voices[2] if len(voices) > 2 else None,
@@ -379,11 +745,13 @@ def synthesize(args: argparse.Namespace) -> None:
         "reference_audio_args": " ".join([f"--reference-audio {p}" for p in voices]) if voices else None,
         "style_arg": f"--style {getattr(args, 'style', '')}" if getattr(args, "style", None) else None,
         "temperature_arg": f"--temperature {getattr(args, 'temperature', '')}" if getattr(args, "temperature", None) is not None else None,
+        "speaker_names": None,
+        "cfg_scale": str(getattr(args, "temperature", "")) if getattr(args, "temperature", None) is not None else None,
     }
 
     command = build_command(args.repo_dir, replacements)
 
-    emit("progress", progress=0.2, message="Running VibeVoice synthesis…")
+    emit("progress", progress=0.2, message="Running VibeVoice synthesis via CLI…")
     run_process(command, cwd=args.repo_dir)
 
     if not os.path.isfile(args.output):
