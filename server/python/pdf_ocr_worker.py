@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 
 def emit(event: str, **data):
@@ -168,18 +168,152 @@ def run_command(command: List[str], env: dict, output_dir: Path, total_pages: in
   return None
 
 
-def ensure_dependencies():
+def _models_present(models_dir: Path) -> bool:
+  if not models_dir.exists():
+    return False
+  for path in models_dir.rglob("*"):
+    if not path.is_file():
+      continue
+    suffix = path.suffix.lower()
+    if suffix in {".bin", ".pt", ".pth", ".onnx", ".safetensors", ".json", ".yaml", ".yml"}:
+      try:
+        if path.stat().st_size > 0:
+          return True
+      except OSError:
+        continue
+  return False
+
+
+def _run_downloader(command: Iterable[str], env: dict) -> bool:
+  command_list = list(command)
+  emit("log", level="info", message=f"Attempting DeepSeek OCR model download: {' '.join(command_list)}")
   try:
-    import deepseek_ocr  # noqa: F401
-  except ImportError as exc:
+    result = subprocess.run(
+      command_list,
+      check=False,
+      env=env,
+      text=True,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+    )
+  except FileNotFoundError:
+    emit("log", level="warn", message=f"Downloader command not found: {command_list[0]}")
+    return False
+  except Exception as exc:
+    emit("log", level="warn", message=f"Failed to run downloader command: {exc}")
+    return False
+
+  if result.stdout:
+    emit("log", level="info", message=result.stdout.strip())
+  if result.returncode != 0:
+    message = result.stderr.strip() or f"Downloader exited with code {result.returncode}"
+    emit("log", level="warn", message=message)
+    return False
+  if result.stderr:
+    emit("log", level="info", message=result.stderr.strip())
+  return True
+
+
+def ensure_models(models_dir: Path) -> None:
+  if _models_present(models_dir):
+    return
+
+  env = os.environ.copy()
+  env.setdefault("DEEPSEEK_OCR_HOME", str(models_dir))
+
+  download_commands: List[Iterable[str]] = [
+    [sys.executable, "-m", "deepseek_ocr.bin.download", "--output", str(models_dir)],
+    [sys.executable, "-m", "deepseek_ocr.bin.download", "--output-dir", str(models_dir)],
+    [sys.executable, "-m", "deepseek_ocr.download", "--output", str(models_dir)],
+    [sys.executable, "-m", "deepseek_ocr.download", "--output-dir", str(models_dir)],
+  ]
+
+  for command in download_commands:
+    if _run_downloader(command, env) and _models_present(models_dir):
+      emit("log", level="info", message=f"DeepSeek OCR models downloaded to {models_dir}")
+      return
+
+  repo_id = os.environ.get("DEEPSEEK_OCR_MODEL_REPO", "deepseek-ai/deepseek-ocr")
+  revision = os.environ.get("DEEPSEEK_OCR_MODEL_REVISION")
+  emit(
+    "log",
+    level="info",
+    message=f"Falling back to Hugging Face snapshot download for {repo_id}",
+  )
+  try:
+    from huggingface_hub import snapshot_download  # type: ignore
+  except ImportError:
     emit(
       "error",
       error=(
-        "The 'deepseek-ocr' package is not installed. Install it with 'pip install deepseek-ocr' "
-        "inside the Python environment used for VoiceForge."
+        "huggingface_hub is not installed. Install it in the DeepSeek OCR environment with "
+        "'pip install huggingface_hub' so VoiceForge can download the models from Hugging Face."
       ),
     )
-    raise SystemExit(1) from exc
+    raise SystemExit(1)
+
+  try:
+    snapshot_download(
+      repo_id=repo_id,
+      revision=revision,
+      local_dir=str(models_dir),
+      local_dir_use_symlinks=False,
+    )
+  except Exception as exc:
+    emit(
+      "error",
+      error=(
+        f"Failed to download DeepSeek OCR models from Hugging Face ({repo_id}). "
+        f"Error: {exc}. You can download them manually and place them in {models_dir}."
+      ),
+    )
+    raise SystemExit(1)
+
+  if not _models_present(models_dir):
+    emit(
+      "error",
+      error=(
+        f"No DeepSeek OCR models found in {models_dir} after download. Verify the repository contains the inference weights "
+        "or provide a populated directory via DEEPSEEK_OCR_HOME."
+      ),
+    )
+    raise SystemExit(1)
+
+  emit("log", level="info", message=f"DeepSeek OCR models synced from Hugging Face to {models_dir}")
+
+
+def ensure_dependencies():
+  module = None
+  try:
+    import deepseek_ocr as module  # type: ignore
+  except ImportError:
+    repo_hint = os.environ.get("DEEPSEEK_OCR_REPO") or os.environ.get("DEEPSEEK_OCR_ROOT")
+    if repo_hint:
+      candidate = Path(repo_hint).expanduser().resolve()
+      if candidate.exists() and str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
+        try:
+          import deepseek_ocr as module  # type: ignore
+        except ImportError:
+          module = None
+    if module is None:
+      emit(
+        "error",
+        error=(
+          "DeepSeek OCR is unavailable. Clone the repository with "
+          "'git clone https://github.com/deepseek-ai/deepseek-ocr.git', create and activate "
+          "a virtual environment (e.g. 'python -m venv .venv' and 'source .venv/bin/activate'), "
+          "install its requirements with 'pip install -r requirements.txt', and either run "
+          "VoiceForge from that checkout or set DEEPSEEK_OCR_REPO to the clone directory so "
+          "the bundled inference scripts are on the Python path. Run VoiceForge from that "
+          "environment so DeepSeek OCR can download the required models."
+        ),
+      )
+      raise SystemExit(1)
+
+  if module is not None:
+    module_path = Path(module.__file__).resolve().parent
+    emit("log", level="info", message=f"Using DeepSeek OCR from {module_path}")
 
 
 if __name__ == "__main__":
@@ -199,6 +333,8 @@ if __name__ == "__main__":
   output_dir.mkdir(parents=True, exist_ok=True)
   models_dir = Path(args.models_dir)
   models_dir.mkdir(parents=True, exist_ok=True)
+
+  ensure_models(models_dir)
 
   emit(
     "progress",
