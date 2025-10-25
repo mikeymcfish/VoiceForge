@@ -287,7 +287,7 @@ def ensure_dependencies():
   try:
     import deepseek_ocr as module  # type: ignore
   except ImportError:
-    repo_hint = os.environ.get("DEEPSEEK_OCR_REPO") or os.environ.get("DEEPSEEK_OCR_ROOT")
+    repo_hint = ".\deepseek-ocr"
     if repo_hint:
       candidate = Path(repo_hint).expanduser().resolve()
       if candidate.exists() and str(candidate) not in sys.path:
