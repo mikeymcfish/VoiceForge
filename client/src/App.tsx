@@ -6,15 +6,15 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Home from "@/pages/home";
-import TtsPage from "@/pages/tts";
+import PdfOcrPage from "@/pages/pdf-ocr";
 import NotFound from "@/pages/not-found";
-import { FileText, Waves } from "lucide-react";
+import { FileText, ScanText, Waves } from "lucide-react";
 
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Home} />
-      <Route path="/tts" component={TtsPage} />
+      <Route path="/pdf-ocr" component={PdfOcrPage} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -24,7 +24,7 @@ function App() {
   const [location] = useLocation();
   const navItems = [
     { href: "/", label: "Text Editor", icon: FileText },
-    { href: "/tts", label: "IndexTTS", icon: Waves },
+    { href: "/pdf-ocr", label: "PDF OCR", icon: ScanText },
   ];
 
   return (

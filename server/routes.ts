@@ -12,6 +12,7 @@ import { huggingFaceTokenUpdateSchema, deterministicCleanRequestSchema } from "@
 import { clampCharacterSampleSize, getCharacterSampleCeiling } from "@shared/model-utils";
 import { indexTtsService } from "./tts-service";
 import { vibevoiceService } from "./vibevoice-service";
+import { pdfOcrService } from "./pdf-ocr-service";
 import fs from "fs";
 import path from "path";
 import { applyDeterministicCleaning } from "./text-cleaner";
@@ -31,6 +32,13 @@ const ttsUpload = multer({
 });
 
 const vibevoiceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 120 * 1024 * 1024,
+  },
+});
+
+const pdfUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 120 * 1024 * 1024,
@@ -82,6 +90,19 @@ async function parseEpub(buffer: Buffer): Promise<string> {
     console.error("EPUB parsing error:", error);
     throw new Error("Failed to parse EPUB file: " + (error instanceof Error ? error.message : "Unknown error"));
   }
+}
+
+function estimatePdfPageCount(buffer: Buffer): number {
+  try {
+    const text = buffer.toString("latin1");
+    const matches = text.match(/\/Type\s*\/Page\b/g);
+    if (matches && matches.length > 0) {
+      return matches.length;
+    }
+  } catch (error) {
+    console.error("Failed to estimate PDF page count:", error);
+  }
+  return 1;
 }
 
 function createTokenPreview(token: string): string {
@@ -414,6 +435,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // PDF OCR endpoints
+  app.get("/api/pdf-ocr/status", (_req, res) => {
+    res.json(pdfOcrService.getStatus());
+  });
+
+  app.post("/api/pdf-ocr/process", pdfUpload.single("pdf"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "PDF file is required" });
+      }
+
+      const totalPages = estimatePdfPageCount(req.file.buffer);
+      const job = await pdfOcrService.startJob({
+        pdfBuffer: req.file.buffer,
+        fileName: req.file.originalname,
+        totalPages,
+      });
+
+      res.json({ job, totalPages });
+    } catch (error) {
+      console.error("PDF OCR start error:", error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to start PDF OCR",
+      });
+    }
+  });
+
+  app.get("/api/pdf-ocr/jobs/:id", (req, res) => {
+    const job = pdfOcrService.getJob(req.params.id);
+    if (!job) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    res.json({ job });
+  });
+
+  app.get("/api/pdf-ocr/jobs/:id/text", async (req, res) => {
+    try {
+      const outputPath = pdfOcrService.getJobOutputPath(req.params.id);
+      if (!outputPath) {
+        return res.status(404).json({ error: "Text not available" });
+      }
+      if (!fs.existsSync(outputPath)) {
+        return res.status(404).json({ error: "Text file missing" });
+      }
+      const text = await fs.promises.readFile(outputPath, "utf-8");
+      res.type("text/plain").send(text);
+    } catch (error) {
+      console.error("Failed to read PDF OCR output:", error);
+      res.status(500).json({ error: "Failed to read OCR output" });
+    }
+  });
+
   // IndexTTS control endpoints
   app.get("/api/tts/status", (_req, res) => {
     res.json(indexTtsService.getStatus());
@@ -618,6 +691,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.type("audio/wav");
     res.setHeader("Content-Disposition", `attachment; filename="vibevoice-${job.id}.wav"`);
     res.sendFile(filePath);
+  });
+
+  const pdfOcrWss = new WebSocketServer({ noServer: true });
+
+  pdfOcrWss.on("connection", (ws: WebSocket) => {
+    const unsubscribe = pdfOcrService.subscribe((message) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(message));
+        } catch (error) {
+          console.error("PDF OCR WebSocket send error:", error);
+        }
+      }
+    });
+
+    ws.on("close", () => {
+      unsubscribe();
+    });
+
+    ws.on("error", (error) => {
+      console.error("PDF OCR WebSocket error:", error);
+    });
   });
 
   // WebSocket server for IndexTTS updates
@@ -853,6 +948,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } else if (request.url === "/ws/tts") {
       ttsWss.handleUpgrade(request, socket, head, (ws) => {
         ttsWss.emit("connection", ws, request);
+      });
+    } else if (request.url === "/ws/pdf-ocr") {
+      pdfOcrWss.handleUpgrade(request, socket, head, (ws) => {
+        pdfOcrWss.emit("connection", ws, request);
       });
     } else if (request.url === "/ws/vibevoice") {
       vibevoiceWss.handleUpgrade(request, socket, head, (ws) => {

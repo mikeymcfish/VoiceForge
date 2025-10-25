@@ -181,6 +181,64 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
 
 export type WSMessage = z.infer<typeof wsMessageSchema>;
 
+// PDF OCR integration schemas
+export const pdfOcrJobStatusSchema = z.object({
+  id: z.string(),
+  status: z.enum(["queued", "running", "completed", "failed"]),
+  progress: z.number().min(0).max(100),
+  message: z.string().optional(),
+  pageCount: z.number().optional(),
+  processedPages: z.number().optional(),
+  outputFile: z.string().optional(),
+  pdfFileName: z.string().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  error: z.string().optional(),
+});
+
+export type PdfOcrJobStatus = z.infer<typeof pdfOcrJobStatusSchema>;
+
+export const pdfOcrLogEntrySchema = z.object({
+  id: z.string(),
+  jobId: z.string(),
+  level: z.enum(["info", "warn", "error"]),
+  message: z.string(),
+  timestamp: z.number(),
+});
+
+export type PdfOcrLogEntry = z.infer<typeof pdfOcrLogEntrySchema>;
+
+export const pdfOcrStatusSchema = z.object({
+  jobs: z.array(pdfOcrJobStatusSchema),
+  modelsDir: z.string(),
+});
+
+export type PdfOcrStatus = z.infer<typeof pdfOcrStatusSchema>;
+
+export const pdfOcrWsMessageSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("status"),
+    payload: pdfOcrStatusSchema,
+  }),
+  z.object({
+    type: z.literal("job"),
+    payload: pdfOcrJobStatusSchema,
+  }),
+  z.object({
+    type: z.literal("log"),
+    payload: pdfOcrLogEntrySchema,
+  }),
+  z.object({
+    type: z.literal("text"),
+    payload: z.object({
+      jobId: z.string(),
+      text: z.string(),
+    }),
+  }),
+]);
+
+export type PdfOcrWsMessage = z.infer<typeof pdfOcrWsMessageSchema>;
+
 // IndexTTS integration schemas
 export const ttsDownloadStatusSchema = z.enum(["idle", "in-progress", "completed", "failed"]);
 export type TtsDownloadStatus = z.infer<typeof ttsDownloadStatusSchema>;
