@@ -169,17 +169,37 @@ def run_command(command: List[str], env: dict, output_dir: Path, total_pages: in
 
 
 def ensure_dependencies():
+  module = None
   try:
-    import deepseek_ocr  # noqa: F401
-  except ImportError as exc:
-    emit(
-      "error",
-      error=(
-        "The 'deepseek-ocr' package is not installed. Install it with 'pip install deepseek-ocr' "
-        "inside the Python environment used for VoiceForge."
-      ),
-    )
-    raise SystemExit(1) from exc
+    import deepseek_ocr as module  # type: ignore
+  except ImportError:
+    repo_hint = os.environ.get("DEEPSEEK_OCR_REPO") or os.environ.get("DEEPSEEK_OCR_ROOT")
+    if repo_hint:
+      candidate = Path(repo_hint).expanduser().resolve()
+      if candidate.exists() and str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
+        try:
+          import deepseek_ocr as module  # type: ignore
+        except ImportError:
+          module = None
+    if module is None:
+      emit(
+        "error",
+        error=(
+          "DeepSeek OCR is unavailable. Clone the repository with "
+          "'git clone https://github.com/deepseek-ai/deepseek-ocr.git', create and activate "
+          "a virtual environment (e.g. 'python -m venv .venv' and 'source .venv/bin/activate'), "
+          "install its requirements with 'pip install -r requirements.txt', and either run "
+          "VoiceForge from that checkout or set DEEPSEEK_OCR_REPO to the clone directory so "
+          "the bundled inference scripts are on the Python path. Run VoiceForge from that "
+          "environment so DeepSeek OCR can download the required models."
+        ),
+      )
+      raise SystemExit(1)
+
+  if module is not None:
+    module_path = Path(module.__file__).resolve().parent
+    emit("log", level="info", message=f"Using DeepSeek OCR from {module_path}")
 
 
 if __name__ == "__main__":
