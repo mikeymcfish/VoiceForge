@@ -440,6 +440,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(pdfOcrService.getStatus());
   });
 
+  app.post("/api/pdf-ocr/config", (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Partial<{
+        pythonPath: string;
+        deepseekRepoPath: string;
+        huggingFaceRepoId: string;
+        huggingFaceRevision: string;
+      }>;
+      pdfOcrService.updateConfig(body);
+      res.json({ config: pdfOcrService.getConfig() });
+    } catch (error) {
+      console.error("Failed to update PDF OCR config:", error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to update config",
+      });
+    }
+  });
+
+  app.post("/api/pdf-ocr/download-models", (req, res) => {
+    try {
+      const task = pdfOcrService.downloadModels();
+      task.catch((error) => {
+        console.error("PDF OCR model download failed:", error);
+      });
+      res.json(pdfOcrService.getStatus());
+    } catch (error) {
+      res.status(409).json({
+        error: error instanceof Error ? error.message : "Model download already in progress",
+      });
+    }
+  });
+
   app.post("/api/pdf-ocr/process", pdfUpload.single("pdf"), async (req, res) => {
     try {
       if (!req.file) {
