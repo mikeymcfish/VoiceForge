@@ -242,6 +242,149 @@ def _normalize_speaker_id(raw_id: int) -> int:
     return raw_id - 1 if raw_id > 0 else raw_id
 
 
+def _chapter_token_limit() -> int:
+    env_keys = [
+        "VIBEVOICE_MAX_CHAPTER_TOKENS",
+        "VIBEVOICE_CHAPTER_TOKEN_LIMIT",
+        "VIBEVOICE_SEGMENT_TOKEN_LIMIT",
+        "VIBEVOICE_TOKEN_LIMIT",
+    ]
+    for key in env_keys:
+        raw_value = os.environ.get(key)
+        if not raw_value:
+            continue
+        try:
+            parsed = int(raw_value)
+        except ValueError:
+            continue
+        if parsed > 0:
+            return parsed
+    # Empirically VibeVoice handles ~2k tokens comfortably per run.
+    # Keep some headroom for long sentences and narration tags.
+    return 1400
+
+
+def _coerce_offsets(encoding) -> List[Tuple[int, int]]:
+    offsets = encoding.get("offset_mapping") if hasattr(encoding, "get") else None
+    if offsets is None:
+        encodings = getattr(encoding, "encodings", None)
+        if encodings:
+            offsets = encodings[0].offsets  # type: ignore[index]
+    if offsets is None:
+        return []
+    if len(offsets) > 0 and isinstance(offsets[0], list):
+        return [tuple(item) for item in offsets]  # type: ignore[arg-type]
+    return list(offsets)
+
+
+def _coerce_input_ids(encoding) -> List[int]:
+    ids = encoding.get("input_ids") if hasattr(encoding, "get") else None
+    if ids is None:
+        return []
+    if len(ids) > 0 and isinstance(ids[0], list):
+        return ids[0]  # type: ignore[index]
+    return list(ids)
+
+
+def _find_segment_boundary(text: str, preferred_index: int, lookahead: int = 400) -> int:
+    if preferred_index >= len(text):
+        return len(text)
+
+    window_end = min(len(text), preferred_index + max(lookahead, 1))
+    search_window = text[preferred_index:window_end]
+
+    # Prefer double newlines (chapter/paragraph boundaries)
+    newline_match = search_window.find("\n\n")
+    if newline_match != -1:
+        return preferred_index + newline_match + 2
+
+    # Prefer sentence endings.
+    sentence_match = re.search(r"[\.\?!][\)\]\"']?\s", search_window)
+    if sentence_match:
+        return preferred_index + sentence_match.end()
+
+    # Fall back to the next whitespace boundary.
+    whitespace_match = re.search(r"\s", search_window)
+    if whitespace_match:
+        return preferred_index + whitespace_match.end()
+
+    return window_end
+
+
+def _segment_text_by_tokens(text: str, tokenizer, max_tokens: int) -> List[str]:
+    remaining = text.strip()
+    segments: List[str] = []
+    safety_counter = 0
+
+    while remaining:
+        safety_counter += 1
+        if safety_counter > 10000:
+            raise RuntimeError("Segmentation safety limit exceeded while splitting text")
+
+        encoding = tokenizer(
+            remaining,
+            add_special_tokens=False,
+            return_attention_mask=False,
+            return_offsets_mapping=True,
+        )
+        input_ids = _coerce_input_ids(encoding)
+        offsets = _coerce_offsets(encoding)
+
+        if not input_ids:
+            if remaining.strip():
+                segments.append(remaining.strip())
+            break
+
+        if len(input_ids) <= max_tokens:
+            trimmed = remaining.strip()
+            if trimmed:
+                segments.append(trimmed)
+            break
+
+        cut_index = min(max_tokens, len(offsets))
+        if cut_index <= 0:
+            trimmed = remaining.strip()
+            if trimmed:
+                segments.append(trimmed)
+            break
+
+        cutoff = offsets[cut_index - 1][1] if offsets else len(remaining)
+        boundary = _find_segment_boundary(remaining, cutoff)
+        boundary = max(boundary, cutoff)
+
+        if boundary >= len(remaining):
+            trimmed = remaining.strip()
+            if trimmed:
+                segments.append(trimmed)
+            break
+
+        segment = remaining[:boundary].strip()
+        if not segment:
+            decoded = tokenizer.decode(
+                input_ids[:cut_index],
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True,
+            ).strip()
+            if not decoded:
+                decoded = remaining[:boundary].strip()
+            if decoded:
+                segments.append(decoded)
+            remaining = remaining[boundary:].lstrip()
+            continue
+
+        segments.append(segment)
+        remaining = remaining[boundary:].lstrip()
+
+    return segments
+
+
+def _progress_between(start: float, end: float, index: int, total: int) -> float:
+    if total <= 0:
+        return end
+    fraction = max(0.0, min(1.0, index / total))
+    return start + (end - start) * fraction
+
+
 def _extract_speaker_sequence(text_path: str) -> List[int]:
     sequence: List[int] = []
     seen: set[int] = set()
@@ -396,6 +539,7 @@ def run_inprocess_inference(
     model_path: str,
     model_id: Optional[str],
     voice_samples: Optional[List[str]],
+    text: str,
 ) -> None:
     emit("progress", progress=0.18, message="Preparing VibeVoice runtime…")
 
@@ -480,40 +624,100 @@ def run_inprocess_inference(
     if voice_samples:
         voice_batch = [voice_samples]
 
-    inputs = processor(
-        text=[args.text],
-        voice_samples=voice_batch,
-        padding=True,
-        return_tensors="pt",
-        return_attention_mask=True,
+    max_tokens = max(128, _chapter_token_limit())
+    segments = _segment_text_by_tokens(text, processor.tokenizer, max_tokens)
+    if not segments:
+        segments = [text.strip()]
+
+    total_segments = len(segments)
+    emit(
+        "log",
+        level="info",
+        message=f"Segmented script into {total_segments} chapter(s) (≤{max_tokens} tokens each)",
+    )
+    emit(
+        "progress",
+        progress=0.52,
+        message=f"Queued {total_segments} chapter{'s' if total_segments != 1 else ''} for synthesis…",
     )
 
     target_device = device if device in {"cuda", "mps"} else "cpu"
-    for key, value in list(inputs.items()):
-        if hasattr(value, "to") and callable(value.to):
-            inputs[key] = value.to(target_device)
+    combined_waveform = None
+    generation_start = time.time()
 
-    emit("progress", progress=0.68, message="Running VibeVoice generation…")
-
-    start = time.time()
-    with torch.inference_mode():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=None,
-            cfg_scale=cfg_value,
-            tokenizer=processor.tokenizer,
-            generation_config={"do_sample": False},
-            verbose=True,
+    for index, segment_text in enumerate(segments, start=1):
+        seg_encoding = processor.tokenizer(
+            segment_text,
+            add_special_tokens=False,
+            return_attention_mask=False,
         )
-    end = time.time()
+        token_count = len(_coerce_input_ids(seg_encoding))
+        emit(
+            "log",
+            level="info",
+            message=f"Chapter {index}/{total_segments}: {len(segment_text)} chars, ~{token_count} tokens",
+        )
 
-    speech_outputs = getattr(outputs, "speech_outputs", None)
-    if not speech_outputs or speech_outputs[0] is None:
-        raise RuntimeError("VibeVoice did not return any audio output")
+        emit(
+            "progress",
+            progress=_progress_between(0.52, 0.9, index - 1, total_segments),
+            message=f"Generating chapter {index}/{total_segments}…",
+        )
+
+        inputs = processor(
+            text=[segment_text],
+            voice_samples=voice_batch,
+            padding=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+
+        for key, value in list(inputs.items()):
+            if hasattr(value, "to") and callable(value.to):
+                inputs[key] = value.to(target_device)
+
+        with torch.inference_mode():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=None,
+                cfg_scale=cfg_value,
+                tokenizer=processor.tokenizer,
+                generation_config={"do_sample": False},
+                verbose=True,
+            )
+
+        speech_outputs = getattr(outputs, "speech_outputs", None)
+        if not speech_outputs or speech_outputs[0] is None:
+            raise RuntimeError(f"VibeVoice did not return audio for chapter {index}")
+
+        waveform = speech_outputs[0]
+        if hasattr(waveform, "detach"):
+            waveform = waveform.detach()
+        waveform = waveform.to("cpu") if hasattr(waveform, "to") else waveform
+        if hasattr(waveform, "ndim") and waveform.ndim == 1:
+            waveform = waveform.unsqueeze(0)
+
+        if combined_waveform is None:
+            combined_waveform = waveform
+        else:
+            combined_waveform = torch.cat([combined_waveform, waveform], dim=-1)
+
+        emit(
+            "progress",
+            progress=_progress_between(0.52, 0.9, index, total_segments),
+            message=f"Chapter {index}/{total_segments} ready",
+        )
+
+    generation_end = time.time()
+
+    if combined_waveform is None:
+        raise RuntimeError("VibeVoice did not produce any audio segments")
+
+    emit("progress", progress=0.92, message="Normalizing and saving audio…")
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     saved_paths = processor.save_audio(
-        speech_outputs[0],
+        combined_waveform,
         output_path=args.output,
         normalize=True,
     )
@@ -521,18 +725,18 @@ def run_inprocess_inference(
     final_path = saved_paths[0] if saved_paths else args.output
     duration = None
     try:
-        waveform = speech_outputs[0]
-        if hasattr(waveform, "detach"):
-            waveform = waveform.detach()
-        array = waveform.cpu().numpy() if hasattr(waveform, "cpu") else waveform
-        if array.ndim > 1:
+        waveform_any = combined_waveform
+        if hasattr(waveform_any, "detach"):
+            waveform_any = waveform_any.detach()
+        array = waveform_any.cpu().numpy() if hasattr(waveform_any, "cpu") else waveform_any
+        if hasattr(array, "ndim") and array.ndim > 1:
             array = array.squeeze(0)
         sample_rate = 24000
         duration = array.shape[-1] / float(sample_rate)
     except Exception:
         duration = None
 
-    elapsed = end - start
+    elapsed = generation_end - generation_start
     if duration and duration > 0:
         emit(
             "log",
@@ -707,6 +911,7 @@ def synthesize(args: argparse.Namespace) -> None:
             model_path=model_path,
             model_id=resolved_model_id,
             voice_samples=voice_samples,
+            text=text_content,
         )
         return
     except Exception as exc:  # noqa: BLE001
