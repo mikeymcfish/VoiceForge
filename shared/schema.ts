@@ -208,9 +208,25 @@ export const pdfOcrLogEntrySchema = z.object({
 
 export type PdfOcrLogEntry = z.infer<typeof pdfOcrLogEntrySchema>;
 
+export const pdfOcrDownloadStatusSchema = z.enum(["idle", "in-progress", "completed", "failed"]);
+export type PdfOcrDownloadStatus = z.infer<typeof pdfOcrDownloadStatusSchema>;
+
+export const pdfOcrConfigSchema = z.object({
+  pythonPath: z.string().optional(),
+  deepseekRepoPath: z.string().optional(),
+  huggingFaceRepoId: z.string().optional(),
+  huggingFaceRevision: z.string().optional(),
+  lastResolvedModulePath: z.string().optional(),
+});
+
+export type PdfOcrConfig = z.infer<typeof pdfOcrConfigSchema>;
+
 export const pdfOcrStatusSchema = z.object({
   jobs: z.array(pdfOcrJobStatusSchema),
   modelsDir: z.string(),
+  downloadStatus: pdfOcrDownloadStatusSchema,
+  downloadError: z.string().optional(),
+  config: pdfOcrConfigSchema,
 });
 
 export type PdfOcrStatus = z.infer<typeof pdfOcrStatusSchema>;

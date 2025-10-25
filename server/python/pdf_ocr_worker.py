@@ -370,25 +370,49 @@ def ensure_dependencies():
   if module is not None:
     module_path = Path(module.__file__).resolve().parent
     emit("log", level="info", message=f"Using DeepSeek OCR from {module_path}")
+    emit("config", deepseek_module_path=str(module_path))
 
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="DeepSeek PDF OCR worker")
-  parser.add_argument("--job-id", required=True)
-  parser.add_argument("--pdf-path", required=True)
-  parser.add_argument("--output-path", required=True)
+  parser.add_argument("--job-id")
+  parser.add_argument("--pdf-path")
+  parser.add_argument("--output-path")
   parser.add_argument("--models-dir", required=True)
   parser.add_argument("--total-pages", type=int, default=1)
+  parser.add_argument("--download-models", action="store_true", help="Download models without running OCR")
   args = parser.parse_args()
 
+  models_dir = Path(args.models_dir)
+  models_dir.mkdir(parents=True, exist_ok=True)
+
   ensure_dependencies()
+
+  if args.download_models:
+    ensure_models(models_dir)
+    emit(
+      "complete",
+      message="DeepSeek OCR models are ready",
+      models_dir=str(models_dir),
+    )
+    raise SystemExit(0)
+
+  if not args.job_id or not args.pdf_path or not args.output_path:
+    emit(
+      "error",
+      error=(
+        "Missing required arguments for OCR job. Provide --job-id, --pdf-path, and --output-path "
+        "or run with --download-models."
+      ),
+    )
+    raise SystemExit(1)
 
   pdf_path = Path(args.pdf_path)
   output_path = Path(args.output_path)
   output_dir = output_path.parent / "deepseek_output"
   output_dir.mkdir(parents=True, exist_ok=True)
-  models_dir = Path(args.models_dir)
-  models_dir.mkdir(parents=True, exist_ok=True)
+
+  ensure_models(models_dir)
 
   ensure_models(models_dir)
 

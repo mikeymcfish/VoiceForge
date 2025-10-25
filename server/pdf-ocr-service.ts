@@ -7,14 +7,21 @@ import readline from "readline";
 import { fileURLToPath } from "url";
 import { nanoid } from "nanoid";
 import type {
+  PdfOcrConfig,
+  PdfOcrDownloadStatus,
   PdfOcrJobStatus,
   PdfOcrLogEntry,
   PdfOcrStatus,
   PdfOcrWsMessage,
 } from "@shared/schema";
 
-const PYTHON_BIN =
+const DEFAULT_PYTHON_BIN =
   process.env.PDF_OCR_PYTHON || (process.platform === "win32" ? "python" : "python3");
+
+type PersistedPdfOcrConfig = Pick<
+  PdfOcrConfig,
+  "pythonPath" | "deepseekRepoPath" | "huggingFaceRepoId" | "huggingFaceRevision"
+>;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +51,8 @@ interface PythonMessage {
   output_path?: string;
   error?: string;
   text?: string;
+  models_dir?: string;
+  deepseek_module_path?: string;
 }
 
 class PdfOcrService extends EventEmitter {
@@ -51,8 +60,13 @@ class PdfOcrService extends EventEmitter {
   private readonly modelsDir: string;
   private readonly jobsDir: string;
   private readonly workerScript: string;
+  private readonly configPath: string;
   private readonly subscribers = new Set<(message: PdfOcrWsMessage) => void>();
   private readonly jobs = new Map<string, InternalJob>();
+  private config: PersistedPdfOcrConfig = {};
+  private lastResolvedModulePath?: string;
+  private modelDownloadStatus: PdfOcrDownloadStatus = "idle";
+  private modelDownloadError?: string;
 
   constructor(rootDir?: string) {
     super();
@@ -60,7 +74,9 @@ class PdfOcrService extends EventEmitter {
     this.modelsDir = path.join(this.rootDir, "models");
     this.jobsDir = path.join(this.rootDir, "jobs");
     this.workerScript = this.resolveWorkerScript();
+    this.configPath = path.join(this.rootDir, "config.json");
     this.ensureBaseDirs();
+    this.loadConfig();
   }
 
   private resolveWorkerScript(): string {
@@ -83,6 +99,140 @@ class PdfOcrService extends EventEmitter {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
+    }
+  }
+
+  private loadConfig() {
+    try {
+      if (fs.existsSync(this.configPath)) {
+        const raw = fs.readFileSync(this.configPath, "utf-8");
+        const parsed = JSON.parse(raw) as PersistedPdfOcrConfig;
+        if (parsed && typeof parsed === "object") {
+          this.config = parsed;
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load PDF OCR config:", error);
+      this.config = {};
+    }
+  }
+
+  private saveConfig() {
+    try {
+      fs.writeFileSync(this.configPath, JSON.stringify(this.config, null, 2));
+    } catch (error) {
+      console.error("Failed to save PDF OCR config:", error);
+    }
+  }
+
+  private getPythonBinary(): string {
+    const configured = this.config.pythonPath?.trim();
+    if (!configured) {
+      return DEFAULT_PYTHON_BIN;
+    }
+    const normalized = path.normalize(configured);
+    if (fs.existsSync(normalized) && fs.statSync(normalized).isDirectory()) {
+      const binName = process.platform === "win32" ? "python.exe" : "python";
+      const candidate = path.join(normalized, process.platform === "win32" ? "Scripts" : "bin", binName);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return normalized;
+  }
+
+  private applyEnvOverrides(env: NodeJS.ProcessEnv) {
+    if (this.config.deepseekRepoPath) {
+      env.DEEPSEEK_OCR_REPO = this.config.deepseekRepoPath;
+      env.DEEPSEEK_OCR_ROOT = this.config.deepseekRepoPath;
+    }
+    if (this.config.huggingFaceRepoId) {
+      env.DEEPSEEK_OCR_MODEL_REPO = this.config.huggingFaceRepoId;
+    }
+    if (this.config.huggingFaceRevision) {
+      env.DEEPSEEK_OCR_MODEL_REVISION = this.config.huggingFaceRevision;
+    }
+  }
+
+  private broadcastStatus() {
+    this.broadcast({
+      type: "status",
+      payload: this.getStatus(),
+    });
+  }
+
+  private handleWorkerMessage(message: PythonMessage) {
+    if (message.deepseek_module_path) {
+      this.lastResolvedModulePath = message.deepseek_module_path;
+      this.broadcastStatus();
+    }
+  }
+
+  public getConfig(): PdfOcrConfig {
+    return {
+      ...this.config,
+      lastResolvedModulePath: this.lastResolvedModulePath,
+    };
+  }
+
+  public updateConfig(updates: Partial<PersistedPdfOcrConfig>) {
+    const next: PersistedPdfOcrConfig = { ...this.config };
+    if (Object.prototype.hasOwnProperty.call(updates, "pythonPath")) {
+      const value = updates.pythonPath;
+      next.pythonPath = value && value.trim().length > 0 ? value.trim() : undefined;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, "deepseekRepoPath")) {
+      const value = updates.deepseekRepoPath;
+      next.deepseekRepoPath = value && value.trim().length > 0 ? value.trim() : undefined;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, "huggingFaceRepoId")) {
+      const value = updates.huggingFaceRepoId;
+      next.huggingFaceRepoId = value && value.trim().length > 0 ? value.trim() : undefined;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, "huggingFaceRevision")) {
+      const value = updates.huggingFaceRevision;
+      next.huggingFaceRevision = value && value.trim().length > 0 ? value.trim() : undefined;
+    }
+    this.config = next;
+    this.saveConfig();
+    this.broadcastStatus();
+  }
+
+  public async downloadModels(): Promise<void> {
+    if (this.modelDownloadStatus === "in-progress") {
+      throw new Error("Model download already in progress");
+    }
+
+    this.modelDownloadStatus = "in-progress";
+    this.modelDownloadError = undefined;
+    this.broadcastStatus();
+
+    try {
+      await this.runPython(
+        ["--models-dir", this.modelsDir, "--download-models"],
+        (message) => {
+          if (message.event === "complete") {
+            this.modelDownloadStatus = "completed";
+            this.broadcastStatus();
+          } else if (message.event === "error") {
+            this.modelDownloadStatus = "failed";
+            this.modelDownloadError = message.error || message.message;
+            this.broadcastStatus();
+          }
+        },
+        (stderrLine) => {
+          console.log("PDF OCR download:", stderrLine);
+        }
+      );
+      if (this.modelDownloadStatus === "in-progress") {
+        this.modelDownloadStatus = "completed";
+        this.broadcastStatus();
+      }
+    } catch (error) {
+      this.modelDownloadStatus = "failed";
+      this.modelDownloadError = error instanceof Error ? error.message : String(error);
+      this.broadcastStatus();
+      throw error;
     }
   }
 
@@ -144,6 +294,9 @@ class PdfOcrService extends EventEmitter {
     return {
       jobs,
       modelsDir: this.modelsDir,
+      downloadStatus: this.modelDownloadStatus,
+      downloadError: this.modelDownloadError,
+      config: this.getConfig(),
     };
   }
 
@@ -179,7 +332,9 @@ class PdfOcrService extends EventEmitter {
         PYTHONUNBUFFERED: "1",
       };
 
-      const python = spawn(PYTHON_BIN, ["-u", this.workerScript, ...args], {
+      this.applyEnvOverrides(pythonEnv);
+
+      const python = spawn(this.getPythonBinary(), ["-u", this.workerScript, ...args], {
         env: pythonEnv,
       });
 
@@ -191,6 +346,7 @@ class PdfOcrService extends EventEmitter {
       rl.on("line", (line) => {
         try {
           const message = JSON.parse(line) as PythonMessage;
+          this.handleWorkerMessage(message);
           onMessage?.(message);
         } catch (error) {
           console.error("Failed to parse PDF OCR worker message:", line, error);
