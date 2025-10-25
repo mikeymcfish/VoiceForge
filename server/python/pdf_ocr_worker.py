@@ -1,4 +1,5 @@
 import argparse
+import importlib
 import json
 import os
 import shlex
@@ -282,20 +283,75 @@ def ensure_models(models_dir: Path) -> None:
   emit("log", level="info", message=f"DeepSeek OCR models synced from Hugging Face to {models_dir}")
 
 
+def _iter_candidate_roots() -> List[Path]:
+  candidates: List[Path] = []
+
+  env_vars = [
+    os.environ.get("DEEPSEEK_OCR_REPO"),
+    os.environ.get("DEEPSEEK_OCR_ROOT"),
+    os.environ.get("DEEPSEEK_OCR_HOME"),
+  ]
+  for value in env_vars:
+    if value:
+      candidates.append(Path(value).expanduser())
+
+  script_path = Path(__file__).resolve()
+  project_root = script_path.parents[3]
+  system_drive = os.environ.get("SystemDrive")
+  user_profile = os.environ.get("USERPROFILE")
+  common_roots = [
+    Path.cwd(),
+    project_root,
+    project_root.parent,
+    Path.home(),
+  ]
+
+  if system_drive:
+    common_roots.append(Path(system_drive + "\\"))
+  if user_profile:
+    common_roots.append(Path(user_profile))
+
+  for root in common_roots:
+    for name in ("deepseek-ocr", "DeepSeek-OCR"):
+      candidates.append(root / name)
+
+  candidates.extend([Path("/deepseek-ocr"), Path("/DeepSeek-OCR")])
+
+  unique_candidates: List[Path] = []
+  seen: set = set()
+  for candidate in candidates:
+    resolved = candidate.resolve() if candidate.exists() else candidate
+    key = str(resolved).lower()
+    if key not in seen:
+      seen.add(key)
+      unique_candidates.append(candidate)
+  return unique_candidates
+
+
+def _import_from_candidates() -> Optional[object]:
+  for candidate in _iter_candidate_roots():
+    try_paths: List[Path] = []
+    for path in (candidate, candidate / "src", candidate / "python"):
+      if path.exists() and path.is_dir():
+        try_paths.append(path)
+    for path in try_paths:
+      if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+      try:
+        module = importlib.import_module("deepseek_ocr")
+        emit("log", level="info", message=f"Resolved DeepSeek OCR from {path}")
+        return module
+      except ImportError:
+        continue
+  return None
+
+
 def ensure_dependencies():
   module = None
   try:
     import deepseek_ocr as module  # type: ignore
   except ImportError:
-    repo_hint = ".\deepseek-ocr"
-    if repo_hint:
-      candidate = Path(repo_hint).expanduser().resolve()
-      if candidate.exists() and str(candidate) not in sys.path:
-        sys.path.insert(0, str(candidate))
-        try:
-          import deepseek_ocr as module  # type: ignore
-        except ImportError:
-          module = None
+    module = _import_from_candidates()
     if module is None:
       emit(
         "error",
