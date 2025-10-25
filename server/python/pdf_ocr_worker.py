@@ -414,6 +414,8 @@ if __name__ == "__main__":
 
   ensure_models(models_dir)
 
+  ensure_models(models_dir)
+
   emit(
     "progress",
     processed_pages=0,

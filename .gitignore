@@ -14,3 +14,4 @@ env.txt
 __pycache__/
 *.pyc
 /attached_assets/pdf-ocr/jobs
+/venv
