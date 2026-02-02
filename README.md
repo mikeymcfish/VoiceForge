@@ -59,8 +59,7 @@ A professional text preprocessing application for multi-speaker TTS (text-to-spe
 
 A fully self-contained Python implementation of the text preprocessing workflow is available in `gradio_app/`.
 It re-creates the deterministic cleaning pipeline, supports HuggingFace **and** local Ollama LLMs, mirrors the
-multi-speaker formatting logic, and now exposes the IndexTTS and VibeVoice speech synthesis workflows inside a
-Gradio interface.
+multi-speaker formatting logic, and exposes the IndexTTS, VibeVoice, and Qwen3 TTS workflows inside a Gradio interface.
 
 ### Highlights
 
@@ -68,8 +67,7 @@ Gradio interface.
 - LLM-driven cleaning & dialogue formatting via HuggingFace Inference or a local Ollama instance
 - Built-in management screens for IndexTTS (model download/load and synthesis)
 - Built-in management screens for VibeVoice (repo setup and synthesis)
-It re-creates the deterministic cleaning pipeline, HuggingFace-powered LLM processing, and multi-speaker formatting
-inside a Gradio interface.
+- Qwen3 TTS voice cloning tab with automatic text chunking for long passages
 
 ### Running the Gradio app
 
@@ -83,10 +81,24 @@ By default the app expects a HuggingFace Inference API token. You can supply it 
 to `http://localhost:11434`; override with `OLLAMA_BASE_URL`). Set `OLLAMA_MODEL` to change the default local model.
 
 The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs, full multi-speaker processing, and
-optional audio generation through IndexTTS and VibeVoice. The Python workers will install any missing dependencies when
-you trigger download/setup actions from the UI.
-`HUGGINGFACE_API_TOKEN` before launching. The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs,
-and full multi-speaker processing that mirrors the behaviour of the TypeScript version.
+optional audio generation through IndexTTS, VibeVoice, and Qwen3 TTS voice cloning. The Python workers will install any
+missing dependencies when you trigger download/setup actions from the UI.
+
+### Qwen3 TTS voice cloning (Gradio tab)
+
+The **Qwen3 TTS** tab supports one-click voice cloning with a single uploaded voice sample. Long text is automatically split
+into smaller clips to stay within model limits, then stitched back together with a configurable silence gap.
+
+Recommended defaults (adjust per model):
+- **Max chars per clip**: 320 (set `QWEN_TTS_MAX_CHARS` to override)
+- **Gap between clips**: 120 ms (set `QWEN_TTS_GAP_MS` to override)
+
+Environment variables:
+- `QWEN_TTS_MODEL_ID` (default: `Qwen/Qwen3-TTS`)
+- `QWEN_TTS_ENABLE_CUDA=1` to install CUDA wheels for Torch
+- `QWEN_TTS_DEVICE` (optional torch device override, e.g. `cpu` or `0`)
+
+If the model rejects voice cloning parameters, the worker falls back to text-only synthesis and logs a warning.
 
 ## 📋 Prerequisites
 
@@ -95,6 +107,7 @@ and full multi-speaker processing that mirrors the behaviour of the TypeScript v
 - (Optional) [Ollama](https://ollama.com/) running locally for offline LLMs
 - (Optional) Git & Python 3.10+ for IndexTTS/VibeVoice worker setup
 - Storage space for local models (300MB - 800MB per model)
+- Additional storage for Qwen3 TTS checkpoints if you enable that backend
 
 ## 🚀 Installation
 
@@ -124,6 +137,13 @@ The `install.sh` helper can also bootstrap the optional IndexTTS speech synthesi
 - Set `INDEX_TTS_ENABLE_CUDA=1` before running the installer if you need the CUDA wheels instead of the CPU build.
 - Set `INDEX_TTS_SKIP_DEEPSPEED=0` to attempt the `deepspeed` install (requires a CUDA toolchain and can take a long time).
 - Advanced users can override the exact wheel URLs with `INDEX_TTS_TORCH_SPEC`, `INDEX_TTS_TORCH_INDEX_URL`, and `INDEX_TTS_TORCH_EXTRA_INDEX_URL`.
+
+#### Optional Qwen3 TTS backend dependencies
+
+The `install.sh` helper can also install Qwen3 TTS dependencies. These packages include PyTorch, torchaudio, and transformers.
+
+- Set `INSTALL_QWEN_TTS_REQUIREMENTS=yes` to install them during setup.
+- Set `QWEN_TTS_ENABLE_CUDA=1` if you need CUDA wheels.
 
 ### 3. Configure Environment Variables
 

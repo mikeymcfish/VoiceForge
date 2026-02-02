@@ -227,3 +227,66 @@ class VibeVoiceService:
         if reported and Path(reported).exists():
             output_path = Path(reported)
         return summary, log, output_path if output_path.exists() else None
+
+
+class QwenTTSService:
+    def __init__(self) -> None:
+        repo_root = _read_repo_root()
+        self.worker_path = repo_root / "server" / "python" / "qwen_tts_worker.py"
+        if not self.worker_path.exists():
+            raise FileNotFoundError(
+                "Qwen TTS worker script not found. Expected at server/python/qwen_tts_worker.py"
+            )
+        base_dir = Path(os.getenv("QWEN_TTS_ROOT", Path.home() / ".voiceforge" / "qwen3_tts"))
+        self.root_dir = _ensure_directory(base_dir)
+        self.models_dir = _ensure_directory(Path(os.getenv("QWEN_TTS_MODELS", self.root_dir / "models")))
+        self.jobs_dir = _ensure_directory(Path(os.getenv("QWEN_TTS_JOBS", self.root_dir / "jobs")))
+
+    def _command(self) -> List[str]:
+        return [
+            sys.executable,
+            str(self.worker_path),
+            "--root-dir",
+            str(self.root_dir),
+            "--models-dir",
+            str(self.models_dir),
+            "--jobs-dir",
+            str(self.jobs_dir),
+        ]
+
+    def synthesize(
+        self,
+        voice_path: Path,
+        text: str,
+        model_id: str,
+        max_chars: int,
+        gap_ms: int,
+    ) -> Tuple[str, str, Optional[Path]]:
+        if not voice_path.exists():
+            raise gr.Error("Voice sample file missing")
+        if not text.strip():
+            raise gr.Error("Provide text to synthesize")
+        job_id = uuid.uuid4().hex
+        text_file = self.jobs_dir / f"{job_id}.txt"
+        text_file.write_text(text, encoding="utf-8")
+        output_path = self.jobs_dir / f"{job_id}.wav"
+        command = self._command() + [
+            "synthesize",
+            "--voice",
+            str(voice_path),
+            "--text",
+            str(text_file),
+            "--output",
+            str(output_path),
+            "--model-id",
+            model_id.strip() or "Qwen/Qwen3-TTS",
+            "--max-chars",
+            str(int(max(50, max_chars))),
+            "--gap-ms",
+            str(int(max(0, gap_ms))),
+        ]
+        events, log = _run_worker(command)
+        summary, reported_output = _summarize(events, "Synthesis complete")
+        if reported_output and Path(reported_output).exists():
+            output_path = Path(reported_output)
+        return summary, log, output_path if output_path.exists() else None

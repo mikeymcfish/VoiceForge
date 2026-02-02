@@ -10,6 +10,8 @@
 #   OLLAMA_BASE_URL=...
 #   INDEX_TTS_REPO=...
 #   INDEX_TTS_PYTHON=...
+#   INSTALL_QWEN_TTS_REQUIREMENTS=...
+#   QWEN_TTS_ENABLE_CUDA=1
 #   USE_PM2=1                    # if set, install pm2 and daemonize
 
 set -euo pipefail
@@ -108,6 +110,33 @@ except Exception:
     sys.exit(1)
 PY
   log "IndexTTS dependencies installed."
+}
+install_qwen_tts_requirements() {
+  local python_bin="${PYTHON_BIN:-python3}"
+  if [[ "${python_bin}" == */* ]]; then
+    if [ ! -x "${python_bin}" ]; then
+      log "Python executable ${python_bin} not found; skipping Qwen3 TTS dependency installation."
+      return 0
+    fi
+  elif command -v "${python_bin}" >/dev/null 2>&1; then
+    python_bin="$(command -v "${python_bin}")"
+  else
+    log "Python executable ${python_bin} not found; skipping Qwen3 TTS dependency installation."
+    return 0
+  fi
+  log "Installing Qwen3 TTS python dependencies with ${python_bin}..."
+  "${python_bin}" - <<'PY'
+import sys
+import traceback
+
+try:
+    from server.python import qwen_tts_worker as worker
+    worker.ensure_dependencies()
+except Exception:
+    traceback.print_exc()
+    sys.exit(1)
+PY
+  log "Qwen3 TTS dependencies installed."
 }
 install_ollama() {
   if have ollama; then
@@ -216,6 +245,17 @@ if [[ -z "${INSTALL_TTS_REQUIREMENTS:-}" ]]; then
 fi
 if is_truthy "${INSTALL_TTS_REQUIREMENTS:-}"; then
   install_tts_requirements
+fi
+
+if [[ -z "${INSTALL_QWEN_TTS_REQUIREMENTS:-}" ]]; then
+  if prompt_yes_no "Install Qwen3 TTS Python dependencies now?" "n"; then
+    INSTALL_QWEN_TTS_REQUIREMENTS="yes"
+  else
+    INSTALL_QWEN_TTS_REQUIREMENTS="no"
+  fi
+fi
+if is_truthy "${INSTALL_QWEN_TTS_REQUIREMENTS:-}"; then
+  install_qwen_tts_requirements
 fi
 
 if [[ -z "${INSTALL_OLLAMA:-}" ]]; then
