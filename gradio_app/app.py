@@ -18,6 +18,7 @@ from .models import (
     SpeakerMode,
 )
 from .text_processor import TextProcessor
+from .tts_services import IndexTTSService, QwenTTSService, VibeVoiceService
 
 try:
     from ebooklib import epub  # type: ignore
@@ -30,6 +31,7 @@ except Exception:  # noqa: BLE001 - import error will be surfaced during use
 processor = TextProcessor()
 index_tts_service = IndexTTSService()
 vibe_voice_service = VibeVoiceService()
+qwen_tts_service = QwenTTSService()
 
 
 def _read_txt(path: Path) -> str:
@@ -324,6 +326,24 @@ def run_vibevoice_synthesize(
     return summary, log, str(output) if output else None
 
 
+def run_qwen_tts_synthesize(
+    voice_file,
+    text: str,
+    model_id: str,
+    max_chars: float,
+    gap_ms: float,
+) -> Tuple[str, str, Optional[str]]:
+    voice = _coerce_file_path(voice_file)
+    summary, log, output = qwen_tts_service.synthesize(
+        voice,
+        text,
+        model_id or "Qwen/Qwen3-TTS",
+        int(max_chars),
+        int(gap_ms),
+    )
+    return summary, log, str(output) if output else None
+
+
 def create_app() -> gr.Blocks:
     with gr.Blocks(title="VoiceForge Gradio") as demo:
         gr.Markdown(
@@ -546,6 +566,27 @@ def create_app() -> gr.Blocks:
                     run_vibevoice_synthesize,
                     inputs=[vibe_text, vibe_voice_files, vibe_style, vibe_temperature, vibe_model],
                     outputs=[vibe_status, vibe_logs, vibe_audio],
+                )
+
+            with gr.Tab("Qwen3 TTS (Voice Clone)"):
+                qwen_voice = gr.File(label="Voice Sample", file_types=[".wav", ".mp3", ".flac", ".ogg"])
+                qwen_text = gr.Textbox(label="Synthesis Text", lines=6)
+                with gr.Row():
+                    qwen_model = gr.Textbox(
+                        label="Model ID",
+                        value=os.getenv("QWEN_TTS_MODEL_ID", "Qwen/Qwen3-TTS"),
+                    )
+                    qwen_max_chars = gr.Slider(120, 800, value=320, step=10, label="Max chars per clip")
+                    qwen_gap_ms = gr.Slider(0, 500, value=120, step=10, label="Gap between clips (ms)")
+                qwen_synthesize = gr.Button("Run Qwen3 TTS", variant="primary")
+                qwen_status = gr.Textbox(label="Qwen3 TTS Status", lines=2)
+                qwen_logs = gr.Textbox(label="Qwen3 TTS Logs", lines=6)
+                qwen_audio = gr.File(label="Generated Audio", interactive=False)
+
+                qwen_synthesize.click(
+                    run_qwen_tts_synthesize,
+                    inputs=[qwen_voice, qwen_text, qwen_model, qwen_max_chars, qwen_gap_ms],
+                    outputs=[qwen_status, qwen_logs, qwen_audio],
                 )
 
     return demo
