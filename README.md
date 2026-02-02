@@ -59,8 +59,7 @@ A professional text preprocessing application for multi-speaker TTS (text-to-spe
 
 A fully self-contained Python implementation of the text preprocessing workflow is available in `gradio_app/`.
 It re-creates the deterministic cleaning pipeline, supports HuggingFace **and** local Ollama LLMs, mirrors the
-multi-speaker formatting logic, and now exposes the IndexTTS and VibeVoice speech synthesis workflows inside a
-Gradio interface.
+multi-speaker formatting logic, and exposes the IndexTTS, VibeVoice, and Qwen3 TTS workflows inside a Gradio interface.
 
 ### Highlights
 
@@ -68,8 +67,7 @@ Gradio interface.
 - LLM-driven cleaning & dialogue formatting via HuggingFace Inference or a local Ollama instance
 - Built-in management screens for IndexTTS (model download/load and synthesis)
 - Built-in management screens for VibeVoice (repo setup and synthesis)
-It re-creates the deterministic cleaning pipeline, HuggingFace-powered LLM processing, and multi-speaker formatting
-inside a Gradio interface.
+- Qwen3 TTS voice cloning tab with automatic text chunking for long passages
 
 ### Running the Gradio app
 
@@ -83,10 +81,24 @@ By default the app expects a HuggingFace Inference API token. You can supply it 
 to `http://localhost:11434`; override with `OLLAMA_BASE_URL`). Set `OLLAMA_MODEL` to change the default local model.
 
 The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs, full multi-speaker processing, and
-optional audio generation through IndexTTS and VibeVoice. The Python workers will install any missing dependencies when
-you trigger download/setup actions from the UI.
-`HUGGINGFACE_API_TOKEN` before launching. The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs,
-and full multi-speaker processing that mirrors the behaviour of the TypeScript version.
+optional audio generation through IndexTTS, VibeVoice, and Qwen3 TTS voice cloning. The Python workers will install any
+missing dependencies when you trigger download/setup actions from the UI.
+
+### Qwen3 TTS voice cloning (Gradio tab)
+
+The **Qwen3 TTS** tab supports one-click voice cloning with a single uploaded voice sample. Long text is automatically split
+into smaller clips to stay within model limits, then stitched back together with a configurable silence gap.
+
+Recommended defaults (adjust per model):
+- **Max chars per clip**: 320 (set `QWEN_TTS_MAX_CHARS` to override)
+- **Gap between clips**: 120 ms (set `QWEN_TTS_GAP_MS` to override)
+
+Environment variables:
+- `QWEN_TTS_MODEL_ID` (default: `Qwen/Qwen3-TTS`)
+- `QWEN_TTS_ENABLE_CUDA=1` to install CUDA wheels for Torch
+- `QWEN_TTS_DEVICE` (optional torch device override, e.g. `cpu` or `0`)
+
+If the model rejects voice cloning parameters, the worker falls back to text-only synthesis and logs a warning.
 
 ## 📋 Prerequisites
 
@@ -95,91 +107,80 @@ and full multi-speaker processing that mirrors the behaviour of the TypeScript v
 - (Optional) [Ollama](https://ollama.com/) running locally for offline LLMs
 - (Optional) Git & Python 3.10+ for IndexTTS/VibeVoice worker setup
 - Storage space for local models (300MB - 800MB per model)
+- Additional storage for Qwen3 TTS checkpoints if you enable that backend
 
-## 🚀 Installation
+## 🚀 Installation (Fresh Linux Setup)
 
-### 1. Clone or Download the Project
+This section is optimized for a clean Linux host. The quickest path is the one-shot installer, followed by a manual
+option if you prefer to control each step.
 
-If you're on Replit, the project is already set up. Otherwise:
+### Option A: One‑shot installer (recommended)
 
 ```bash
 git clone <your-repo-url>
-cd tts-text-editor
+cd VoiceForge
+chmod +x install.sh
+./install.sh
 ```
 
-### 2. Install Dependencies
+The installer:
+- Installs OS prerequisites (Node.js, Python, build tools, FFmpeg).
+- Creates a Python virtualenv in `.venv`.
+- Installs Node dependencies and builds the production bundle.
+- Writes a `.env` with `SESSION_SECRET`, `PORT`, and `NODE_ENV`.
 
-```bash
-npm install
-```
+Optional TTS backends during install:
+- `INSTALL_TTS_REQUIREMENTS=yes` for IndexTTS dependencies.
+- `INSTALL_QWEN_TTS_REQUIREMENTS=yes` for Qwen3 TTS dependencies.
+- `QWEN_TTS_ENABLE_CUDA=1` or `INDEX_TTS_ENABLE_CUDA=1` to use CUDA wheels instead of CPU-only builds.
+
+### Option B: Manual install (cleanroom)
+
+1. **Clone and enter the repo**
+   ```bash
+   git clone <your-repo-url>
+   cd VoiceForge
+   ```
+
+2. **Install OS packages (Ubuntu/Debian)**
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y ca-certificates curl git python3 python3-venv python3-pip build-essential openssl ffmpeg
+   ```
+
+3. **Install Node.js 20+**
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+   sudo apt-get install -y nodejs
+   ```
+
+4. **Install JavaScript dependencies**
+   ```bash
+   npm install
+   ```
+
+5. **Create a `.env`**
+   ```bash
+   cat > .env <<'EOF'
+   SESSION_SECRET=replace_with_random_secret
+   NODE_ENV=production
+   PORT=5000
+   # Optional:
+   # HUGGINGFACE_API_TOKEN=hf_...
+   EOF
+   ```
+
+6. **Build and start**
+   ```bash
+   npm run build
+   npm start
+   ```
+
+The app will be available at `http://localhost:5000`.
 
 > [!TIP]
-> The project depends on `@huggingface/transformers`, which in turn tries to download CUDA-enabled binaries for `onnxruntime-node` during installation.
-> If you are not setting up GPU acceleration (the common case), the bundled `.npmrc` file forces npm to skip the CUDA download so the install does not fail on networks that block direct GitHub downloads.
-
-#### Optional IndexTTS backend dependencies
-
-The `install.sh` helper can also bootstrap the optional IndexTTS speech synthesis backend. Those Python packages are large and GPU-focused, so the script now defaults to a CPU-only PyTorch wheel and skips the CUDA-only `deepspeed` dependency.
-
-- Set `INDEX_TTS_ENABLE_CUDA=1` before running the installer if you need the CUDA wheels instead of the CPU build.
-- Set `INDEX_TTS_SKIP_DEEPSPEED=0` to attempt the `deepspeed` install (requires a CUDA toolchain and can take a long time).
-- Advanced users can override the exact wheel URLs with `INDEX_TTS_TORCH_SPEC`, `INDEX_TTS_TORCH_INDEX_URL`, and `INDEX_TTS_TORCH_EXTRA_INDEX_URL`.
-
-### 3. Configure Environment Variables
-
-You have two options depending on which model source you want to use:
-
-#### Option A: Using HuggingFace API (Cloud Models)
-
-1. Get a HuggingFace API token:
-   - Go to https://huggingface.co/settings/tokens
-   - Click "New token"
-   - Give it a name (e.g., "TTS Text Editor")
-   - Copy the token
-
-2. **For Replit Users** (Recommended):
-   - Open the "Secrets" tool in your Replit workspace (lock icon in sidebar)
-   - Click "+ New Secret"
-   - Set key: `HUGGINGFACE_API_TOKEN`
-   - Paste your token as the value
-   - Click "Add Secret"
-   
-   **Important for Published/Deployed Apps:**
-   - When you publish your app, Replit automatically includes workspace secrets
-   - If the published version shows "need to log in or provide a token", check:
-     1. The secret `HUGGINGFACE_API_TOKEN` exists in your Replit Secrets
-     2. The secret name is spelled exactly as shown (case-sensitive)
-     3. Try redeploying your app after adding/updating the secret
-
-3. **For Local Development**:
-   Create a `.env` file in the project root:
-   ```
-   HUGGINGFACE_API_TOKEN=your_token_here
-   SESSION_SECRET=your_random_secret_here
-   ```
-
-#### Option B: Using Local Models (No API Token Required)
-
-If you don't want to use the HuggingFace API:
-- No API token needed
-- No environment variable setup required
-- Models download automatically on first use
-- Works completely offline once models are cached
-
-### 4. Run the Application
-
-#### Development Mode
-```bash
-npm run dev
-```
-
-The app will be available at `http://localhost:5000`
-
-#### Production Mode
-```bash
-npm run build
-npm start
-```
+> The project depends on `@huggingface/transformers`, which can attempt to download CUDA-enabled binaries for
+> `onnxruntime-node`. The bundled `.npmrc` skips the CUDA download for CPU-only installs.
 
 ## 🎯 Quick Start Guide
 
