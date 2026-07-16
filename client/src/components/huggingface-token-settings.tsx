@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import type { HuggingFaceTokenStatus } from "@shared/schema";
+import { useQueryClient } from "@tanstack/react-query";
 
 interface HuggingFaceTokenSettingsProps {
   disabled?: boolean;
@@ -11,6 +12,7 @@ interface HuggingFaceTokenSettingsProps {
 
 export function HuggingFaceTokenSettings({ disabled }: HuggingFaceTokenSettingsProps) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [status, setStatus] = useState<HuggingFaceTokenStatus | null>(null);
   const [tokenInput, setTokenInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -43,7 +45,7 @@ export function HuggingFaceTokenSettings({ disabled }: HuggingFaceTokenSettingsP
     if (!tokenInput.trim()) {
       toast({
         title: "Enter a token",
-        description: "Paste your HuggingFace API token before saving.",
+        description: "Paste your Hugging Face API token before saving.",
         variant: "destructive",
       });
       return;
@@ -62,9 +64,11 @@ export function HuggingFaceTokenSettings({ disabled }: HuggingFaceTokenSettingsP
       const data: HuggingFaceTokenStatus = await res.json();
       setStatus(data);
       setTokenInput("");
+      void queryClient.invalidateQueries({ queryKey: ["huggingface-usage"] });
+      void queryClient.invalidateQueries({ queryKey: ["speech-status"] });
       toast({
         title: "Token saved",
-        description: "Your HuggingFace API token is now active.",
+        description: "Your Hugging Face API token is now active.",
       });
     } catch (error) {
       console.error("Failed to save HuggingFace token:", error);
@@ -93,6 +97,8 @@ export function HuggingFaceTokenSettings({ disabled }: HuggingFaceTokenSettingsP
       const data: HuggingFaceTokenStatus = await res.json();
       setStatus(data);
       setTokenInput("");
+      void queryClient.invalidateQueries({ queryKey: ["huggingface-usage"] });
+      void queryClient.invalidateQueries({ queryKey: ["speech-status"] });
       toast({
         title: "Token cleared",
         description: "API mode will require a new token before use.",
@@ -115,7 +121,7 @@ export function HuggingFaceTokenSettings({ disabled }: HuggingFaceTokenSettingsP
     <div className="mt-3 space-y-2">
       <div className="space-y-1">
         <Label htmlFor="hf-token" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          HuggingFace API Token
+          Hugging Face API token
         </Label>
         <Input
           id="hf-token"
@@ -146,7 +152,10 @@ export function HuggingFaceTokenSettings({ disabled }: HuggingFaceTokenSettingsP
           ? "Checking current token status…"
           : status?.configured
             ? `Token configured (${status.tokenPreview ?? "hidden"})`
-            : "No HuggingFace API token configured. Paste one above to enable API mode."}
+            : "No Hugging Face API token configured. Paste one above to enable API mode."}
+      </p>
+      <p className="text-[11px] leading-4 text-muted-foreground">
+        A standard read token is recommended for public Space calls and account-usage bars. Inference-only fine-grained tokens may not expose ZeroGPU or billing usage.
       </p>
     </div>
   );

@@ -25,10 +25,15 @@ export function log(message: string, source = "express") {
 }
 
 export async function setupVite(app: Express, server: Server) {
+  const clientPort = Number.parseInt(process.env.PORT || "5000", 10);
+  const configuredHosts = (process.env.VITE_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
   const serverOptions = {
     middlewareMode: true,
-    hmr: { server },
-    allowedHosts: true as const,
+    hmr: { server, clientPort },
+    allowedHosts: ["localhost", "127.0.0.1", "[::1]", ...configuredHosts],
   };
 
   const vite = await createViteServer({

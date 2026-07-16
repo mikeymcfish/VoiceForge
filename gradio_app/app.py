@@ -295,8 +295,8 @@ def _toggle_model_fields(source: str):
     )
 
 
-def run_indextts_download(repo_id: str) -> Tuple[str, str]:
-    return index_tts_service.download_models(repo_id)
+def run_indextts_download() -> Tuple[str, str]:
+    return index_tts_service.download_models()
 
 
 def run_indextts_load() -> Tuple[str, str]:
@@ -309,8 +309,8 @@ def run_indextts_synthesize(voice_file, text: str, steps: float) -> Tuple[str, s
     return summary, log, str(output) if output else None
 
 
-def run_vibevoice_setup(repo_url: str, branch: str) -> Tuple[str, str]:
-    return vibe_voice_service.setup(repo_url, branch)
+def run_vibevoice_setup() -> Tuple[str, str]:
+    return vibe_voice_service.setup()
 
 
 def run_vibevoice_synthesize(
@@ -328,6 +328,8 @@ def run_vibevoice_synthesize(
 
 def run_qwen_tts_synthesize(
     voice_file,
+    reference_text: str,
+    language: str,
     text: str,
     model_id: str,
     max_chars: float,
@@ -336,8 +338,10 @@ def run_qwen_tts_synthesize(
     voice = _coerce_file_path(voice_file)
     summary, log, output = qwen_tts_service.synthesize(
         voice,
+        reference_text,
+        language,
         text,
-        model_id or "Qwen/Qwen3-TTS",
+        model_id or "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         int(max_chars),
         int(gap_ms),
     )
@@ -504,9 +508,10 @@ def create_app() -> gr.Blocks:
         gr.Markdown("## Speech Synthesis Backends")
         with gr.Tabs():
             with gr.Tab("IndexTTS"):
-                indextts_repo = gr.Textbox(
-                    value=os.getenv("INDEX_TTS_REPO", "IndexTeam/IndexTTS-2"),
-                    label="IndexTTS Repo ID",
+                gr.Markdown(
+                    "Models are downloaded only from `IndexTeam/IndexTTS-2` at the "
+                    "VoiceForge-pinned revision. The Python runtime and official source "
+                    "must be configured by the operator."
                 )
                 with gr.Row():
                     indextts_download = gr.Button("Download Models")
@@ -521,7 +526,7 @@ def create_app() -> gr.Blocks:
 
                 indextts_download.click(
                     run_indextts_download,
-                    inputs=[indextts_repo],
+                    inputs=None,
                     outputs=[indextts_status, indextts_logs],
                 )
                 indextts_load.click(
@@ -536,13 +541,9 @@ def create_app() -> gr.Blocks:
                 )
 
             with gr.Tab("VibeVoice"):
-                vibe_repo_url = gr.Textbox(
-                    value=os.getenv("VIBEVOICE_REPO_URL", "https://github.com/vibevoice-community/VibeVoice.git"),
-                    label="Repository URL",
-                )
-                vibe_repo_branch = gr.Textbox(
-                    value=os.getenv("VIBEVOICE_REPO_BRANCH", "main"),
-                    label="Repository Branch",
+                gr.Markdown(
+                    "Setup uses the pinned `vibevoice-community/VibeVoice` source at "
+                    "revision `07cb79feadd2d3fd7f47530d4c964a12857936a0`."
                 )
                 vibe_setup = gr.Button("Run Setup")
                 vibe_text = gr.Textbox(label="Synthesis Text", lines=6)
@@ -559,7 +560,7 @@ def create_app() -> gr.Blocks:
 
                 vibe_setup.click(
                     run_vibevoice_setup,
-                    inputs=[vibe_repo_url, vibe_repo_branch],
+                    inputs=None,
                     outputs=[vibe_status, vibe_logs],
                 )
                 vibe_synthesize.click(
@@ -570,11 +571,37 @@ def create_app() -> gr.Blocks:
 
             with gr.Tab("Qwen3 TTS (Voice Clone)"):
                 qwen_voice = gr.File(label="Voice Sample", file_types=[".wav", ".mp3", ".flac", ".ogg"])
+                qwen_reference_text = gr.Textbox(
+                    label="Voice sample transcript",
+                    placeholder="Recommended: paste the exact words spoken in the sample",
+                    lines=2,
+                )
                 qwen_text = gr.Textbox(label="Synthesis Text", lines=6)
                 with gr.Row():
-                    qwen_model = gr.Textbox(
+                    qwen_model = gr.Dropdown(
                         label="Model ID",
-                        value=os.getenv("QWEN_TTS_MODEL_ID", "Qwen/Qwen3-TTS"),
+                        choices=[
+                            "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                            "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+                        ],
+                        value=os.getenv("QWEN_TTS_MODEL_ID", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
+                    )
+                    qwen_language = gr.Dropdown(
+                        label="Language",
+                        choices=[
+                            "Auto",
+                            "Chinese",
+                            "English",
+                            "Japanese",
+                            "Korean",
+                            "German",
+                            "French",
+                            "Russian",
+                            "Portuguese",
+                            "Spanish",
+                            "Italian",
+                        ],
+                        value=os.getenv("QWEN_TTS_LANGUAGE", "Auto"),
                     )
                     qwen_max_chars = gr.Slider(120, 800, value=320, step=10, label="Max chars per clip")
                     qwen_gap_ms = gr.Slider(0, 500, value=120, step=10, label="Gap between clips (ms)")
@@ -585,7 +612,15 @@ def create_app() -> gr.Blocks:
 
                 qwen_synthesize.click(
                     run_qwen_tts_synthesize,
-                    inputs=[qwen_voice, qwen_text, qwen_model, qwen_max_chars, qwen_gap_ms],
+                    inputs=[
+                        qwen_voice,
+                        qwen_reference_text,
+                        qwen_language,
+                        qwen_text,
+                        qwen_model,
+                        qwen_max_chars,
+                        qwen_gap_ms,
+                    ],
                     outputs=[qwen_status, qwen_logs, qwen_audio],
                 )
 

@@ -62,8 +62,8 @@ export function ModelSourceSelector({
   }, [modelSource]);
 
   return (
-    <Card className="p-3">
-      <h3 className="text-sm font-medium mb-3">Model Source</h3>
+    <Card className="rounded-xl p-3 shadow-none">
+      <h3 className="text-sm font-bold mb-3">AI provider</h3>
       
       <div className="space-y-3">
         <RadioGroup
@@ -75,7 +75,7 @@ export function ModelSourceSelector({
             <RadioGroupItem value="api" id="source-api" data-testid="radio-model-source-api" />
             <Label htmlFor="source-api" className="flex items-center gap-2 cursor-pointer">
               <Cloud className="w-4 h-4" />
-              <span className="text-sm">HuggingFace API</span>
+              <span className="text-sm">Hugging Face API</span>
               <Badge variant="secondary" className="text-xs">Online</Badge>
             </Label>
           </div>
@@ -93,16 +93,16 @@ export function ModelSourceSelector({
         {modelSource === 'api' && (
           <div className="pl-6 space-y-3">
             <div className="flex items-center gap-2">
-              <Label className="text-sm">HuggingFace API</Label>
+              <Label className="text-sm">Hugging Face API</Label>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
                 </TooltipTrigger>
-                <TooltipContent>Uses HuggingFace Inference API with your API token. Best for large, powerful models.</TooltipContent>
+                <TooltipContent>Uses Hugging Face Inference with your API token. Best for large, powerful models.</TooltipContent>
               </Tooltip>
             </div>
             <p className="text-xs text-muted-foreground">
-              Paste a HuggingFace API token to authenticate requests made from this server.
+              Paste a Hugging Face API token to authenticate requests made from this server.
             </p>
             <HuggingFaceTokenSettings disabled={disabled} />
             <div className="space-y-1.5 pt-1">
@@ -149,23 +149,28 @@ export function ModelSourceSelector({
                 <TooltipContent>Select or type an Ollama model name (requires Ollama running locally)</TooltipContent>
               </Tooltip>
             </div>
-            <Select
+            <Input
+              id="ollama-model"
               value={ollamaModelName || ''}
-              onValueChange={onOllamaModelChange}
+              onChange={(event) => onOllamaModelChange(event.target.value)}
               disabled={disabled}
-            >
-              <SelectTrigger id="ollama-model" data-testid="select-ollama-model">
-                <SelectValue placeholder="e.g., qwen2.5:7b or llama3.1:8b" />
-              </SelectTrigger>
-              <SelectContent>
-                {((installedModels && installedModels.length > 0
-                  ? installedModels
-                  : (["qwen2.5:7b", "qwen2.5:14b", "llama3.1:8b", "mistral:7b"])) as string[]
-                ).map((m: string) => (
-                  <SelectItem key={m} value={m}>{m}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              placeholder="e.g. qwen2.5:7b"
+              data-testid="input-ollama-model"
+            />
+            {installedModels && installedModels.length > 0 ? (
+              <Select value="" onValueChange={onOllamaModelChange} disabled={disabled}>
+                <SelectTrigger data-testid="select-ollama-model">
+                  <SelectValue placeholder="Choose an installed model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {installedModels.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-[11px] leading-4 text-muted-foreground">
+                {installedModels === null ? "Checking the local Ollama service…" : "No installed models were detected. Start Ollama, then enter an installed model name."}
+              </p>
+            )}
             <div className="space-y-1.5 pt-2">
               <div className="flex items-center gap-2">
                 <Label htmlFor="ollama-temperature" className="text-xs text-muted-foreground">Temperature (0–2)</Label>

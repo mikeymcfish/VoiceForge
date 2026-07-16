@@ -81,11 +81,15 @@ export function ProcessingControls({
   };
 
   return (
-    <Card className="p-3">
+    <Card className="rounded-2xl border-primary/20 bg-gradient-to-b from-card to-primary/[0.035] p-4 shadow-sm sm:p-5">
       <div className="space-y-3">
+        <div>
+          <h3 className="text-sm font-bold">4. Preview or process</h3>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">Test the exact workflow on one chunk before running the full script.</p>
+        </div>
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">
-            <Label htmlFor="batch-size" className="text-sm font-medium">Batch Size (sentences per LLM request)</Label>
+            <Label htmlFor="batch-size" className="text-sm font-medium">Context batch (sentences)</Label>
             <Tooltip>
               <TooltipTrigger asChild>
                 <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
@@ -99,7 +103,7 @@ export function ProcessingControls({
         <div className="flex items-center justify-between py-1">
           <div className="space-y-0.5">
             <div className="flex items-center gap-2">
-              <Label className="text-sm font-medium">Singleâ€‘Pass Processing</Label>
+              <Label className="text-sm font-medium">Single-pass processing</Label>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
@@ -156,7 +160,7 @@ export function ProcessingControls({
                   <TooltipTrigger asChild>
                     <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
                   </TooltipTrigger>
-                  <TooltipContent>HuggingFace model ID for text processing</TooltipContent>
+                  <TooltipContent>Hugging Face model ID for text processing</TooltipContent>
                 </Tooltip>
               </div>
               <Input id="model-name" value={modelName} onChange={(e) => onModelNameChange(normalizeModelId(e.target.value))} disabled={isProcessing} data-testid="input-model-name" className="h-9" placeholder="e.g., meta-llama/Llama-3.1-8B-Instruct" />
@@ -193,21 +197,21 @@ export function ProcessingControls({
         <div className="space-y-2 pt-1">
           <div className="flex gap-2">
             {isProcessing ? (
-              <Button onClick={onStop} variant="destructive" className="flex-1" data-testid="button-stop-processing">
+              <Button onClick={onStop} variant="destructive" className="h-11 flex-1 rounded-xl" data-testid="button-stop-processing">
                 <Square className="h-4 w-4 mr-2" />
                 Stop Processing
               </Button>
             ) : (
-              <Button onClick={onStart} disabled={!canStart} className="flex-1" data-testid="button-start-processing">
+              <Button onClick={onStart} disabled={!canStart} className="h-11 flex-1 rounded-xl" data-testid="button-start-processing">
                 <Play className="h-4 w-4 mr-2" />
-                {`Start Processing${typeof estimatedTotalCost === 'number' ? ` â€” Est $${estimatedTotalCost.toFixed(4)}` : ''}`}
+                {`Process full script${typeof estimatedTotalCost === 'number' ? ` · est. $${estimatedTotalCost.toFixed(4)}` : ''}`}
               </Button>
             )}
           </div>
 
-          <Button onClick={onTest} disabled={!canStart || isProcessing || isTesting} variant="outline" className="w-full" data-testid="button-test-chunk">
+          <Button onClick={onTest} disabled={!canStart || isProcessing || isTesting} variant="outline" className="h-10 w-full rounded-xl" data-testid="button-test-chunk">
             <TestTube className="h-4 w-4 mr-2" />
-            {isTesting ? "Testing..." : "Test One Chunk"}
+            {isTesting ? "Creating preview…" : "Preview first chunk"}
           </Button>
         </div>
       </div>

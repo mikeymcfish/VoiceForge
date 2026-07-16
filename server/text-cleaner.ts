@@ -25,9 +25,28 @@ const SMART_REPLACEMENTS: Record<string, string> = {
 };
 
 const SMART_PUNCTUATION_RE = /[“”„«»‹›‘’‚‛–—−‐‑‒…•·]/g;
+const MOJIBAKE_REPLACEMENTS: Record<string, string> = {
+  "\u00e2\u20ac\u0153": "\"",
+  "\u00e2\u20ac\u009d": "\"",
+  "\u00e2\u20ac\u02dc": "'",
+  "\u00e2\u20ac\u2122": "'",
+  "\u00e2\u20ac\u201c": "-",
+  "\u00e2\u20ac\u201d": "-",
+  "\u00e2\u20ac\u00a6": "...",
+  "\u00c2\u00ab": "\"",
+  "\u00c2\u00bb": "\"",
+};
+const MOJIBAKE_RE = new RegExp(
+  Object.keys(MOJIBAKE_REPLACEMENTS)
+    .sort((left, right) => right.length - left.length)
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|"),
+  "g"
+);
 const NBSP_RE = /\u00a0/g;
 const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>()]+/gi;
-const BRACKET_REFERENCE_RE = /\[\s*(?:[0-9]+|[ivxlcdmIVXLCDM]+)(?:[\s,.;:-]*(?:[0-9]+|[ivxlcdmIVXLCDM]+))*\s*\]/g;
+// Preserve bracket speaker labels such as `[1]:` while removing citation marks.
+const BRACKET_REFERENCE_RE = /\[\s*(?:[0-9]+|[ivxlcdmIVXLCDM]+)(?:[\s,.;:-]*(?:[0-9]+|[ivxlcdmIVXLCDM]+))*\s*\](?!\s*:)/g;
 const PAREN_FOOTNOTE_RE = /\(\s*(?:[0-9]+|[ivxlcdmIVXLCDM]+)(?:[\s,.;:-]*(?:[0-9]+|[ivxlcdmIVXLCDM]+))*\s*\)/g;
 const CAMEL_CASE_SPLIT_RE = /([a-z])([A-Z][a-z]+)/g;
 const MERGED_WORD_RE = /\b[a-zA-Z]{6,}\b/g;
@@ -94,6 +113,7 @@ function loadLexicon(): Set<string> {
 
 function replaceSmartPunctuation(text: string): string {
   return text
+    .replace(MOJIBAKE_RE, (value) => MOJIBAKE_REPLACEMENTS[value] ?? value)
     .replace(SMART_PUNCTUATION_RE, (char) => SMART_REPLACEMENTS[char] ?? char)
     .replace(NBSP_RE, " ");
 }
@@ -217,7 +237,9 @@ export function applyDeterministicCleaning(
     }
   }
 
-  text = normalizeSpacing(text);
+  const normalized = normalizeSpacing(text);
+  if (normalized !== text) applied.push("normalizeSpacing");
+  text = normalized;
 
   return { text, applied };
 }

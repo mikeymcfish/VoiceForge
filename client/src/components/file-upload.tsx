@@ -3,6 +3,7 @@ import { useDropzone } from "react-dropzone";
 import { Upload, File, X } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
 
 interface FileUploadProps {
   onFileSelect: (file: File) => void;
@@ -22,6 +23,7 @@ export function FileUpload({
   fileStats,
   isProcessing,
 }: FileUploadProps) {
+  const { toast } = useToast();
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
       if (acceptedFiles[0]) {
@@ -38,12 +40,20 @@ export function FileUpload({
       "application/epub+zip": [".epub"],
     },
     maxFiles: 1,
+    maxSize: 10 * 1024 * 1024,
+    onDropRejected: () => {
+      toast({
+        title: "File not accepted",
+        description: "Choose one TXT or EPUB file no larger than 10 MB.",
+        variant: "destructive",
+      });
+    },
     disabled: isProcessing,
   });
 
   if (selectedFile) {
     return (
-      <Card className="p-4">
+      <Card className="rounded-xl border-primary/15 bg-primary/[0.035] p-4 shadow-none">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 flex-1 min-w-0">
             <div className="p-2 rounded-md bg-primary/10 text-primary">
@@ -87,10 +97,10 @@ export function FileUpload({
     <div
       {...getRootProps()}
       className={`
-        border-2 border-dashed rounded-md p-8 text-center cursor-pointer
-        transition-colors
+        border border-dashed rounded-xl p-6 text-center cursor-pointer
+        transition-all
         ${isDragActive ? "border-primary bg-primary/5" : "border-border bg-card"}
-        hover:border-primary/50 hover:bg-card
+        hover:border-primary/50 hover:bg-primary/[0.025]
       `}
       data-testid="dropzone-upload"
     >

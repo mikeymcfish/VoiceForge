@@ -2,7 +2,7 @@ import fs from "fs";
 import fsPromises from "fs/promises";
 import path from "path";
 import { EventEmitter } from "events";
-import { spawn } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import readline from "readline";
 import { fileURLToPath } from "url";
 import { nanoid } from "nanoid";
@@ -11,10 +11,8 @@ import type {
   VibevoiceStatus,
   VibevoiceWsMessage,
 } from "@shared/schema";
+import { terminateChildProcess } from "./process-utils";
 
-const DEFAULT_REPO_URL =
-  process.env.VIBEVOICE_REPO_URL || "https://github.com/vibevoice-community/VibeVoice.git";
-const DEFAULT_REPO_BRANCH = process.env.VIBEVOICE_REPO_BRANCH || "main";
 // Prefer a Windows-friendly default. Users can override via VIBEVOICE_PYTHON
 const PYTHON_BIN =
   process.env.VIBEVOICE_PYTHON || (process.platform === "win32" ? "python" : "python3");
@@ -22,9 +20,15 @@ const PYTHON_BIN =
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-type JobState = "queued" | "running" | "completed" | "failed";
+type JobState = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 type WorkerLogLevel = "info" | "warn" | "error";
+
+const PINNED_MODEL_REVISIONS: Record<string, string> = {
+  "microsoft/VibeVoice-1.5B": "c00898d257e6b46004e3e2866a47534085fb685a",
+  "aoi-ot/VibeVoice-Large": "8229be00d7c036aa32321e4dae8a81d433f6413a",
+};
+const PINNED_REPO_REVISION = "07cb79feadd2d3fd7f47530d4c964a12857936a0";
 
 interface InternalJob {
   id: string;
@@ -63,6 +67,7 @@ class VibevoiceService extends EventEmitter {
   private readonly workerScript: string;
   private readonly subscribers = new Set<(message: VibevoiceWsMessage) => void>();
   private readonly jobs = new Map<string, InternalJob>();
+  private readonly activeProcesses = new Map<string, ChildProcess>();
 
   constructor(rootDir?: string) {
     super();
@@ -71,6 +76,21 @@ class VibevoiceService extends EventEmitter {
     this.jobsDir = path.join(this.rootDir, "jobs");
     this.workerScript = this.resolveWorkerScript();
     this.ensureBaseDirs();
+    if (this.isPinnedRepoReady() && this.listAvailableModels().length > 0) {
+      this.setupStatus = "completed";
+    }
+  }
+
+  private isPinnedRepoReady(): boolean {
+    try {
+      const gitHead = fs.readFileSync(path.join(this.repoDir, ".git", "HEAD"), "utf-8").trim();
+      return (
+        gitHead.toLowerCase() === PINNED_REPO_REVISION &&
+        fs.existsSync(path.join(this.repoDir, "pyproject.toml"))
+      );
+    } catch {
+      return false;
+    }
   }
 
   private resolveWorkerScript(): string {
@@ -153,12 +173,16 @@ class VibevoiceService extends EventEmitter {
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((job) => this.toPublicJob(job));
 
+    const availableModels = this.listAvailableModels();
     return {
       setupStatus: this.setupStatus,
-      ready: this.setupStatus === "completed",
+      ready:
+        this.setupStatus === "completed" &&
+        this.isPinnedRepoReady() &&
+        availableModels.length > 0,
       repoPath: this.repoDir,
       lastSetupError: this.setupError,
-      availableModels: this.listAvailableModels(),
+      availableModels,
       jobs,
     };
   }
@@ -171,17 +195,37 @@ class VibevoiceService extends EventEmitter {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const dirPath = path.join(modelsRoot, entry.name);
-      let id: string | undefined;
-      const idFile = path.join(dirPath, "repo_id.txt");
-      if (fs.existsSync(idFile)) {
-        try {
-          id = fs.readFileSync(idFile, "utf-8").trim();
-        } catch {}
+      try {
+        const marker = JSON.parse(
+          fs.readFileSync(path.join(dirPath, "voiceforge-model.json"), "utf-8")
+        ) as {
+          complete?: boolean;
+          repo_id?: string;
+          revision?: string | null;
+          artifacts?: { path?: string; size?: number }[];
+        };
+        const id = marker.repo_id?.trim();
+        if (!marker.complete || !id || !Array.isArray(marker.artifacts) || marker.artifacts.length === 0) {
+          continue;
+        }
+        const pinnedRevision = PINNED_MODEL_REVISIONS[id];
+        if (pinnedRevision && marker.revision !== pinnedRevision) continue;
+        const root = path.resolve(dirPath);
+        const valid = marker.artifacts.every((artifact) => {
+          if (!artifact.path || !Number.isSafeInteger(artifact.size) || (artifact.size ?? 0) <= 0) return false;
+          const artifactPath = path.resolve(root, artifact.path);
+          if (artifactPath !== root && !artifactPath.startsWith(`${root}${path.sep}`)) return false;
+          try {
+            const stat = fs.statSync(artifactPath);
+            return stat.isFile() && stat.size === artifact.size;
+          } catch {
+            return false;
+          }
+        });
+        if (valid) models.push({ id, path: dirPath });
+      } catch {
+        // A missing or invalid completion manifest means the snapshot is not selectable.
       }
-      if (!id || id.length === 0) {
-        id = entry.name.replace(/__/g, "/");
-      }
-      models.push({ id, path: dirPath });
     }
     models.sort((a, b) => a.id.localeCompare(b.id));
     return models;
@@ -190,6 +234,7 @@ class VibevoiceService extends EventEmitter {
   private updateJob(id: string, patch: Partial<InternalJob>) {
     const job = this.jobs.get(id);
     if (!job) return;
+    if (job.status === "cancelled") return;
 
     const updated: InternalJob = {
       ...job,
@@ -206,7 +251,8 @@ class VibevoiceService extends EventEmitter {
   private runPython(
     command: string,
     args: string[],
-    onMessage?: (message: WorkerMessage) => void
+    onMessage?: (message: WorkerMessage) => void,
+    jobId?: string
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const child = spawn(
@@ -224,11 +270,19 @@ class VibevoiceService extends EventEmitter {
         ],
         {
           cwd: this.rootDir,
+          detached: process.platform !== "win32",
           env: {
             ...process.env,
           },
         }
       );
+      if (jobId) this.activeProcesses.set(jobId, child);
+
+      const releaseProcess = () => {
+        if (jobId && this.activeProcesses.get(jobId) === child) {
+          this.activeProcesses.delete(jobId);
+        }
+      };
 
       child.stdout.setEncoding("utf-8");
       const stdoutRl = readline.createInterface({ input: child.stdout });
@@ -252,11 +306,14 @@ class VibevoiceService extends EventEmitter {
       });
 
       child.on("error", (error) => {
+        releaseProcess();
         stdoutRl.close();
         reject(error);
       });
+      child.on("exit", releaseProcess);
 
       child.on("close", (code) => {
+        releaseProcess();
         stdoutRl.close();
         if (code === 0) {
           resolve();
@@ -271,13 +328,10 @@ class VibevoiceService extends EventEmitter {
     });
   }
 
-  public async startSetup(repoUrl?: string, branch?: string): Promise<void> {
+  public async startSetup(): Promise<void> {
     if (this.setupStatus === "in-progress") {
       throw new Error("Setup already in progress");
     }
-
-    const targetRepo = repoUrl && repoUrl.trim().length > 0 ? repoUrl.trim() : DEFAULT_REPO_URL;
-    const targetBranch = branch && branch.trim().length > 0 ? branch.trim() : DEFAULT_REPO_BRANCH;
 
     this.setupStatus = "in-progress";
     this.setupError = undefined;
@@ -289,7 +343,7 @@ class VibevoiceService extends EventEmitter {
     try {
       await this.runPython(
         "setup",
-        ["--repo-url", targetRepo, "--repo-branch", targetBranch],
+        [],
         (message) => {
           if (message.event === "progress") {
             if (typeof message.message === "string") {
@@ -323,10 +377,10 @@ class VibevoiceService extends EventEmitter {
     textContent: string;
     textFileName?: string;
     style?: string;
-    temperature?: number;
+    guidanceScale?: number;
     modelId?: string;
   }): Promise<VibevoiceJobStatus> {
-    if (this.setupStatus !== "completed") {
+    if (!this.getStatus().ready) {
       throw new Error("Run setup before starting synthesis");
     }
 
@@ -399,8 +453,8 @@ class VibevoiceService extends EventEmitter {
     if (params.style) {
       args.push("--style", params.style);
     }
-    if (typeof params.temperature === "number" && Number.isFinite(params.temperature)) {
-      args.push("--temperature", String(params.temperature));
+    if (typeof params.guidanceScale === "number" && Number.isFinite(params.guidanceScale)) {
+      args.push("--guidance-scale", String(params.guidanceScale));
     }
     if (params.modelId) {
       args.push("--model-id", params.modelId);
@@ -410,6 +464,7 @@ class VibevoiceService extends EventEmitter {
       "synthesize",
       args,
       (message) => {
+        if (this.jobs.get(jobId)?.status === "cancelled") return;
         if (message.event === "progress") {
           const progress = typeof message.progress === "number" ? message.progress * 100 : job.progress;
           this.updateJob(jobId, {
@@ -419,6 +474,16 @@ class VibevoiceService extends EventEmitter {
         } else if (message.event === "log") {
           this.log(message.level || "info", message.message || "");
         } else if (message.event === "complete") {
+          if (!fs.existsSync(outputPath)) {
+            this.updateJob(jobId, {
+              status: "failed",
+              error: "VibeVoice worker did not create output.wav",
+              message: "Synthesis output is missing",
+              outputFile: undefined,
+            });
+            this.log("error", `VibeVoice synthesis job ${jobId} did not create output.wav`);
+            return;
+          }
           this.updateJob(jobId, {
             status: "completed",
             progress: 100,
@@ -432,11 +497,23 @@ class VibevoiceService extends EventEmitter {
             message: message.message,
           });
         }
-      }
+      },
+      jobId
     ).then(
       () => {
         const finalJob = this.jobs.get(jobId);
-        if (finalJob && finalJob.status !== "completed") {
+        if (!finalJob || finalJob.status === "cancelled" || finalJob.status === "failed") return;
+        if (!fs.existsSync(outputPath)) {
+          this.updateJob(jobId, {
+            status: "failed",
+            error: "VibeVoice worker exited successfully but output.wav is missing",
+            message: "Synthesis output is missing",
+            outputFile: undefined,
+          });
+          this.log("error", `VibeVoice synthesis job ${jobId} exited without output.wav`);
+          return;
+        }
+        if (finalJob.status === "queued" || finalJob.status === "running") {
           const maybeOutput = finalJob.outputFile || outputPath;
           this.updateJob(jobId, {
             status: "completed",
@@ -448,6 +525,7 @@ class VibevoiceService extends EventEmitter {
         this.log("info", `VibeVoice synthesis job ${jobId} finished`);
       },
       (error) => {
+        if (this.jobs.get(jobId)?.status === "cancelled") return;
         this.updateJob(jobId, {
           status: "failed",
           error: error instanceof Error ? error.message : String(error),
@@ -466,6 +544,32 @@ class VibevoiceService extends EventEmitter {
   public getJob(id: string): VibevoiceJobStatus | undefined {
     const job = this.jobs.get(id);
     return job ? this.toPublicJob(job) : undefined;
+  }
+
+  public getJobOutputPath(id: string): string | undefined {
+    const job = this.jobs.get(id);
+    if (!job?.outputFile || job.status !== "completed") return undefined;
+    const resolved = path.resolve(job.outputFile);
+    const root = path.resolve(job.workingDir);
+    if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return undefined;
+    return resolved;
+  }
+
+  public cancelJob(id: string): VibevoiceJobStatus | undefined {
+    const job = this.jobs.get(id);
+    if (!job) return undefined;
+    if (job.status !== "queued" && job.status !== "running") return this.toPublicJob(job);
+
+    this.updateJob(id, {
+      status: "cancelled",
+      message: "Synthesis cancelled",
+      error: undefined,
+      outputFile: undefined,
+    });
+    const child = this.activeProcesses.get(id);
+    if (child) terminateChildProcess(child, { processGroup: process.platform !== "win32" });
+    this.log("info", `VibeVoice synthesis job ${id} cancellation requested`);
+    return this.getJob(id);
   }
 }
 

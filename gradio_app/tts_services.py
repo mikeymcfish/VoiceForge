@@ -101,7 +101,7 @@ class IndexTTSService:
 
     def _command(self) -> List[str]:
         return [
-            sys.executable,
+            os.getenv("INDEX_TTS_PYTHON") or sys.executable,
             str(self.worker_path),
             "--root-dir",
             str(self.root_dir),
@@ -109,10 +109,8 @@ class IndexTTSService:
             str(self.models_dir),
         ]
 
-    def download_models(self, repo_id: str) -> Tuple[str, str]:
-        if not repo_id.strip():
-            raise gr.Error("Provide a HuggingFace repo id for IndexTTS")
-        events, log = _run_worker(self._command() + ["download", "--repo-id", repo_id.strip()])
+    def download_models(self) -> Tuple[str, str]:
+        events, log = _run_worker(self._command() + ["download"])
         summary, _ = _summarize(events, "Download finished")
         return summary, log
 
@@ -163,7 +161,7 @@ class VibeVoiceService:
 
     def _command(self) -> List[str]:
         return [
-            sys.executable,
+            os.getenv("VIBEVOICE_PYTHON", sys.executable),
             str(self.worker_path),
             "--root-dir",
             str(self.root_dir),
@@ -173,15 +171,8 @@ class VibeVoiceService:
             str(self.jobs_dir),
         ]
 
-    def setup(self, repo_url: str, branch: str) -> Tuple[str, str]:
-        args = self._command() + [
-            "setup",
-        ]
-        if repo_url.strip():
-            args += ["--repo-url", repo_url.strip()]
-        if branch.strip():
-            args += ["--repo-branch", branch.strip()]
-        events, log = _run_worker(args)
+    def setup(self) -> Tuple[str, str]:
+        events, log = _run_worker(self._command() + ["setup"])
         summary, _ = _summarize(events, "Setup complete")
         return summary, log
 
@@ -219,7 +210,7 @@ class VibeVoiceService:
         if style and style.strip():
             args += ["--style", style.strip()]
         if temperature is not None:
-            args += ["--temperature", str(temperature)]
+            args += ["--guidance-scale", str(temperature)]
         if model_id and model_id.strip():
             args += ["--model-id", model_id.strip()]
         events, log = _run_worker(args)
@@ -244,7 +235,7 @@ class QwenTTSService:
 
     def _command(self) -> List[str]:
         return [
-            sys.executable,
+            os.getenv("QWEN_TTS_PYTHON", sys.executable),
             str(self.worker_path),
             "--root-dir",
             str(self.root_dir),
@@ -257,6 +248,8 @@ class QwenTTSService:
     def synthesize(
         self,
         voice_path: Path,
+        reference_text: str,
+        language: str,
         text: str,
         model_id: str,
         max_chars: int,
@@ -279,7 +272,11 @@ class QwenTTSService:
             "--output",
             str(output_path),
             "--model-id",
-            model_id.strip() or "Qwen/Qwen3-TTS",
+            (model_id or "").strip() or "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            "--reference-text",
+            (reference_text or "").strip(),
+            "--language",
+            (language or "").strip() or "Auto",
             "--max-chars",
             str(int(max(50, max_chars))),
             "--gap-ms",

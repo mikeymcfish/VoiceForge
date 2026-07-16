@@ -52,9 +52,12 @@ export function ActivityLog({ logs, onClear }: ActivityLogProps) {
   };
 
   return (
-    <Card className="flex flex-col h-full">
+    <Card className="flex h-full flex-col overflow-hidden rounded-2xl border-card-border shadow-sm">
       <div className="flex items-center justify-between gap-2 p-4 border-b">
-        <h3 className="text-base font-medium">Activity Log</h3>
+        <div>
+          <h3 className="text-sm font-bold">Run details</h3>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">Diagnostics stay out of the way until you need them.</p>
+        </div>
         <div className="flex items-center gap-2">
           <Button
             variant="ghost"
@@ -82,7 +85,7 @@ export function ActivityLog({ logs, onClear }: ActivityLogProps) {
         <div className="p-4 space-y-3">
           {logs.length === 0 ? (
             <div className="text-center py-8 text-sm text-muted-foreground">
-              No activity logs yet
+              Run a preview or full process to see details here.
             </div>
           ) : (
             logs.map((log) => {

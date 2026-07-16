@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "voiceforge": {
+      "command": "node",
+      "args": ["./scripts/voiceforge-mcp-bridge.mjs"],
+      "cwd": ".",
+      "env": {
+        "VOICEFORGE_ROOT": "P:\\_code\\VoiceForge",
+        "VOICEFORGE_PORT_MIN": "5000",
+        "VOICEFORGE_PORT_MAX": "5020"
+      },
+      "tool_timeout_sec": 1800
+    }
+  }
+}

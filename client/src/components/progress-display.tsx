@@ -1,5 +1,4 @@
 import { Progress } from "@/components/ui/progress";
-import { Card } from "@/components/ui/card";
 
 interface ProgressDisplayProps {
   progress: number;
@@ -39,7 +38,7 @@ export function ProgressDisplay({
   }
 
   return (
-    <Card className="p-4">
+    <div className="rounded-xl border bg-muted/25 p-4" aria-live="polite">
       <div className="space-y-3">
         <div className="flex items-center justify-between text-sm">
           <span className="font-medium">Processing Progress</span>
@@ -72,11 +71,11 @@ export function ProgressDisplay({
               Tokens in/out: {typeof totalInputTokens === 'number' ? totalInputTokens : "-"}/{typeof totalOutputTokens === 'number' ? totalOutputTokens : "-"}
             </span>
             <span>
-              Cost: {typeof totalCost === 'number' ? `$${totalCost.toFixed(4)}` : "-"}
+              Estimated cost: {typeof totalCost === 'number' ? `$${totalCost.toFixed(4)}` : "-"}
             </span>
           </div>
         )}
       </div>
-    </Card>
+    </div>
   );
 }

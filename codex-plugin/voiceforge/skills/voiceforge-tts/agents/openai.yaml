@@ -1,0 +1,13 @@
+interface:
+  display_name: "VoiceForge TTS"
+  short_description: "Create narration and reusable speech audio"
+  default_prompt: "Use $voiceforge-tts to draft narration and generate a WAV for my project."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "voiceforge"
+      description: "Auto-starting local VoiceForge speech tools"
+
+policy:
+  allow_implicit_invocation: true

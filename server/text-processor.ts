@@ -1,4 +1,5 @@
 import type { ProcessingConfig } from "@shared/schema";
+import { chunkTextPreservingStructure } from "@shared/text-utils";
 import { llmService } from "./llm-service";
 
 export interface ProcessingProgress {
@@ -19,46 +20,56 @@ export interface ProcessingProgress {
   totalCost?: number;
 }
 
-export class TextProcessor {
-  private splitIntoChunks(text: string, batchSize: number): string[] {
-    // Split by sentences (basic sentence detection)
-    // Include sentences that may not end with punctuation and preserve leading fragments
-    const sentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) || [text];
-    
-    const chunks: string[] = [];
-    let currentChunk: string[] = [];
-    
-    for (const sentence of sentences) {
-      currentChunk.push(sentence.trim());
-      
-      if (currentChunk.length >= batchSize) {
-        chunks.push(currentChunk.join(" "));
-        currentChunk = [];
-      }
-    }
-    
-    // Add remaining sentences
-    if (currentChunk.length > 0) {
-      chunks.push(currentChunk.join(" "));
-    }
-    
-    return chunks.filter((chunk) => chunk.length > 0);
-  }
+export interface TextProcessingResult {
+  text: string;
+  totalChunks: number;
+  failedChunkIndexes: number[];
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCost: number;
+}
 
+export class ProcessingCancelledError extends Error {
+  constructor() {
+    super("Processing cancelled");
+    this.name = "ProcessingCancelledError";
+  }
+}
+
+function waitForRetry(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new ProcessingCancelledError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new ProcessingCancelledError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, 1000);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export class TextProcessor {
   async processText(
     text: string,
     config: ProcessingConfig,
-    onProgress: (progress: ProcessingProgress) => void
-  ): Promise<string> {
-    const chunks = this.splitIntoChunks(text, config.batchSize);
+    onProgress: (progress: ProcessingProgress) => void,
+    shouldCancel: () => boolean = () => false,
+    signal?: AbortSignal
+  ): Promise<TextProcessingResult> {
+    const chunks = chunkTextPreservingStructure(text, config.batchSize);
     const processedChunks: string[] = [];
     const totalChunks = chunks.length;
     let durationsTotal = 0;
     let processedCount = 0;
     let totalInTokens = 0, totalOutTokens = 0, totalCost = 0;
+    const failedChunkIndexes: number[] = [];
 
     for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
+      if (shouldCancel()) throw new ProcessingCancelledError();
+      const chunk = chunks[i].text;
       let retryCount = 0;
       let success = false;
       let processedText = "";
@@ -66,6 +77,7 @@ export class TextProcessor {
 
       // Try processing with one retry on failure
       while (retryCount < 2 && !success) {
+        if (shouldCancel()) throw new ProcessingCancelledError();
         try {
           const result = await llmService.processChunk({
             text: chunk,
@@ -79,6 +91,7 @@ export class TextProcessor {
             customInstructions: config.customInstructions,
             singlePass: (config as any).singlePass === true,
             extendedExamples: (config as any).extendedExamples === true,
+            signal,
           });
           processedText = result.text;
           const chunkIn = result.usage.inputTokens || 0;
@@ -90,7 +103,7 @@ export class TextProcessor {
           const validation = await llmService.validateOutput(
             chunk,
             processedText,
-            config.modelSource
+            config
           );
 
           if (validation.valid) {
@@ -130,10 +143,18 @@ export class TextProcessor {
               });
               
               // Wait a bit before retry
-              await new Promise((resolve) => setTimeout(resolve, 1000));
+              await waitForRetry(signal);
+              if (shouldCancel()) throw new ProcessingCancelledError();
             }
           }
         } catch (error) {
+          if (
+            error instanceof ProcessingCancelledError ||
+            signal?.aborted ||
+            (error instanceof Error && error.name === "AbortError")
+          ) {
+            throw new ProcessingCancelledError();
+          }
           retryCount++;
           if (retryCount < 2) {
             onProgress({
@@ -143,13 +164,15 @@ export class TextProcessor {
               retryCount,
             });
             
-            await new Promise((resolve) => setTimeout(resolve, 1000));
+            await waitForRetry(signal);
+            if (shouldCancel()) throw new ProcessingCancelledError();
           }
         }
       }
 
       // If still failed after retries, use original chunk
       if (!success) {
+        failedChunkIndexes.push(i);
         processedChunks.push(chunk);
         const lastChunkMs = Date.now() - chunkStart;
         durationsTotal += lastChunkMs;
@@ -169,7 +192,16 @@ export class TextProcessor {
       }
     }
 
-    return processedChunks.join("\n\n");
+    return {
+      text: processedChunks
+        .map((processed, index) => `${processed}${chunks[index]?.separatorAfter ?? ""}`)
+        .join(""),
+      totalChunks,
+      failedChunkIndexes,
+      totalInputTokens: totalInTokens,
+      totalOutputTokens: totalOutTokens,
+      totalCost,
+    };
   }
 }
 

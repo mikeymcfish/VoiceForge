@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -49,6 +49,7 @@ export function CharacterExtraction({
   const { toast } = useToast();
   const [newCharacterName, setNewCharacterName] = useState("");
   const [sampleInput, setSampleInput] = useState(String(sampleSize));
+  const extractionAbortRef = useRef<AbortController | null>(null);
   const maxSampleSize = getCharacterSampleCeiling(modelSource, ollamaModelName);
   const isThinking = modelSource === "ollama" && isThinkingOllamaModel(ollamaModelName);
 
@@ -62,6 +63,20 @@ export function CharacterExtraction({
     setSampleInput(String(sampleSize));
   }, [sampleSize]);
 
+  useEffect(() => {
+    if (!extractionAbortRef.current) return;
+    extractionAbortRef.current.abort();
+    extractionAbortRef.current = null;
+    setIsExtracting(false);
+  }, [disabled, includeNarrator, modelName, modelSource, ollamaModelName, sampleSize, text]);
+
+  useEffect(() => {
+    return () => {
+      extractionAbortRef.current?.abort();
+      extractionAbortRef.current = null;
+    };
+  }, []);
+
   const handleExtractCharacters = async () => {
     if (!text) {
       toast({
@@ -72,6 +87,9 @@ export function CharacterExtraction({
       return;
     }
 
+    extractionAbortRef.current?.abort();
+    const controller = new AbortController();
+    extractionAbortRef.current = controller;
     setIsExtracting(true);
     try {
       const res = await apiRequest("POST", "/api/extract-characters", {
@@ -81,7 +99,7 @@ export function CharacterExtraction({
         modelSource,
         modelName,
         ollamaModelName,
-      });
+      }, controller.signal);
 
       const response = await res.json() as {
         characters: CharacterMapping[];
@@ -89,6 +107,7 @@ export function CharacterExtraction({
         sampleSentenceCount: number;
         sampleLimit?: number;
       };
+      if (controller.signal.aborted || extractionAbortRef.current !== controller) return;
 
       onCharactersExtracted(response.characters);
       if (onNarratorCharacterNameChange) {
@@ -100,6 +119,7 @@ export function CharacterExtraction({
         description: `Found ${response.characters.length} character(s) from ${response.sampleSentenceCount} sentence sample.` + (response.narratorCharacterName ? ` Narrator is '${response.narratorCharacterName}'.` : ""),
       });
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error("Character extraction error:", error);
       toast({
         title: "Extraction Failed",
@@ -107,7 +127,10 @@ export function CharacterExtraction({
         variant: "destructive",
       });
     } finally {
-      setIsExtracting(false);
+      if (extractionAbortRef.current === controller) {
+        extractionAbortRef.current = null;
+        setIsExtracting(false);
+      }
     }
   };
 
@@ -122,7 +145,7 @@ export function CharacterExtraction({
   };
 
   return (
-    <Card className="p-3 space-y-3">
+    <Card className="space-y-3 rounded-2xl border-card-border p-4 shadow-sm sm:p-5">
       <div className="flex items-center gap-2">
         <Users className="w-4 h-4" />
         <h4 className="text-sm font-medium">Character Extraction</h4>

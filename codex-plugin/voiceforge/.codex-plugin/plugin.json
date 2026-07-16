@@ -1,0 +1,37 @@
+{
+  "name": "voiceforge",
+  "version": "0.1.0+codex.20260716202618",
+  "description": "Create narration and speech with local VoiceForge models or official Hugging Face Agent Spaces from any Codex project.",
+  "author": {
+    "name": "VoiceForge"
+  },
+  "license": "MIT",
+  "keywords": [
+    "tts",
+    "voiceover",
+    "narration",
+    "audio",
+    "video",
+    "hugging-face"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "VoiceForge",
+    "shortDescription": "Generate narration and reusable WAV files.",
+    "longDescription": "Draft or supply text, choose Local or Hugging Face Agent execution, synthesize with VoiceForge, and reuse the completed WAV in any Codex project or video workflow. The local app starts automatically when needed.",
+    "developerName": "VoiceForge",
+    "category": "Productivity",
+    "capabilities": [
+      "Speech synthesis",
+      "Local inference",
+      "Hugging Face Agent",
+      "Video voiceover"
+    ],
+    "defaultPrompt": [
+      "Use VoiceForge to turn this narration into a WAV.",
+      "Create a VoiceForge voiceover for this video project.",
+      "Recommend a VoiceForge model for my script."
+    ]
+  }
+}

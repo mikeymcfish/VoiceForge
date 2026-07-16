@@ -1,488 +1,396 @@
-# TTS Text Editor
+# VoiceForge Studio
 
-A professional text preprocessing application for multi-speaker TTS (text-to-speech) systems with AI-powered text repair and intelligent dialogue parsing. Supports both cloud-based (HuggingFace API) and local offline models.
+VoiceForge Studio is a local-first document-to-voice workspace. It turns pasted text, TXT, EPUB, or OCR-extracted PDF content into a reviewable narration script, then hands that script to local speech engines.
 
-## 🌟 Features
+The supported workflow is:
 
-### File Processing
-- **File Support**: Upload `.txt` or `.epub` files (up to 10MB)
-- **Real-time Stats**: Word count and character count display
-- **EPUB Parsing**: Automatic extraction from EPUB files
+1. **Import** — paste text, upload TXT/EPUB, or extract a PDF.
+2. **Prepare** — edit the source and apply deterministic cleanup or optional AI repair.
+3. **Cast** — preserve narration, detect dialogue, and map characters to speaker labels.
+4. **Review** — compare the immutable source with an editable result and resolve partial-processing warnings.
+5. **Generate** — continue directly to IndexTTS, VibeVoice, Qwen3-TTS, or MOSS-TTS v1.5 synthesis.
 
-### Text Cleaning Options
-- Replace smart quotes and non-standard punctuation
-- Fix OCR errors (spacing, merged words)
-- Correct spelling and remove bad characters
-- Strip URLs, footnotes, and metadata
-- Add punctuation for better TTS prosody
+## What changed in 2.0
 
-### Multi-Speaker Modes
-- **Mode 0 - Single Speaker**: Clean text without speaker tags
-- **Mode 1 - Format Conversion**: Convert existing multi-speaker text to standardized format
-- **Mode 2 - Intelligent Parsing**: AI-powered speaker detection and dialogue extraction
-  - Extract character names from text samples
-  - Customizable sample size (5-100 sentences)
-  - Optional narrator as separate speaker
-  - Character-to-speaker mapping management
+- A responsive React workspace replaces the old fixed three-column editor.
+- Text can be pasted and edited; cleanup no longer overwrites the imported source.
+- EPUB chapters follow the package spine instead of ZIP entry order.
+- Sentence segmentation handles abbreviations, punctuation, and dialogue boundaries more reliably.
+- Prompt rules now reflect the selected cleanup, narrator, speaker-count, and custom-instruction settings.
+- Processing can be cancelled, and failed chunks are surfaced as warnings instead of reported as full success.
+- PDF extraction and speech synthesis are part of the main navigation with direct handoffs between stages.
+- The server binds to `127.0.0.1` by default.
+- Qwen3-TTS and MOSS-TTS v1.5 can run from isolated local environments or through their official Hugging Face ZeroGPU Spaces.
+- The JavaScript dependency set was pruned and upgraded; the current production audit is clean.
 
-### Dual Model Support
-- **HuggingFace API** (Cloud):
-  - Access to powerful models like Qwen/Qwen2.5-72B-Instruct
-  - Requires API token
-  - Best performance for complex tasks
-  
-- **Local Models** (Offline):
-  - No API token required
-  - Works completely offline once downloaded
-  - Three model options:
-    - **LaMini-Flan-T5-783M** (~800MB) - Best performance
-    - **Flan-T5 Base** (~500MB) - Balanced
-    - **Flan-T5 Small** (~300MB) - Fastest
-  - Automatic download and caching
+## Run the main app
 
-### Advanced Features
-- **Custom Instructions**: Add specific instructions for the LLM
-- **Prompt Preview**: View exact prompts before processing (supports Single‑Pass + Concise Prompts)
-- **Test Mode**: Process one chunk to preview results
-- **Real-time Progress**: Live WebSocket updates during processing
-- **Activity Logging**: Detailed timestamped logs with export
-- **Single‑Pass Processing**: Clean + speaker formatting in one LLM call per chunk (reduces tokens)
-- **Concise Prompts**: Use shorter instruction prompts to reduce input tokens (toggleable)
-- **Narrator Attribution Modes** (Intelligent Parsing):
-  - Remove tags (default)
-  - Narrator says tags (verbatim)
-  - Narrator adds context (intelligent rewrite)
-- **Fix Hyphenation**: Merge words split by line breaks or hyphens (PDF/EPUB artifacts)
+Requirements:
 
+- Node.js 22.12 or newer
+- npm 10 or newer
 
-## 🐍 Python / Gradio Edition
+### Windows launcher
 
-A fully self-contained Python implementation of the text preprocessing workflow is available in `gradio_app/`.
-It re-creates the deterministic cleaning pipeline, supports HuggingFace **and** local Ollama LLMs, mirrors the
-multi-speaker formatting logic, and exposes the IndexTTS, VibeVoice, and Qwen3 TTS workflows inside a Gradio interface.
+Double-click [`VoiceForge.cmd`](./VoiceForge.cmd) for the normal Windows startup.
+It checks Node and npm, installs the exact locked JavaScript dependencies only
+when `package.json` or `package-lock.json` changes, builds production mode, starts
+the local server, and opens the browser after the app responds. If Node.js is
+missing or outdated, it can install the current LTS release through `winget`
+after asking for confirmation. When the preferred/default port is occupied, the
+launcher selects the next available localhost port; an explicit `--port` remains
+strict and reports a conflict instead.
 
-### Highlights
+Useful terminal modes:
 
-- Deterministic text cleaning with the same rules as the TypeScript app
-- LLM-driven cleaning & dialogue formatting via HuggingFace Inference or a local Ollama instance
-- Built-in management screens for IndexTTS (model download/load and synthesis)
-- Built-in management screens for VibeVoice (repo setup and synthesis)
-- Qwen3 TTS voice cloning tab with automatic text chunking for long passages
-
-### Running the Gradio app
-
-```bash
-pip install -r gradio_app/requirements.txt
-python -m gradio_app
+```powershell
+.\VoiceForge.cmd                 # production startup (default)
+.\VoiceForge.cmd dev             # development server
+.\VoiceForge.cmd install         # install only when dependencies changed
+.\VoiceForge.cmd repair          # force a clean npm ci
+.\VoiceForge.cmd setup-index     # install/configure the official IndexTTS runtime
+.\VoiceForge.cmd setup-qwen      # install the isolated Qwen3-TTS runtime
+.\VoiceForge.cmd setup-moss      # install the isolated MOSS-TTS v1.5 runtime
+.\VoiceForge.cmd --port 5050     # use another port for this launch
+.\VoiceForge.cmd --no-browser    # keep the browser closed
 ```
 
-By default the app expects a HuggingFace Inference API token. You can supply it via the UI accordion, or by exporting
-`HUGGINGFACE_API_TOKEN` before launching. Selecting **Ollama** as the model source will call a local Ollama server (defaults
-to `http://localhost:11434`; override with `OLLAMA_BASE_URL`). Set `OLLAMA_MODEL` to change the default local model.
+The launcher never downloads speech models. Configure IndexTTS, VibeVoice, Qwen,
+MOSS, or PDF OCR through their documented setup
+steps when those backends are needed. Stop a running VoiceForge server before
+using `repair` or updating `package.json`/`package-lock.json`, because `npm ci`
+replaces the installed dependency tree.
 
-The interface supports `.txt` and `.epub` uploads, deterministic cleaning-only runs, full multi-speaker processing, and
-optional audio generation through IndexTTS, VibeVoice, and Qwen3 TTS voice cloning. The Python workers will install any
-missing dependencies when you trigger download/setup actions from the UI.
+### Manual startup
 
-### Qwen3 TTS voice cloning (Gradio tab)
-
-The **Qwen3 TTS** tab supports one-click voice cloning with a single uploaded voice sample. Long text is automatically split
-into smaller clips to stay within model limits, then stitched back together with a configurable silence gap.
-
-Recommended defaults (adjust per model):
-- **Max chars per clip**: 320 (set `QWEN_TTS_MAX_CHARS` to override)
-- **Gap between clips**: 120 ms (set `QWEN_TTS_GAP_MS` to override)
-
-Environment variables:
-- `QWEN_TTS_MODEL_ID` (default: `Qwen/Qwen3-TTS`)
-- `QWEN_TTS_ENABLE_CUDA=1` to install CUDA wheels for Torch
-- `QWEN_TTS_DEVICE` (optional torch device override, e.g. `cpu` or `0`)
-
-If the model rejects voice cloning parameters, the worker falls back to text-only synthesis and logs a warning.
-
-## 📋 Prerequisites
-
-- Node.js 20 LTS (or newer) and npm 10+
-- (Optional) HuggingFace API token for cloud models
-- (Optional) [Ollama](https://ollama.com/) running locally for offline LLMs
-- (Optional) Git & Python 3.10+ for IndexTTS/VibeVoice worker setup
-- Storage space for local models (300MB - 800MB per model)
-- Additional storage for Qwen3 TTS checkpoints if you enable that backend
-
-## 🚀 Installation
-
-### 1. Clone or Download the Project
-
-If you're on Replit, the project is already set up. Otherwise:
-
-```bash
-git clone <your-repo-url>
-cd tts-text-editor
-```
-
-### 2. Install Dependencies
-
-```bash
-npm install
-```
-
-> [!TIP]
-> The project depends on `@huggingface/transformers`, which in turn tries to download CUDA-enabled binaries for `onnxruntime-node` during installation.
-> If you are not setting up GPU acceleration (the common case), the bundled `.npmrc` file forces npm to skip the CUDA download so the install does not fail on networks that block direct GitHub downloads.
-
-#### Optional IndexTTS backend dependencies
-
-The `install.sh` helper can also bootstrap the optional IndexTTS speech synthesis backend. Those Python packages are large and GPU-focused, so the script now defaults to a CPU-only PyTorch wheel and skips the CUDA-only `deepspeed` dependency.
-
-- Set `INDEX_TTS_ENABLE_CUDA=1` before running the installer if you need the CUDA wheels instead of the CPU build.
-- Set `INDEX_TTS_SKIP_DEEPSPEED=0` to attempt the `deepspeed` install (requires a CUDA toolchain and can take a long time).
-- Advanced users can override the exact wheel URLs with `INDEX_TTS_TORCH_SPEC`, `INDEX_TTS_TORCH_INDEX_URL`, and `INDEX_TTS_TORCH_EXTRA_INDEX_URL`.
-
-#### Optional Qwen3 TTS backend dependencies
-
-The `install.sh` helper can also install Qwen3 TTS dependencies. These packages include PyTorch, torchaudio, and transformers.
-
-- Set `INSTALL_QWEN_TTS_REQUIREMENTS=yes` to install them during setup.
-- Set `QWEN_TTS_ENABLE_CUDA=1` if you need CUDA wheels.
-
-### 3. Configure Environment Variables
-
-You have two options depending on which model source you want to use:
-
-#### Option A: Using HuggingFace API (Cloud Models)
-
-1. Get a HuggingFace API token:
-   - Go to https://huggingface.co/settings/tokens
-   - Click "New token"
-   - Give it a name (e.g., "TTS Text Editor")
-   - Copy the token
-
-2. **For Replit Users** (Recommended):
-   - Open the "Secrets" tool in your Replit workspace (lock icon in sidebar)
-   - Click "+ New Secret"
-   - Set key: `HUGGINGFACE_API_TOKEN`
-   - Paste your token as the value
-   - Click "Add Secret"
-   
-   **Important for Published/Deployed Apps:**
-   - When you publish your app, Replit automatically includes workspace secrets
-   - If the published version shows "need to log in or provide a token", check:
-     1. The secret `HUGGINGFACE_API_TOKEN` exists in your Replit Secrets
-     2. The secret name is spelled exactly as shown (case-sensitive)
-     3. Try redeploying your app after adding/updating the secret
-
-3. **For Local Development**:
-   Create a `.env` file in the project root:
-   ```
-   HUGGINGFACE_API_TOKEN=your_token_here
-   SESSION_SECRET=your_random_secret_here
-   ```
-
-#### Option B: Using Local Models (No API Token Required)
-
-If you don't want to use the HuggingFace API:
-- No API token needed
-- No environment variable setup required
-- Models download automatically on first use
-- Works completely offline once models are cached
-
-### 4. Run the Application
-
-#### Development Mode
-```bash
+```powershell
+npm ci
 npm run dev
 ```
 
-The app will be available at `http://localhost:5000`
+Open [http://127.0.0.1:5000](http://127.0.0.1:5000).
 
-#### Production Mode
-```bash
+Production build:
+
+```powershell
 npm run build
 npm start
 ```
 
-## 🎯 Quick Start Guide
+### RunPod/Linux installer safety
 
-### Using Cloud Models (HuggingFace API)
+`install.sh` keeps Node on major version 22. Point `APP_DIR` at either an empty
+directory for a fresh clone or an existing VoiceForge checkout:
 
-1. **Upload a file**: Drag and drop a `.txt` or `.epub` file
-2. **Configure cleaning options**: Select desired text cleaning features
-3. **Choose speaker mode**: 
-   - None (single speaker)
-   - Format conversion
-   - Intelligent parsing (with optional character extraction)
-4. **Select Model Source**: Keep "HuggingFace API" selected
-5. **Test first** (optional): Click "Test One Chunk" to preview
-6. **Start Processing**: Click "Start Processing"
-7. **Export**: Copy or download the processed text
-
-### Using Local Models (Offline)
-
-1. **Upload a file**: Drag and drop a `.txt` or `.epub` file
-2. **Configure cleaning options**: Select desired text cleaning features
-3. **Choose speaker mode**: Set your preferred mode
-4. **Select Model Source**: 
-   - Click "Local Model" option
-   - Choose a model from the dropdown:
-     - **Flan-T5 Small** (300MB) - Fastest, good for testing
-     - **Flan-T5 Base** (500MB) - Balanced performance
-     - **LaMini-Flan-T5-783M** (800MB) - Best quality
-5. **First time**: Model will download automatically (progress shown in UI)
-6. **Test and Process**: Same as cloud models
-
-### Character Extraction (Intelligent Mode)
-
-1. Select "Intelligent" speaker mode
-2. Set sample size (5-100 sentences to analyze)
-3. Toggle "Include Narrator" if needed
-4. Click "Extract Characters"
-5. Review and manage character mappings
-6. Proceed with processing
-
-You can choose how the Narrator handles dialogue attribution tags ("he said"): remove, verbatim, or convert into a concise context line.
-
-## 🔧 Configuration Options
-
-### Text Cleaning Options
-- **Smart Quotes**: Replace curly quotes with straight quotes
-- **OCR Fixes**: Fix common OCR errors
-- **Spell Check**: Correct spelling mistakes
-- **Remove URLs**: Strip web links
-- **Add Punctuation**: Improve prosody for TTS
-
-### Speaker Configuration
-- **Mode**: None, Format Conversion, or Intelligent
-- **Format**: "Speaker 1:" or "[1]:" label style
-- **Number of Speakers**: 1-20
-
-### Model Settings
-- **Model Source**: HuggingFace API or Local Model
-- **API Model**: Select from available HuggingFace models
-- **Local Model**: Choose from downloaded/available ONNX models
-- **Batch Size**: Number of sentences per processing chunk (default: 10)
-
-### Advanced Options
-- **Custom Instructions**: Add specific instructions for the LLM
-- **Prompt Preview**: View exact prompts before processing
-- **Test Mode**: Process one chunk for preview
-- **Single‑Pass Processing**: Combine stages into a single call per chunk
-- **Concise Prompts**: Shorter instructions to reduce tokens
-- **Fix Hyphenation**: Merge words split across lines/hyphens
-
-## Providers and Cost Controls
-
-### Hugging Face Providers
-- Set provider via env `HF_PROVIDER`:
-  - `auto` (recommended): lets HF pick a provider for the model/task
-  - `hf-inference`: Hugging Face Inference endpoints
-  - `fireworks-ai`, `groq`, `together`, etc. (if available in your HF account)
-
-Notes:
-- We route via Hugging Face using your `HUGGINGFACE_API_TOKEN` (no provider-specific key required).
-- If a provider does not support text-generation (e.g., Fireworks), the app auto‑falls back to chat‑completions for that request.
-- Model ids are normalized (e.g., `meta-llama/Meta-Llama-3.1-8B-Instruct` → `meta-llama/Llama-3.1-8B-Instruct`).
-
-### Ollama (Local)
-- Set `OLLAMA_BASE_URL` (default `http://localhost:11434`).
-
-### Token Usage Tips
-- Enable Single‑Pass Processing to avoid sending two prompts per chunk.
-- Use Concise Prompts to reduce fixed instruction tokens.
-- Increase batch size to amortize instruction tokens across more sentences.
-- Prefer local models via Ollama if usage costs are a concern.
-
-### Debugging Requests
-- Set `LLM_DEBUG=1` to log request/response URL, headers (redacted), and payload previews for HF and Ollama.
-  - Useful to see provider mapping calls and router decisions.
-
-## 🐛 Troubleshooting
-
-### "Need to log in or provide a token" Error (Published Apps)
-
-**Issue**: Published/deployed version shows HuggingFace authentication error like:
-- "need to log in or provide a token for HF"
-- "HuggingFace API authentication failed"
-
-**Important**: You do NOT need to log in with your HuggingFace account! The API token should work automatically. This error means the token isn't being recognized.
-
-**Solutions** (try in order):
-
-1. **Verify Secret Exists** (Replit):
-   - Open the **Secrets** tool (🔒 icon) in your workspace
-   - Check that `HUGGINGFACE_API_TOKEN` exists
-   - Secret names are **case-sensitive** - must be exactly: `HUGGINGFACE_API_TOKEN`
-   - Click the eye icon to verify the token value is correct (starts with `hf_...`)
-
-2. **Check Token is Valid**:
-   - Go to https://huggingface.co/settings/tokens
-   - Verify your token exists and is not expired
-   - If needed, create a new token and update your secret
-
-3. **Redeploy Your App**:
-   - After adding or updating the secret
-   - **Stop your current deployment** (if running)
-   - Click **"Publish"** again to redeploy
-   - Replit should automatically sync the secret to your deployment
-   - Wait for deployment to complete
-
-4. **Check Deployment Logs**:
-   - In your published app, check the deployment logs
-   - Look for the warning: "⚠️ HUGGINGFACE_API_TOKEN not found"
-   - If you see this warning, the secret isn't syncing properly
-
-5. **Alternative: Use Local Models** (No token needed!):
-   - In your app, switch to **"Local Model"** option
-   - Select any model (Flan-T5 Small is fastest)
-   - Model downloads automatically on first use
-   - Works completely offline - no API token required
-   - **This is the easiest solution if you have deployment issues!**
-
-**Why This Happens**:
-- Replit Secrets are environment-specific
-- Published deployments need secrets to sync from workspace
-- If the secret was added after publishing, you must redeploy
-- Secret names must match exactly (case-sensitive)
-
-### Local Model Issues
-
-**Model won't download**:
-- Check internet connection (needed for first download)
-- Ensure sufficient disk space (300MB - 800MB per model)
-- Check server logs for error messages
-
-**Model download is slow**:
-- Models are 300MB-800MB, download may take time
-- Progress is shown in the UI
-- Once downloaded, models are cached
-
-**Out of memory errors**:
-- Try using a smaller model (Flan-T5 Small)
-- Reduce batch size in settings
-- Close other applications
-
-### General Issues
-
-**File upload fails**:
-- Check file size (max 10MB)
-- Verify file format (.txt or .epub)
-- Try a different file
-
-**Processing stuck or slow**:
-- Check activity log for errors
-- Try reducing batch size
-- For local models, first run may be slower (model loading)
-- Cloud models may be rate-limited
-
-**WebSocket connection errors**:
-- Refresh the page
-- Check server logs
-- Ensure port 5000 is not blocked
-
-## 📁 Project Structure
-
-```
-├── client/                     # Frontend React application
-│   ├── src/
-│   │   ├── components/        # UI components
-│   │   │   ├── character-extraction.tsx
-│   │   │   ├── model-source-selector.tsx
-│   │   │   └── ...
-│   │   ├── pages/             # Page components
-│   │   │   └── home.tsx
-│   │   └── lib/               # Utilities
-│       
-├── server/                     # Backend Express application
-│   ├── routes.ts              # API routes & WebSocket
-│   ├── llm-service.ts         # HuggingFace API integration
-│   ├── local-model-service.ts # Local ONNX model execution
-│   └── text-processor.ts      # Text chunking & processing
-│
-├── shared/                     # Shared TypeScript types
-│   └── schema.ts              # Data models
-│
-├── .cache/                     # Local model cache (auto-created)
-└── design_guidelines.md       # UI/UX guidelines
+```bash
+sudo env APP_DIR=/opt/voiceforge ./install.sh
 ```
 
-## 🔐 Security Notes
+For an existing checkout, the installer updates only a clean branch with a
+configured upstream, using `git pull --ff-only`. If the checkout is dirty or has
+no upstream, it preserves the tree and skips the update. It refuses to bootstrap
+into a non-empty, non-Git directory; it never resets the checkout or deletes the
+directory's existing contents.
 
-- **Never commit API tokens** to version control
-- Use Replit Secrets or `.env` files for sensitive data
-- `.env` is already in `.gitignore`
-- Local models run on your server (no external API calls)
-- Session secrets should be random and unique
+Useful environment variables:
 
-## 🚀 Deployment
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | HTTP port; defaults to `5000`. |
+| `HOST` | Bind address; defaults to `127.0.0.1`. |
+| `HUGGINGFACE_API_TOKEN` or `HF_TOKEN` | Optional Hugging Face inference token. |
+| `HF_PROVIDER` | Hugging Face inference provider; defaults to `hf-inference`. |
+| `OLLAMA_BASE_URL` | Ollama endpoint; defaults to `http://localhost:11434`. |
+| `PDF_OCR_PYTHON` | Python executable used by the PDF OCR worker. |
+| `INDEX_TTS_PYTHON` | Python executable for an operator-managed, isolated IndexTTS environment. |
+| `INDEX_TTS_SOURCE_DIR` | Optional official IndexTTS repository root containing `indextts/infer_v2.py`; not needed when `indextts` is installed in the selected environment. |
+| `QWEN_TTS_PYTHON` | Python executable for the isolated Qwen3-TTS environment. It must not share an environment with IndexTTS or MOSS. |
+| `MOSS_TTS_PYTHON` | Python executable for the isolated MOSS-TTS v1.5 environment. It must not share an environment with Qwen or IndexTTS. |
+| `MOSS_TTS_FFMPEG_BIN` | Windows-only path to an FFmpeg 4-7 shared-build `bin` directory used by MOSS/TorchCodec. The setup command discovers and writes this automatically. |
+| `VIBEVOICE_PYTHON` | Python executable used by VibeVoice. |
+| `VOICEFORGE_DEFAULT_VOICES_DIR` | Optional default voice-library directory; defaults to `<app>/default_voices`. |
+| `VOICEFORGE_ENABLE_REMOTE_MCP` | Explicitly enable `/mcp` when `HOST` is not loopback. |
+| `VOICEFORGE_MCP_BEARER_TOKEN` | Optional bearer token required by `/mcp` when set. |
+| `VOICEFORGE_PUBLIC_URL` | Public HTTPS origin used in completed MCP audio links. |
 
-### Deploying on Replit
+Do not expose this app directly to an untrusted network. It is a personal local workspace, not a multi-user service: model setup, uploads, job files, and provider-token configuration do not have an authentication layer. If remote access is required, put it behind authentication and TLS and add upload/rate limits.
 
-1. **Configure Secrets**:
-   - Open Secrets tool
-   - Add `HUGGINGFACE_API_TOKEN` (if using API)
-   - Add `SESSION_SECRET` (random string)
+## Model choices
 
-2. **Click "Publish"**:
-   - Secrets automatically sync to deployment
-   - App will be available at `<your-repl>.replit.app`
+Text preparation supports:
 
-3. **Verify**:
-   - Test with both API and local models
-   - Check that secrets are working
-   - Monitor activity logs for errors
+- **Safe cleanup** — deterministic transformations that run without a model.
+- **Hugging Face inference** — cloud processing with a configured token.
+- **Ollama** — local inference using an explicitly installed model name.
 
-### Deploying Elsewhere
+Provider token counts and prices shown in the UI are estimates unless the provider reports exact usage. AI-repaired text should always be reviewed before synthesis. If any chunk fails validation after retries, VoiceForge preserves that source chunk and marks the result as partial.
 
-1. Set environment variables:
-   ```
-   HUGGINGFACE_API_TOKEN=your_token
-   SESSION_SECRET=random_secret
-   NODE_ENV=production
-   ```
+## Speech backends
 
-2. Build and start:
-   ```bash
-   npm run build
-   npm start
-   ```
+The React app exposes IndexTTS, VibeVoice, Qwen3-TTS, and MOSS-TTS v1.5 under
+**Create audio**. Their model downloads are large and usually benefit from a
+CUDA-capable GPU. Qwen and MOSS also show an explicit **Local GPU / Hugging Face
+ZeroGPU Space** target selector. The “Agents” button on a Space is API discovery;
+VoiceForge calls that same Gradio API when the hosted target is selected.
+Local Qwen/MOSS jobs share a serialized GPU queue so two multi-gigabyte models
+are never loaded into device memory at the same time.
 
-3. Ensure port 5000 is accessible
+The legacy Python/Gradio lab is still available for backend experiments:
 
-## 📊 Performance Tips
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r gradio_app\requirements.txt
+python -m gradio_app
+```
 
-### For Best Performance:
-- **Cloud Models**: Best for complex text and quality
-- **Local Models**: Best for privacy and offline use
-- **Batch Size**: 
-  - Larger (15-20): Faster but may lose context
-  - Smaller (5-10): Better quality, slower
-- **Model Selection**:
-  - Qwen 2.5-72B (API): Best overall quality
-  - LaMini-Flan-T5 (Local): Best local quality
-  - Flan-T5 Small (Local): Fastest local processing
+Use a separate isolated Python environment for each speech backend, and run only sources you trust. VibeVoice setup uses the community repository pinned to commit `07cb79feadd2d3fd7f47530d4c964a12857936a0`; neither the web app nor the Gradio lab accepts a repository or branch override.
 
-### Resource Usage:
-- **API Mode**: Minimal server resources, network required
-- **Local Mode**: 
-  - Memory: 2-4GB per model
-  - Storage: 300MB-800MB per model
-  - CPU: Higher usage during inference
+### VibeVoice
 
-## 📝 License
+VibeVoice setup checks out the reviewed community source revision in detached
+mode. Its default model downloads are pinned as well:
 
-[Add your license here]
+- `microsoft/VibeVoice-1.5B` at `c00898d257e6b46004e3e2866a47534085fb685a`
+- `aoi-ot/VibeVoice-Large` at `8229be00d7c036aa32321e4dae8a81d433f6413a`
 
-## 🤝 Contributing
+Set `VIBEVOICE_PYTHON` to a dedicated environment with PyTorch 2.6 or newer.
+Setup also downloads the matching Qwen tokenizer at a pinned revision, records
+an atomic file-size inventory for every completed snapshot, and keeps synthesis
+offline. Partial, modified, or unpinned snapshots are not selectable. The UI's
+guidance scale maps directly to VibeVoice CFG (default `1.3`); an alternate CLI
+is available only through an operator-reviewed `VIBEVOICE_COMMAND_TEMPLATE`.
+Use only clean reference recordings you own or have permission to clone; the
+model is intended for English and Chinese speech and can produce unstable or
+unintended audio.
 
-[Add contribution guidelines here]
+### IndexTTS2
 
-## 📧 Support
+VoiceForge downloads model data only from the official
+[`IndexTeam/IndexTTS-2`](https://huggingface.co/IndexTeam/IndexTTS-2/tree/main)
+repository, pinned to revision `740dcaff396282ffb241903d150ac011cd4b1ede`. The web API
+does not accept a repository override.
 
-For issues or questions:
-- Check the troubleshooting section above
-- Review activity logs for detailed error messages
-- Ensure secrets are properly configured
-- Try local models if API issues persist
+VoiceForge does not download IndexTTS Python source, install packages, or change
+Torch from a web request. On Windows, stop the app and run the explicit setup
+helper once:
 
----
+```powershell
+.\VoiceForge.cmd setup-index
+```
 
-**Built with**: React, TypeScript, Express.js, HuggingFace Transformers, WebSocket, Tailwind CSS
+The helper checks out the [official IndexTTS repository](https://github.com/index-tts/index-tts)
+at reviewed revision `13495845e3028f0bb6ca1462ad22aa0e76349e40`, creates its locked
+Python 3.11 environment with the official `uv sync --frozen` workflow, validates
+PyTorch and `indextts.infer_v2`, then writes the two runtime paths to the ignored
+`.env` file. It preserves the separately downloaded model snapshot. Restart
+VoiceForge after setup and select **Verify runtime**.
+
+Advanced operators may instead prepare their own isolated environment from the
+official source and configure the app before starting it:
+
+```powershell
+$env:INDEX_TTS_PYTHON = "C:\path\to\indextts-env\Scripts\python.exe"
+$env:INDEX_TTS_SOURCE_DIR = "C:\path\to\official-index-tts"
+npm run dev
+```
+
+`INDEX_TTS_SOURCE_DIR` can be omitted when the official `indextts` package is
+already importable by `INDEX_TTS_PYTHON`. Loading and synthesis fail closed with a
+setup error when the source is absent or the selected environment uses PyTorch
+older than 2.6. A completed pinned model snapshot is recorded with a strict file
+inventory and recognized after app restarts; runtime verification remains a
+separate explicit step.
+
+The Linux installer also does not install IndexTTS. Set `INDEX_TTS_PYTHON` and,
+when needed, `INDEX_TTS_SOURCE_DIR` before running it. The legacy
+`INSTALL_TTS_REQUIREMENTS=yes` mode now fails with a setup message instead of
+modifying a shared Python environment.
+
+### Qwen3-TTS voice cloning
+
+The main app and Gradio lab use `qwen-tts==0.1.1` with these supported
+voice-clone checkpoints:
+
+- `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (default)
+- `Qwen/Qwen3-TTS-12Hz-1.7B-Base`
+
+On Windows, stop VoiceForge and prepare the separate runtime once:
+
+```powershell
+.\VoiceForge.cmd setup-qwen
+```
+
+Restart VoiceForge, open **Create audio → Qwen3-TTS**, select **Local GPU**, and
+download the pinned checkpoint. Local synthesis is then forced offline against
+the verified file inventory. Hosted mode calls the official
+[`Qwen/Qwen3-TTS`](https://huggingface.co/spaces/Qwen/Qwen3-TTS) Space and offers
+voice cloning, voice design, and preset-speaker modes. Hosted calls have a short
+per-request ZeroGPU time limit; use Local GPU for long scripts.
+
+On Linux, the installer can prepare Qwen in its own virtual environment without
+touching the IndexTTS interpreter:
+
+```bash
+INSTALL_QWEN_TTS_REQUIREMENTS=yes \
+QWEN_TTS_VENV_DIR="$PWD/.venv-qwen-tts" \
+./install.sh
+```
+
+The installer pins `qwen-tts==0.1.1`, validates the completed environment, and
+writes the resulting `QWEN_TTS_PYTHON` path to `.env`. Install the Gradio lab
+requirements and launch the lab with that same interpreter so Qwen stays
+isolated:
+
+```bash
+set -a; source .env; set +a
+"$QWEN_TTS_PYTHON" -m pip install -r gradio_app/requirements.txt
+"$QWEN_TTS_PYTHON" -m gradio_app
+```
+
+Alternatively, set `QWEN_TTS_PYTHON` to an existing dedicated environment before
+running the installer; optional installation refuses a system-wide interpreter.
+The installer rejects configurations where
+`QWEN_TTS_PYTHON` and `INDEX_TTS_PYTHON` resolve to the same Python environment.
+Supply the exact transcript of the reference clip for best fidelity. Without it,
+the UI warns that speaker-embedding-only cloning has lower expected quality.
+
+Relevant settings include `QWEN_TTS_PYTHON`, `QWEN_TTS_MODEL_ID`, `QWEN_TTS_LANGUAGE`, `QWEN_TTS_DEVICE`, `QWEN_TTS_MAX_CHARS`, `QWEN_TTS_GAP_MS`, and `QWEN_TTS_USE_FLASH_ATTENTION=1`.
+
+The integration follows the [official Qwen3-TTS repository](https://github.com/QwenLM/Qwen3-TTS) and [0.6B Base model card](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base).
+
+### MOSS-TTS v1.5
+
+VoiceForge uses `OpenMOSS-Team/MOSS-TTS-v1.5` pinned to revision
+`cdd3b911b1585e3f2dbc7775ef10f9926f58850a`, with its audio tokenizer pinned and
+inventoried separately. MOSS is an 8B model with 31-language synthesis,
+zero-shot voice cloning, continuation modes, and inline pauses such as
+`[pause 1.5s]`. The standard PyTorch path is large; allow roughly 16 GB for the
+model download and plan on a high-memory CUDA GPU for comfortable local use.
+
+On Windows:
+
+```powershell
+.\VoiceForge.cmd setup-moss
+```
+
+MOSS uses TorchCodec for audio I/O. On Windows this requires an FFmpeg **shared**
+build, not merely a working static `ffmpeg.exe`. The setup command discovers a
+compatible FFmpeg 4-7 shared build and stores its directory in
+`MOSS_TTS_FFMPEG_BIN`. If none is installed, use the pinned compatible build and
+rerun setup:
+
+```powershell
+winget install --id Gyan.FFmpeg.Shared --exact --version 7.1.1 --scope user
+.\VoiceForge.cmd setup-moss
+```
+
+Restart VoiceForge, open **Create audio → MOSS-TTS v1.5**, and download the
+pinned snapshots. On Linux/RunPod, set `INSTALL_MOSS_TTS_REQUIREMENTS=yes` when
+running `install.sh`, or point `MOSS_TTS_PYTHON` at a dedicated environment.
+MOSS cannot share Qwen's environment: the official MOSS stack requires
+Transformers 5.0.0 while Qwen pins Transformers 4.57.3.
+
+Hosted mode calls the official
+[`OpenMOSS-Team/MOSS-TTS-v1.5`](https://huggingface.co/spaces/OpenMOSS-Team/MOSS-TTS-v1.5)
+ZeroGPU Space. VoiceForge validates the live endpoint contract before uploading
+audio or submitting text, and rejects API drift rather than guessing.
+
+### Hugging Face usage bars
+
+The bar above the workspace reads the authenticated ZeroGPU balance from the
+official Hub quota API in GPU-seconds. The second bar is deliberately labeled
+**Included inference credit** rather than “tokens”: Inference Providers are
+billed in dollars at model/provider-specific rates. That value is an estimate
+of the plan's included monthly credit minus this month's HF-routed inference
+spend; purchased credit, organization billing, and custom provider keys can make
+the real billing balance different. Qwen/MOSS hosted synthesis consumes ZeroGPU,
+not Inference Provider credit.
+
+### Default voice library
+
+Put reusable reference recordings in `default_voices/`. The folder is deliberately
+Git-ignored because voice recordings and their transcripts may be private. Pair an
+audio file with a same-name UTF-8 transcript when available:
+
+```text
+default_voices/
+  narrator.wav
+  narrator.txt
+```
+
+VoiceForge accepts WAV, MP3, FLAC, M4A, AAC, OGG, Opus, and WebM files up to
+32 MB. The app and MCP server expose opaque voice IDs rather than paths, reject
+links and nested files, and revalidate each file before use. A paired transcript
+is supplied automatically to Qwen voice cloning. The **Create audio** page can use
+library voices or custom uploads with all four engines; VibeVoice supports up to
+four library/upload slots.
+
+### ChatGPT/Codex MCP and skill
+
+The running VoiceForge process exposes a stateless Streamable HTTP MCP endpoint:
+
+```text
+http://127.0.0.1:5000/mcp
+```
+
+The repo includes `.codex/config.toml` for local Codex discovery and the
+repo-scoped `$voiceforge-tts` skill under `.agents/skills/voiceforge-tts`. Start
+VoiceForge on port 5000 before opening a new Codex task so the MCP connection can
+initialize. If you intentionally choose another port, update both MCP URLs.
+
+The MCP tools can:
+
+- list model capabilities/readiness and safe default voice IDs;
+- recommend Qwen, MOSS, VibeVoice, or IndexTTS from text length and requirements;
+- start an idempotent asynchronous synthesis job with an explicit `local` or
+  `agent` target;
+- poll/cancel jobs and return completed audio as an MCP resource/download URL.
+
+`agent` means the official Hugging Face Space API: text and any selected voice
+are uploaded to Hugging Face and ZeroGPU quota is consumed. The skill never
+silently switches between Local and Agent. The deterministic length bands are
+Qwen Agent through 1,200 characters, MOSS Agent through 5,000, and Local for
+anything longer; multi-speaker work prefers local VibeVoice.
+
+VoiceForge binds to loopback by default. For ChatGPT web, the MCP endpoint must be
+behind HTTPS. Remote MCP stays disabled when the app binds to a non-loopback
+`HOST` unless `VOICEFORGE_ENABLE_REMOTE_MCP=true` is set deliberately. You may
+also set `VOICEFORGE_MCP_BEARER_TOKEN`; configure the same environment variable
+in the MCP client. This bearer option is suitable for private clients, not a
+replacement for OAuth on a broadly published ChatGPT app.
+
+## Verification
+
+```powershell
+npm run check
+npm run test:text
+npm run test:speech
+npm run test:hf-contract
+npm run test:voices
+npm run test:mcp
+npm run test:prompts
+npm run build
+npm audit --omit=dev
+python server/python/tts_workers_selftest.py
+```
+
+The text self-test covers sentence segmentation, TTS-sized chunking,
+speaker-label preservation, and mojibake cleanup. The speech tests cover shared
+contracts, ZeroGPU quota parsing, pinned worker manifests, tamper detection, and
+the current public Space endpoint schemas. The contract test reads metadata only
+and does not consume ZeroGPU inference quota. The prompt test checks
+configuration-sensitive prompt construction.
+
+## Project map
+
+```text
+client/                  React workspace
+server/                  Express APIs, WebSockets, processing, OCR and TTS services
+server/python/           Optional Python workers
+shared/                  Shared schemas and text segmentation utilities
+scripts/                 Regression and prompt smoke tests
+gradio_app/              Optional Python backend lab
+```
+
+Project data and model caches remain local. The browser stores only UI settings and draft handoffs between workflow pages.

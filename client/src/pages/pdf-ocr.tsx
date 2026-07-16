@@ -16,6 +16,7 @@ import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { useLocation } from "wouter";
 import type {
   PdfOcrJobStatus,
   PdfOcrLogEntry,
@@ -24,10 +25,14 @@ import type {
 } from "@shared/schema";
 import {
   Check,
+  ArrowRight,
+  ChevronDown,
+  Settings2,
   Clipboard,
   Download,
   FileText,
   Loader2,
+  Square,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -38,6 +43,7 @@ const statusLabels: Record<PdfOcrJobStatus["status"], string> = {
   running: "Processing",
   completed: "Completed",
   failed: "Failed",
+  cancelled: "Cancelled",
 };
 
 const statusVariants: Record<PdfOcrJobStatus["status"], "default" | "secondary" | "destructive"> = {
@@ -45,6 +51,7 @@ const statusVariants: Record<PdfOcrJobStatus["status"], "default" | "secondary" 
   running: "secondary",
   completed: "default",
   failed: "destructive",
+  cancelled: "secondary",
 };
 
 type DownloadState = "idle" | "loading";
@@ -58,6 +65,7 @@ type ConfigFormState = {
 
 export default function PdfOcrPage() {
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [job, setJob] = useState<PdfOcrJobStatus | null>(null);
   const [statusSnapshot, setStatusSnapshot] = useState<PdfOcrStatus | null>(null);
@@ -65,6 +73,7 @@ export default function PdfOcrPage() {
   const [logs, setLogs] = useState<PdfOcrLogEntry[]>([]);
   const [combinedText, setCombinedText] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [downloadState, setDownloadState] = useState<DownloadState>("idle");
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const [pageEstimate, setPageEstimate] = useState<number | null>(null);
@@ -204,7 +213,15 @@ export default function PdfOcrPage() {
       "application/pdf": [".pdf"],
     },
     maxFiles: 1,
-    disabled: isUploading,
+    maxSize: 64 * 1024 * 1024,
+    onDropRejected: () => {
+      toast({
+        title: "PDF not accepted",
+        description: "Choose one PDF file no larger than 64 MB.",
+        variant: "destructive",
+      });
+    },
+    disabled: isUploading || job?.status === "running" || job?.status === "queued",
   });
 
   const isProcessing = job ? job.status === "running" || job.status === "queued" : false;
@@ -354,6 +371,29 @@ export default function PdfOcrPage() {
     }
   }, [selectedFile, toast]);
 
+  const handleCancel = useCallback(async () => {
+    if (!job || (job.status !== "queued" && job.status !== "running")) return;
+    setIsCancelling(true);
+    try {
+      const response = await fetch(`/api/pdf-ocr/jobs/${job.id}/cancel`, { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Failed to cancel PDF OCR");
+      if (payload?.job) setJob(payload.job as PdfOcrJobStatus);
+      toast({
+        title: "PDF OCR cancelled",
+        description: "The local OCR worker has been asked to stop.",
+      });
+    } catch (error) {
+      toast({
+        title: "Cancellation failed",
+        description: error instanceof Error ? error.message : "Unable to cancel PDF OCR.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCancelling(false);
+    }
+  }, [job, toast]);
+
   const handleClear = useCallback(() => {
     setSelectedFile(null);
     setJob(null);
@@ -424,12 +464,32 @@ export default function PdfOcrPage() {
     }
   }, [combinedText, job, toast]);
 
+  const handleContinueToPrepare = useCallback(() => {
+    if (!combinedText.trim()) return;
+    sessionStorage.setItem("vf_prepare_draft", combinedText);
+    navigate("/");
+  }, [combinedText, navigate]);
+
   const jobStatusBadge = job ? (
     <Badge variant={statusVariants[job.status]}>{statusLabels[job.status]}</Badge>
   ) : null;
 
   return (
-    <div className="flex h-full flex-col gap-6 overflow-auto p-6">
+    <div className="flex h-full flex-col gap-6 overflow-auto p-4 sm:p-6 lg:p-8">
+      <header className="flex flex-col gap-4 border-b pb-6 sm:flex-row sm:items-end sm:justify-between">
+        <div className="max-w-2xl">
+          <Badge variant="secondary" className="mb-3 rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-[0.15em]">
+            <FileText className="mr-1.5 h-3.5 w-3.5 text-primary" /> PDF import
+          </Badge>
+          <h1 className="text-3xl font-bold tracking-[-0.04em] sm:text-4xl">Recover clean text from scanned pages.</h1>
+          <p className="mt-3 text-sm leading-6 text-muted-foreground sm:text-base">
+            Run local OCR, correct the merged result, then send it straight into the preparation workspace.
+          </p>
+        </div>
+        <Button onClick={handleContinueToPrepare} disabled={!combinedText.trim()} className="w-fit rounded-xl">
+          Continue to prepare <ArrowRight className="ml-2 h-4 w-4" />
+        </Button>
+      </header>
       <div className="grid gap-6 lg:grid-cols-[400px_1fr]">
         <div className="flex flex-col gap-6">
           <Card>
@@ -457,7 +517,7 @@ export default function PdfOcrPage() {
                     <p className="text-sm font-medium">
                       {isDragActive ? "Drop your PDF here" : "Drag & drop or click to upload a PDF"}
                     </p>
-                    <p className="text-xs text-muted-foreground mt-1">Maximum size 120MB</p>
+                    <p className="text-xs text-muted-foreground mt-1">Maximum size 64 MB</p>
                   </div>
                 </div>
               </div>
@@ -509,6 +569,23 @@ export default function PdfOcrPage() {
                 )}
               </Button>
 
+              {isProcessing && job && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={handleCancel}
+                  disabled={isCancelling}
+                  className="w-full"
+                >
+                  {isCancelling ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Square className="mr-2 h-4 w-4" />
+                  )}
+                  {isCancelling ? "Cancelling…" : "Cancel OCR"}
+                </Button>
+              )}
+
               {job && (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
@@ -536,13 +613,18 @@ export default function PdfOcrPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>DeepSeek OCR setup</CardTitle>
-              <CardDescription>
-                Point VoiceForge to your DeepSeek OCR environment and manage model downloads.
-              </CardDescription>
-            </CardHeader>
+          <details className="group overflow-hidden rounded-2xl border bg-card shadow-sm">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-5 marker:hidden">
+              <div className="flex items-center gap-3">
+                <span className="grid h-9 w-9 place-items-center rounded-xl bg-primary/10 text-primary"><Settings2 className="h-4 w-4" /></span>
+                <div>
+                  <p className="text-sm font-bold">OCR engine setup</p>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">Paths, model revision, and downloads</p>
+                </div>
+              </div>
+              <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />
+            </summary>
+          <Card className="rounded-none border-x-0 border-b-0 shadow-none">
             <CardContent className="space-y-6">
               <div className="space-y-4">
                 <div className="space-y-2">
@@ -669,6 +751,7 @@ export default function PdfOcrPage() {
               </div>
             </CardContent>
           </Card>
+          </details>
         </div>
 
         <Card className="flex flex-col">
@@ -717,8 +800,8 @@ export default function PdfOcrPage() {
       <Card className="flex flex-1 flex-col">
         <CardHeader className="flex flex-row items-center justify-between gap-3">
           <div>
-            <CardTitle>Combined OCR text</CardTitle>
-            <CardDescription>All pages merged into a single text document.</CardDescription>
+            <CardTitle>Review extracted text</CardTitle>
+            <CardDescription>All pages are merged here; fix obvious OCR mistakes before continuing.</CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={handleCopy} disabled={!combinedText}>
@@ -737,12 +820,16 @@ export default function PdfOcrPage() {
               )}
               Download
             </Button>
+            <Button size="sm" onClick={handleContinueToPrepare} disabled={!combinedText.trim()}>
+              Prepare <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
           </div>
         </CardHeader>
         <CardContent className="flex-1">
           <Textarea
             className="h-full min-h-[300px] resize-none"
             value={combinedText}
+            onChange={(event) => setCombinedText(event.target.value)}
             placeholder={
               job
                 ? job.status === "completed"
@@ -750,7 +837,7 @@ export default function PdfOcrPage() {
                   : "OCR output will appear here once processing completes."
                 : "Start an OCR job to view combined text output."
             }
-            readOnly
+            aria-label="Editable combined OCR text"
           />
         </CardContent>
       </Card>

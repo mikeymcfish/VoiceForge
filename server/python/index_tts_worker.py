@@ -1,119 +1,48 @@
 #!/usr/bin/env python3
+"""IndexTTS worker for an operator-managed, isolated official runtime.
+
+This process intentionally never installs Python packages or downloads executable
+source code. VoiceForge downloads only the pinned official model snapshot. The
+operator supplies the official IndexTTS runtime through INDEX_TTS_PYTHON and,
+when the source tree is not installed in that environment,
+INDEX_TTS_SOURCE_DIR.
+"""
+
 import argparse
 import importlib
-import importlib.metadata as importlib_metadata
 import json
 import os
-import shutil
-import subprocess
+import re
 import sys
 import traceback
-import tempfile
-import urllib.request
-import zipfile
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence, Tuple
-
-# Upstream Premium IndexTTS2 sources used to provide the `indextts` package.
-_INDEXTTS_REPO_ZIP_CANDIDATES = (
-    "https://github.com/FurkanGozukara/Premium_IndexTTS2_SECourses/archive/refs/heads/main.zip",
-    "https://github.com/FurkanGozukara/Premium_IndexTTS2_SECourses/archive/refs/heads/master.zip",
-)
-INDEXTTS_MODULE_NAME = "indextts"
-_TORCH_PLACEHOLDER = {"spec": "__TORCH__", "module": "torch"}
-_TORCHAUDIO_PLACEHOLDER = {"spec": "__TORCHAUDIO__", "module": "torchaudio"}
-_DEEPSPEED_PLACEHOLDER = {"spec": "__DEEPSPEED__", "module": "deepspeed"}
-
-_BASE_DEPENDENCIES: Tuple[dict[str, Any], ...] = (
-    {"spec": "numpy==1.24.3", "module": "numpy"},
-    _TORCH_PLACEHOLDER,
-    _TORCHAUDIO_PLACEHOLDER,
-    {"spec": "accelerate==1.8.1", "module": "accelerate"},
-    {"spec": "descript-audiotools==0.7.2", "module": "audiotools"},
-    {"spec": "transformers==4.52.1", "module": "transformers"},
-    {"spec": "tokenizers==0.21.0", "module": "tokenizers"},
-    {"spec": "cn2an==0.5.22", "module": "cn2an"},
-    {"spec": "ffmpeg-python==0.2.0", "module": "ffmpeg"},
-    {"spec": "Cython==3.0.7", "module": "Cython"},
-    {"spec": "g2p-en==2.1.0", "module": "g2p_en"},
-    {"spec": "jieba==0.42.1", "module": "jieba"},
-    {"spec": "json5==0.10.0", "module": "json5"},
-    {"spec": "keras==2.13.1", "module": "keras"},
-    {"spec": "tensorflow==2.13.1", "module": "tensorflow"},
-    {"spec": "numba==0.58.1", "module": "numba"},
-    {"spec": "pandas==2.1.3", "module": "pandas"},
-    {"spec": "matplotlib==3.8.2", "module": "matplotlib"},
-    {"spec": "munch==4.0.0", "module": "munch"},
-    {"spec": "opencv-python==4.9.0.80", "module": "cv2"},
-    {"spec": "tensorboard==2.13.0", "module": "tensorboard"},
-    {"spec": "librosa==0.10.2.post1", "module": "librosa"},
-    {"spec": "safetensors==0.5.2", "module": "safetensors"},
-    {"spec": "scipy==1.11.4", "module": "scipy"},
-    {"spec": "einops==0.7.0", "module": "einops"},
-    {"spec": "soundfile==0.12.1", "module": "soundfile"},
-    {"spec": "pyyaml==6.0.2", "module": "yaml"},
-    _DEEPSPEED_PLACEHOLDER,
-    {"spec": "modelscope==1.27.0", "module": "modelscope"},
-    {"spec": "omegaconf>=2.3.0", "module": "omegaconf"},
-    {"spec": "sentencepiece>=0.2.1", "module": "sentencepiece"},
-    {"spec": "gradio>=5.0.0", "module": "gradio"},
-    {"spec": "tqdm>=4.67.1", "module": "tqdm"},
-    {"spec": "textstat>=0.7.10", "module": "textstat"},
-    {"spec": "huggingface_hub>=0.25.0", "module": "huggingface_hub"},
-    {"spec": "spaces>=0.31.0", "module": "spaces"},
-)
-
-_RESOLVED_DEPENDENCIES: Optional[Tuple[dict[str, Any], ...]] = None
-
-dependencies_ready = False
+from typing import Any, Optional, Tuple
 
 
-def emit(event: str, **payload):
+OFFICIAL_MODEL_REPO_ID = "IndexTeam/IndexTTS-2"
+OFFICIAL_MODEL_REVISION = "740dcaff396282ffb241903d150ac011cd4b1ede"
+MODEL_MANIFEST_NAME = ".voiceforge-index-model.json"
+MODEL_MANIFEST_VERSION = 2
+MINIMUM_TORCH_VERSION = (2, 6)
+MINIMUM_MODEL_BYTES = 100 * 1024 * 1024
+MODEL_WEIGHT_SUFFIXES = {".bin", ".onnx", ".pt", ".pth", ".safetensors"}
+
+
+def configure_utf8_streams() -> None:
+    """Keep official IndexTTS diagnostic output Unicode-safe on Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+configure_utf8_streams()
+
+
+def emit(event: str, **payload: Any) -> None:
     message = {"event": event}
     message.update(payload)
     print(json.dumps(message), flush=True)
-
-
-def _module_name_from_spec(spec: str) -> str:
-    base = spec
-    for sep in ("==", ">=", "<=", "~=", "!=", ">", "<"):
-        if sep in base:
-            base = base.split(sep, 1)[0]
-            break
-    if "[" in base:
-        base = base.split("[", 1)[0]
-    return base
-
-
-def _parse_version(value: str) -> Tuple[int, ...]:
-    parts: list[int] = []
-    for token in value.replace("-", ".").split("."):
-        if token.isdigit():
-            parts.append(int(token))
-        else:
-            digits = "".join(ch for ch in token if ch.isdigit())
-            if digits:
-                parts.append(int(digits))
-    return tuple(parts)
-
-
-def _validate_transformers(module: Any) -> bool:
-    try:
-        version_str = importlib_metadata.version("transformers")
-    except importlib_metadata.PackageNotFoundError:
-        return False
-    if _parse_version(version_str) < _parse_version("4.52.1"):
-        return False
-    try:
-        cache_utils = importlib.import_module("transformers.cache_utils")
-    except ImportError:
-        return False
-    return hasattr(cache_utils, "QuantizedCacheConfig")
-
-
-PACKAGE_VALIDATORS: dict[str, Callable[[Any], bool]] = {
-    "transformers": _validate_transformers,
-}
 
 
 def is_truthy(value: Optional[str]) -> bool:
@@ -122,370 +51,370 @@ def is_truthy(value: Optional[str]) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _get_additional_dependencies() -> Tuple[dict[str, Any], ...]:
-    global _RESOLVED_DEPENDENCIES
-    if _RESOLVED_DEPENDENCIES is not None:
-        return _RESOLVED_DEPENDENCIES
-
-    use_cuda = is_truthy(os.environ.get("INDEX_TTS_ENABLE_CUDA"))
-    torch_spec = os.environ.get("INDEX_TTS_TORCH_SPEC")
-    torch_index_url = os.environ.get("INDEX_TTS_TORCH_INDEX_URL")
-    torch_extra_indexes: Optional[Tuple[str, ...]] = None
-    torchaudio_spec = os.environ.get("INDEX_TTS_TORCHAUDIO_SPEC")
-    torchaudio_index_url = os.environ.get("INDEX_TTS_TORCHAUDIO_INDEX_URL")
-
-    if use_cuda:
-        torch_spec = torch_spec or "torch==2.3.1"
-        extra_url = os.environ.get("INDEX_TTS_TORCH_EXTRA_INDEX_URL")
-        if extra_url:
-            torch_extra_indexes = (extra_url,)
-        emit(
-            "log",
-            level="info",
-            message=f"Using PyTorch dependency {torch_spec} (CUDA-enabled configuration)",
-        )
-    else:
-        torch_spec = torch_spec or "torch==2.3.1+cpu"
-        torch_index_url = torch_index_url or "https://download.pytorch.org/whl/cpu"
-        extra_url = os.environ.get("INDEX_TTS_TORCH_EXTRA_INDEX_URL", "https://pypi.org/simple")
-        torch_extra_indexes = tuple(filter(None, (extra_url,)))
-        emit(
-            "log",
-            level="info",
-            message=(
-                "Using CPU-only PyTorch build for IndexTTS dependencies; set "
-                "INDEX_TTS_ENABLE_CUDA=1 to install GPU wheels"
-            ),
-        )
-
-    skip_deepspeed = is_truthy(os.environ.get("INDEX_TTS_SKIP_DEEPSPEED", "1"))
-    deepspeed_spec = os.environ.get("INDEX_TTS_DEEPSPEED_SPEC", "deepspeed==0.17.1")
-
-    resolved: list[dict[str, Any]] = []
-    # Derive torchaudio spec from torch if not explicitly provided
-    default_torchaudio_version = "2.3.1"
-    if "==" in torch_spec:
-        _, version_part = torch_spec.split("==", 1)
-        default_torchaudio_version = version_part
-    if not torchaudio_spec:
-        torchaudio_spec = f"torchaudio=={default_torchaudio_version}"
-    if not use_cuda:
-        if "+cpu" not in torchaudio_spec:
-            if "==" in torchaudio_spec:
-                name, version = torchaudio_spec.split("==", 1)
-                if "+" not in version:
-                    torchaudio_spec = f"{name}=={version}+cpu"
-            elif "@" not in torchaudio_spec:
-                torchaudio_spec = f"{torchaudio_spec}+cpu"
-    if not torchaudio_index_url and not use_cuda:
-        torchaudio_index_url = torch_index_url
-
-    for dep in _BASE_DEPENDENCIES:
-        if dep is _TORCH_PLACEHOLDER:
-            entry = {
-                "spec": torch_spec,
-                "module": dep["module"],
-            }
-            if torch_index_url:
-                entry["index_url"] = torch_index_url
-            if torch_extra_indexes:
-                entry["extra_index_urls"] = torch_extra_indexes
-            resolved.append(entry)
-        elif dep is _TORCHAUDIO_PLACEHOLDER:
-            entry = {
-                "spec": torchaudio_spec,
-                "module": dep["module"],
-            }
-            if torchaudio_index_url:
-                entry["index_url"] = torchaudio_index_url
-            if torch_extra_indexes:
-                entry["extra_index_urls"] = torch_extra_indexes
-            resolved.append(entry)
-        elif dep is _DEEPSPEED_PLACEHOLDER:
-            if skip_deepspeed:
-                emit(
-                    "log",
-                    level="info",
-                    message=(
-                        "Skipping optional dependency deepspeed; set INDEX_TTS_SKIP_DEEPSPEED=0 "
-                        "to attempt installation"
-                    ),
-                )
-            else:
-                resolved.append({"spec": deepspeed_spec, "module": dep["module"], "optional": True})
-        else:
-            resolved.append(dict(dep))
-
-    _RESOLVED_DEPENDENCIES = tuple(resolved)
-    return _RESOLVED_DEPENDENCIES
-
-
-def _install_package(
-    package_spec: str,
-    module_name: str,
-    *,
-    index_url: Optional[str] = None,
-    extra_index_urls: Optional[Sequence[str]] = None,
-):
-    emit("log", level="info", message=f"Installing dependency: {package_spec}")
-    command = [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", package_spec]
-    if index_url:
-        command.extend(["--index-url", index_url])
-    if extra_index_urls:
-        for url in extra_index_urls:
-            if url:
-                command.extend(["--extra-index-url", url])
-    subprocess.check_call(command)
-    # Purge old module cache so the new version is imported.
-    to_delete = [name for name in sys.modules if name == module_name or name.startswith(f"{module_name}.")]
-    for name in to_delete:
-        sys.modules.pop(name, None)
-    importlib.invalidate_caches()
-
-
-def ensure_package(
-    package_spec: str,
-    import_name: Optional[str] = None,
-    validator: Optional[Callable[[Any], bool]] = None,
-    *,
-    index_url: Optional[str] = None,
-    extra_index_urls: Optional[Sequence[str]] = None,
-    optional: bool = False,
-):
-    module_name = import_name or _module_name_from_spec(package_spec)
-    validator = validator or PACKAGE_VALIDATORS.get(module_name)
-    try:
-        module = importlib.import_module(module_name)
-        if validator and validator(module):
-            return
-        if validator and not validator(module):
-            raise ImportError(f"Validator failed for {module_name}")
-    except ImportError:
-        try:
-            if package_spec == INDEXTTS_MODULE_NAME:
-                install_indextts_module()
-            else:
-                _install_package(
-                    package_spec,
-                    module_name,
-                    index_url=index_url,
-                    extra_index_urls=extra_index_urls,
-                )
-        except subprocess.CalledProcessError as exc:
-            if optional:
-                emit(
-                    "log",
-                    level="warning",
-                    message=f"Optional dependency {package_spec} failed to install: {exc}",
-                )
-                return
-            raise
-        module = importlib.import_module(module_name)
-        if validator and not validator(module):
-            raise RuntimeError(f"Dependency {module_name} failed validation after installation")
-
-
-def install_indextts_module():
-    """
-    Install the IndexTTS python module by downloading a published source tree.
-    The upstream project does not provide a pip-distributable package, so we fetch
-    the repo archive and place the `indextts` package inside a cache directory.
-    """
-
-    cache_root = Path(os.environ.get("INDEX_TTS_ROOT", Path.home() / ".cache" / "index_tts"))
-    module_parent = cache_root / "python"
-    module_dir = module_parent / INDEXTTS_MODULE_NAME
-
-    if module_dir.exists():
-        if (module_dir / "__init__.py").exists() and (module_dir / "infer_v2.py").exists():
-            if str(module_parent) not in sys.path:
-                sys.path.insert(0, str(module_parent))
-            return
-        # stale/incomplete install; refresh
-        shutil.rmtree(module_dir)
-
-    module_parent.mkdir(parents=True, exist_ok=True)
-
-    configured_url = os.environ.get("INDEX_TTS_PY_MODULE_ZIP_URL")
-    if configured_url:
-        candidate_urls = (configured_url,)
-    else:
-        candidate_urls = _INDEXTTS_REPO_ZIP_CANDIDATES
-
-    emit(
-        "log",
-        level="info",
-        message="Fetching IndexTTS python sources (first-time setup, may take a minute)…",
+def _setup_hint() -> str:
+    return (
+        "Create an isolated environment from the official index-tts/index-tts source, "
+        "install its dependencies with PyTorch 2.6 or newer, then set INDEX_TTS_PYTHON "
+        "to that environment's Python executable. If the indextts package is not "
+        "installed, also set INDEX_TTS_SOURCE_DIR to the official repository root."
     )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = Path(tmpdir)
-        zip_path = tmp_path / "indextts.zip"
 
-        last_error: Optional[Exception] = None
-        for repo_zip_url in candidate_urls:
-            try:
-                emit("log", level="info", message=f"Downloading IndexTTS archive: {repo_zip_url}")
-                with urllib.request.urlopen(repo_zip_url) as response:
-                    zip_path.write_bytes(response.read())
-                break
-            except Exception as exc:  # noqa: BLE001 - surface the original failure if all candidates fail
-                last_error = exc
-                emit(
-                    "log",
-                    level="warning",
-                    message=f"Failed to download IndexTTS archive from {repo_zip_url}: {exc}",
-                )
-                zip_path.unlink(missing_ok=True)
-        else:
-            raise RuntimeError("Unable to download IndexTTS python sources") from last_error
+def _import_required(module_name: str, purpose: str):
+    try:
+        return importlib.import_module(module_name)
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            f"IndexTTS requires {purpose} in its preconfigured Python environment; "
+            f"could not import '{module_name}' ({exc}). {_setup_hint()}"
+        ) from exc
 
-        with zipfile.ZipFile(zip_path) as archive:
-            archive.extractall(tmp_path)
 
-        repo_root: Optional[Path] = None
-        for candidate in tmp_path.iterdir():
-            if candidate.is_dir() and (candidate / INDEXTTS_MODULE_NAME).exists():
-                repo_root = candidate
-                break
-        if not repo_root:
-            raise RuntimeError("Failed to locate IndexTTS repository root in downloaded archive")
+def _torch_major_minor(version: str) -> Tuple[int, int]:
+    match = re.match(r"^\s*(\d+)\.(\d+)", version)
+    if not match:
+        raise RuntimeError(f"Unable to parse the installed PyTorch version: {version!r}")
+    return int(match.group(1)), int(match.group(2))
 
-        src_module = repo_root / INDEXTTS_MODULE_NAME
-        if not src_module.exists():
+
+def require_supported_torch():
+    torch = _import_required("torch", "PyTorch 2.6 or newer")
+    version = str(getattr(torch, "__version__", ""))
+    if _torch_major_minor(version) < MINIMUM_TORCH_VERSION:
+        raise RuntimeError(
+            f"IndexTTS is configured with PyTorch {version or 'unknown'}, but VoiceForge "
+            "requires PyTorch 2.6 or newer. Upgrade Torch in the isolated environment "
+            "selected by INDEX_TTS_PYTHON before loading model code."
+        )
+    emit("log", level="info", message=f"Validated PyTorch {version}")
+    return torch
+
+
+def _configure_official_source() -> Optional[Path]:
+    configured = os.environ.get("INDEX_TTS_SOURCE_DIR", "").strip()
+    if not configured:
+        return None
+
+    source = Path(configured).expanduser().resolve()
+    if not source.is_dir():
+        raise RuntimeError(
+            f"INDEX_TTS_SOURCE_DIR does not exist or is not a directory: {source}. "
+            f"{_setup_hint()}"
+        )
+
+    if (source / "indextts" / "infer_v2.py").is_file():
+        import_root = source
+        repo_root = source
+    elif source.name == "indextts" and (source / "infer_v2.py").is_file():
+        import_root = source.parent
+        repo_root = source.parent
+    else:
+        raise RuntimeError(
+            "INDEX_TTS_SOURCE_DIR must point to the official IndexTTS repository root "
+            "containing indextts/infer_v2.py (or to that indextts package directory)."
+        )
+
+    import_root_text = str(import_root)
+    if import_root_text not in sys.path:
+        sys.path.insert(0, import_root_text)
+    os.chdir(repo_root)
+    emit("log", level="info", message=f"Using configured IndexTTS source: {repo_root}")
+    return import_root
+
+
+def import_index_inference():
+    import_root = _configure_official_source()
+    try:
+        infer_v2 = importlib.import_module("indextts.infer_v2")
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            "The official IndexTTS Python source is not available in the environment "
+            f"selected by INDEX_TTS_PYTHON ({exc}). {_setup_hint()}"
+        ) from exc
+
+    if import_root is not None:
+        module_file = Path(getattr(infer_v2, "__file__", "")).resolve()
+        try:
+            module_file.relative_to(import_root.resolve())
+        except ValueError as exc:
             raise RuntimeError(
-                f"Archive does not contain '{INDEXTTS_MODULE_NAME}' module; "
-                "check INDEX_TTS_PY_MODULE_ZIP_URL"
+                "Imported indextts from outside INDEX_TTS_SOURCE_DIR; refusing to run "
+                f"unexpected module path: {module_file}"
+            ) from exc
+
+    if not hasattr(infer_v2, "IndexTTS2"):
+        raise RuntimeError(
+            "The configured indextts.infer_v2 module does not expose IndexTTS2. "
+            "Verify that INDEX_TTS_SOURCE_DIR points to the official IndexTTS2 source."
+        )
+    return infer_v2
+
+
+def prepare_environment(models_dir: str) -> Path:
+    models_root = Path(models_dir).expanduser().resolve()
+    cache_dir = models_root / "hf_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HUB_CACHE", str(cache_dir))
+    os.environ.setdefault("HF_HOME", str(models_root / "hf_home"))
+    return models_root
+
+
+def _manifest_path(models_root: Path) -> Path:
+    return models_root / MODEL_MANIFEST_NAME
+
+
+def _expected_snapshot_path(models_root: Path) -> Path:
+    repository_cache_name = f"models--{OFFICIAL_MODEL_REPO_ID.replace('/', '--')}"
+    return (
+        models_root
+        / "hf_cache"
+        / repository_cache_name
+        / "snapshots"
+        / OFFICIAL_MODEL_REVISION
+    ).resolve()
+
+
+def _snapshot_inventory(models_root: Path, snapshot_path: Path) -> list[dict[str, Any]]:
+    inventory: list[dict[str, Any]] = []
+    resolved_models_root = models_root.resolve()
+
+    for candidate in sorted(snapshot_path.rglob("*")):
+        if not candidate.is_file():
+            continue
+        resolved_candidate = candidate.resolve()
+        try:
+            resolved_candidate.relative_to(resolved_models_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Pinned model file resolves outside the managed model directory: {candidate}"
+            ) from exc
+        inventory.append(
+            {
+                "path": candidate.relative_to(snapshot_path).as_posix(),
+                "size": candidate.stat().st_size,
+            }
+        )
+
+    if not inventory:
+        raise RuntimeError("The pinned IndexTTS model snapshot contains no files.")
+    if not any(item["path"].endswith("config.yaml") and item["size"] > 0 for item in inventory):
+        raise RuntimeError("The pinned IndexTTS model snapshot is missing a non-empty config.yaml.")
+    if not any(Path(item["path"]).suffix.lower() in MODEL_WEIGHT_SUFFIXES for item in inventory):
+        raise RuntimeError("The pinned IndexTTS model snapshot contains no recognized model weights.")
+    if sum(item["size"] for item in inventory) < MINIMUM_MODEL_BYTES:
+        raise RuntimeError("The pinned IndexTTS model snapshot is incomplete (model files are too small).")
+    return inventory
+
+
+def _validate_manifest_inventory(
+    models_root: Path, snapshot_path: Path, raw_inventory: Any
+) -> None:
+    if not isinstance(raw_inventory, list) or not raw_inventory:
+        raise RuntimeError("The IndexTTS model manifest has no completeness inventory.")
+
+    seen_paths: set[str] = set()
+    resolved_models_root = models_root.resolve()
+    for item in raw_inventory:
+        if not isinstance(item, dict):
+            raise RuntimeError("The IndexTTS model manifest contains an invalid file entry.")
+        relative_path = item.get("path")
+        expected_size = item.get("size")
+        if (
+            not isinstance(relative_path, str)
+            or not relative_path
+            or relative_path in seen_paths
+            or not isinstance(expected_size, int)
+            or isinstance(expected_size, bool)
+            or expected_size < 0
+        ):
+            raise RuntimeError("The IndexTTS model manifest contains an invalid file entry.")
+        seen_paths.add(relative_path)
+
+        logical_candidate = Path(os.path.abspath(snapshot_path / relative_path))
+        try:
+            logical_candidate.relative_to(snapshot_path)
+            logical_candidate.resolve().relative_to(resolved_models_root)
+        except ValueError as exc:
+            raise RuntimeError("The IndexTTS model manifest contains an unsafe file path.") from exc
+        if not logical_candidate.is_file() or logical_candidate.stat().st_size != expected_size:
+            raise RuntimeError(
+                f"Pinned IndexTTS model file is missing or incomplete: {relative_path}"
             )
 
-        if module_dir.exists():
-            shutil.rmtree(module_dir)
-
-        shutil.copytree(src_module, module_dir, dirs_exist_ok=True)
-
-    # Ensure the package is importable on subsequent runs.
-    if str(module_parent) not in sys.path:
-        sys.path.insert(0, str(module_parent))
-
-    emit("log", level="info", message="IndexTTS python module installed")
+    actual_inventory = _snapshot_inventory(models_root, snapshot_path)
+    actual_files = {item["path"]: item["size"] for item in actual_inventory}
+    expected_files = {item["path"]: item["size"] for item in raw_inventory}
+    if actual_files != expected_files:
+        raise RuntimeError("The pinned IndexTTS model snapshot does not match its manifest.")
 
 
-def ensure_runtime_dependencies():
-    global dependencies_ready
-    if dependencies_ready:
-        return
-    for dep in _get_additional_dependencies():
-        ensure_package(
-            dep["spec"],
-            dep.get("module"),
-            dep.get("validator"),
-            index_url=dep.get("index_url"),
-            extra_index_urls=dep.get("extra_index_urls"),
-            optional=dep.get("optional", False),
+def _write_model_manifest(models_root: Path, snapshot_path: Path) -> None:
+    resolved_snapshot = snapshot_path.resolve()
+    try:
+        relative_snapshot = resolved_snapshot.relative_to(models_root)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Pinned model snapshot resolved outside the managed model directory: {resolved_snapshot}"
+        ) from exc
+
+    expected_snapshot = _expected_snapshot_path(models_root)
+    if resolved_snapshot != expected_snapshot:
+        raise RuntimeError(
+            "Pinned model download did not resolve to the expected Hugging Face revision path."
         )
-    dependencies_ready = True
+
+    manifest = {
+        "manifest_version": MODEL_MANIFEST_VERSION,
+        "repo_id": OFFICIAL_MODEL_REPO_ID,
+        "revision": OFFICIAL_MODEL_REVISION,
+        "snapshot_path": relative_snapshot.as_posix(),
+        "files": _snapshot_inventory(models_root, resolved_snapshot),
+    }
+    manifest_path = _manifest_path(models_root)
+    temporary_path = manifest_path.with_suffix(".tmp")
+    temporary_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    temporary_path.replace(manifest_path)
 
 
-def find_config(models_dir: str) -> Tuple[str, str]:
-    for root, _dirs, files in os.walk(models_dir):
-        if "config.yaml" in files:
-            cfg_path = os.path.join(root, "config.yaml")
-            return cfg_path, root
-    raise FileNotFoundError("Unable to locate config.yaml under models directory")
+def _load_pinned_snapshot(models_dir: str) -> Path:
+    models_root = prepare_environment(models_dir)
+    manifest_path = _manifest_path(models_root)
+    if not manifest_path.is_file():
+        raise RuntimeError(
+            "Pinned IndexTTS models have not been downloaded by this VoiceForge version. "
+            "Use Download models before loading or synthesizing."
+        )
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("The IndexTTS model manifest is unreadable; download models again.") from exc
+
+    if (
+        manifest.get("repo_id") != OFFICIAL_MODEL_REPO_ID
+        or manifest.get("revision") != OFFICIAL_MODEL_REVISION
+    ):
+        raise RuntimeError(
+            "The installed IndexTTS model snapshot is not the pinned official revision; "
+            "download models again."
+        )
+
+    relative_snapshot = manifest.get("snapshot_path")
+    if not isinstance(relative_snapshot, str) or not relative_snapshot:
+        raise RuntimeError("The IndexTTS model manifest does not contain a snapshot path.")
+
+    snapshot_path = (models_root / relative_snapshot).resolve()
+    try:
+        snapshot_path.relative_to(models_root)
+    except ValueError as exc:
+        raise RuntimeError("The IndexTTS model manifest points outside the managed directory.") from exc
+    if not snapshot_path.is_dir():
+        raise RuntimeError("The pinned IndexTTS model snapshot is missing; download models again.")
+
+    if snapshot_path != _expected_snapshot_path(models_root):
+        raise RuntimeError(
+            "The IndexTTS model manifest does not point to the pinned Hugging Face revision path."
+        )
+
+    manifest_version = manifest.get("manifest_version")
+    if manifest_version == MODEL_MANIFEST_VERSION:
+        _validate_manifest_inventory(models_root, snapshot_path, manifest.get("files"))
+    elif manifest_version is None and "files" not in manifest:
+        # Version 1 manifests were written only after snapshot_download completed.
+        # Rebuild the deterministic inventory so existing trusted downloads survive
+        # a VoiceForge restart/upgrade without another multi-gigabyte download.
+        _write_model_manifest(models_root, snapshot_path)
+    else:
+        raise RuntimeError("The IndexTTS model manifest version is unsupported; download models again.")
+    return snapshot_path
 
 
-def prepare_environment(models_dir: str):
-    os.makedirs(models_dir, exist_ok=True)
-    cache_dir = os.path.join(models_dir, "hf_cache")
-    os.environ.setdefault("HF_HUB_CACHE", cache_dir)
-    os.environ.setdefault("HF_HOME", cache_dir)
-    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+def find_config(snapshot_path: Path) -> Tuple[str, str]:
+    config_paths = sorted(snapshot_path.rglob("config.yaml"))
+    if not config_paths:
+        raise FileNotFoundError(
+            f"Unable to locate config.yaml in pinned model snapshot {snapshot_path}"
+        )
+    config_path = config_paths[0]
+    return str(config_path), str(config_path.parent)
 
 
-def handle_download(args):
-    ensure_package("indextts")
-    ensure_package("huggingface_hub")
-    ensure_package("modelscope")
-    ensure_package("soundfile")
-    ensure_package("torch")
-    prepare_environment(args.models_dir)
-
-    emit("progress", progress=0.05, message="Downloading IndexTTS models…")
-    from huggingface_hub import snapshot_download
-
-    snapshot_download(
-        repo_id=args.repo_id,
-        local_dir=args.models_dir,
-        local_dir_use_symlinks=False,
-        resume_download=True,
+def handle_download(args) -> None:
+    models_root = prepare_environment(args.models_dir)
+    huggingface_hub = _import_required(
+        "huggingface_hub",
+        "huggingface_hub for downloading the pinned official model snapshot",
     )
-    emit("progress", progress=0.95, message="Download verified")
-    emit("complete", progress=1.0, message="Download complete", output_path=args.models_dir)
+    snapshot_download = getattr(huggingface_hub, "snapshot_download", None)
+    if not callable(snapshot_download):
+        raise RuntimeError("The installed huggingface_hub does not provide snapshot_download.")
+
+    emit(
+        "progress",
+        progress=0.05,
+        message=f"Downloading {OFFICIAL_MODEL_REPO_ID} at {OFFICIAL_MODEL_REVISION[:12]}…",
+    )
+    snapshot = Path(
+        snapshot_download(
+            repo_id=OFFICIAL_MODEL_REPO_ID,
+            revision=OFFICIAL_MODEL_REVISION,
+            cache_dir=str(models_root / "hf_cache"),
+        )
+    )
+    find_config(snapshot)
+    _write_model_manifest(models_root, snapshot)
+    emit("progress", progress=0.95, message="Pinned model snapshot verified")
+    emit("complete", progress=1.0, message="Download complete", output_path=str(snapshot))
 
 
 def init_model(models_dir: str):
-    ensure_package("indextts")
-    ensure_runtime_dependencies()
-    import indextts.infer_v2 as infer_v2
-
-    prepare_environment(models_dir)
-    cfg_path, checkpoint_dir = find_config(models_dir)
+    require_supported_torch()
+    infer_v2 = import_index_inference()
+    snapshot_path = _load_pinned_snapshot(models_dir)
+    cfg_path, checkpoint_dir = find_config(snapshot_path)
     emit("progress", progress=0.15, message="Initializing IndexTTS2")
 
     use_fp16 = is_truthy(os.environ.get("INDEX_TTS_USE_FP16"))
-    use_cuda_kernel = os.environ.get("INDEX_TTS_USE_CUDA_KERNEL")
+    # The optional fused BigVGAN kernel needs a local MSVC/CUDA build toolchain
+    # on Windows. Keep it opt-in so a normal prebuilt PyTorch installation does
+    # not attempt a JIT compile (and emit a misleading missing-cl warning).
+    use_cuda_kernel = is_truthy(os.environ.get("INDEX_TTS_USE_CUDA_KERNEL"))
     use_deepspeed = is_truthy(os.environ.get("INDEX_TTS_ENABLE_DEEPSPEED"))
-    hybrid_mode = is_truthy(os.environ.get("INDEX_TTS_HYBRID_MODE"))
     device_override = os.environ.get("INDEX_TTS_DEVICE")
 
-    if use_cuda_kernel is not None:
-        use_cuda_kernel = is_truthy(use_cuda_kernel)
-
-    tts = infer_v2.IndexTTS2(
+    return infer_v2.IndexTTS2(
         cfg_path=cfg_path,
         model_dir=checkpoint_dir,
         use_fp16=use_fp16,
         use_cuda_kernel=use_cuda_kernel,
         use_deepspeed=use_deepspeed,
-        hybrid_model_device=hybrid_mode,
         device=device_override,
     )
-    return tts
 
 
-def handle_load(args):
+def handle_load(args) -> None:
     tts = init_model(args.models_dir)
     try:
-        tts.load_models()
-        emit("progress", progress=0.6, message="Warm loading completed")
+        # The pinned official IndexTTS2 constructor loads and validates all
+        # model components. It does not expose a separate load_models method.
+        emit("progress", progress=0.9, message="Runtime and model initialization completed")
     finally:
-        # free CUDA / GPU memory if used
-        if hasattr(tts, "gpt"):
-            del tts
+        del tts
     emit("complete", progress=1.0, message="Models loaded")
 
 
-def handle_synthesize(args):
+def handle_synthesize(args) -> None:
     if not os.path.exists(args.voice):
         raise FileNotFoundError(f"Voice prompt not found: {args.voice}")
     if not os.path.exists(args.text):
         raise FileNotFoundError(f"Text file not found: {args.text}")
 
-    with open(args.text, "r", encoding="utf-8") as f:
-        text = f.read().strip()
+    with open(args.text, "r", encoding="utf-8") as text_file:
+        text = text_file.read().strip()
     if not text:
         raise ValueError("Text input is empty")
 
     tts = init_model(args.models_dir)
-    diffusion_steps = max(1, int(args.steps))
-    inference_cfg_rate = float(os.environ.get("INDEX_TTS_INFERENCE_CFG_RATE", "0.7"))
-    interval_silence = os.environ.get("INDEX_TTS_INTERVAL_SILENCE")
-    if interval_silence is not None:
-        try:
-            interval_silence = int(interval_silence)
-        except ValueError:
-            interval_silence = None
-
     def gr_progress(value, desc=None):
         try:
             emit("progress", progress=float(value), message=desc)
@@ -493,40 +422,31 @@ def handle_synthesize(args):
             pass
 
     tts.gr_progress = gr_progress
-
     emit("progress", progress=0.25, message="Running synthesis")
     tts.infer(
         spk_audio_prompt=args.voice,
         text=text,
         output_path=args.output,
         verbose=True,
-        diffusion_steps=diffusion_steps,
-        inference_cfg_rate=inference_cfg_rate,
-        interval_silence=interval_silence if interval_silence is not None else 200,
     )
     emit("complete", progress=1.0, message="Synthesis complete", output_path=args.output)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="IndexTTS worker")
     parser.add_argument("--root-dir", required=True)
     parser.add_argument("--models-dir", required=True)
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    download_parser = subparsers.add_parser("download")
-    download_parser.add_argument("--repo-id", required=True)
-
+    subparsers.add_parser("download")
     subparsers.add_parser("load")
 
     synth_parser = subparsers.add_parser("synthesize")
     synth_parser.add_argument("--voice", required=True)
     synth_parser.add_argument("--text", required=True)
     synth_parser.add_argument("--output", required=True)
-    synth_parser.add_argument("--steps", type=int, default=25)
 
     args = parser.parse_args()
-
     try:
         if args.command == "download":
             handle_download(args)

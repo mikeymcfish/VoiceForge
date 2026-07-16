@@ -4,29 +4,132 @@
 #   REPO_URL=https://github.com/mikeymcfish/VoiceForge.git
 #   APP_DIR=$HOME/VoiceForge          # defaults to this script's directory
 #   PORT=5000
-#   NODE_MAJOR=20
+#   NODE_MAJOR=22
 #   SESSION_SECRET=...           # auto-generated if absent
 #   HUGGINGFACE_API_TOKEN=...
 #   OLLAMA_BASE_URL=...
-#   INDEX_TTS_REPO=...
-#   INDEX_TTS_PYTHON=...
+#   INDEX_TTS_PYTHON=/path/to/indextts-env/bin/python
+#   INDEX_TTS_SOURCE_DIR=/path/to/official-index-tts
 #   INSTALL_QWEN_TTS_REQUIREMENTS=...
-#   QWEN_TTS_ENABLE_CUDA=1
+#   QWEN_TTS_PYTHON=/path/to/qwen-env/bin/python
+#   QWEN_TTS_VENV_DIR=$APP_DIR/.venv-qwen-tts
+#   QWEN_TTS_DEVICE=cuda:0
+#   QWEN_TTS_USE_FLASH_ATTENTION=1
+#   INSTALL_MOSS_TTS_REQUIREMENTS=...
+#   MOSS_TTS_PYTHON=/path/to/moss-env/bin/python
+#   MOSS_TTS_VENV_DIR=$APP_DIR/.venv-moss-tts
 #   USE_PM2=1                    # if set, install pm2 and daemonize
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
-SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
 
 log() { echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+die() {
+  log "ERROR: $*"
+  exit 1
+}
+resolve_executable() {
+  local candidate="$1"
+  if [[ "${candidate}" == */* ]]; then
+    [ -x "${candidate}" ] || return 1
+    (
+      cd "$(dirname "${candidate}")"
+      printf '%s/%s\n' "$(pwd -P)" "$(basename "${candidate}")"
+    )
+  else
+    command -v "${candidate}"
+  fi
+}
+python_environment_id() {
+  local python_bin="$1"
+  "${python_bin}" -c 'import os, sys; print(os.path.realpath(sys.prefix))'
+}
+is_isolated_python_environment() {
+  local python_bin="$1"
+  "${python_bin}" -c 'import os, sys; isolated = sys.prefix != sys.base_prefix or os.path.isdir(os.path.join(sys.prefix, "conda-meta")); raise SystemExit(0 if isolated else 1)'
+}
+assert_isolated_tts_pythons() {
+  local index_python="${INDEX_TTS_PYTHON:-}"
+  local qwen_python="${QWEN_TTS_PYTHON:-}"
+  local moss_python="${MOSS_TTS_PYTHON:-}"
+  local index_environment
+  local qwen_environment
+  local moss_environment
+
+  if [[ -n "${index_python}" ]]; then
+    index_python="$(resolve_executable "${index_python}")" || die "INDEX_TTS_PYTHON is not executable: ${INDEX_TTS_PYTHON}"
+    index_environment="$(python_environment_id "${index_python}")" || die "Unable to inspect INDEX_TTS_PYTHON."
+  fi
+  if [[ -n "${qwen_python}" ]]; then
+    qwen_python="$(resolve_executable "${qwen_python}")" || die "QWEN_TTS_PYTHON is not executable: ${QWEN_TTS_PYTHON}"
+    qwen_environment="$(python_environment_id "${qwen_python}")" || die "Unable to inspect QWEN_TTS_PYTHON."
+  fi
+  if [[ -n "${moss_python}" ]]; then
+    moss_python="$(resolve_executable "${moss_python}")" || die "MOSS_TTS_PYTHON is not executable: ${MOSS_TTS_PYTHON}"
+    moss_environment="$(python_environment_id "${moss_python}")" || die "Unable to inspect MOSS_TTS_PYTHON."
+  fi
+  [[ -z "${index_environment:-}" || -z "${qwen_environment:-}" || "${index_environment}" != "${qwen_environment}" ]] || die "INDEX_TTS_PYTHON and QWEN_TTS_PYTHON must use separate environments."
+  [[ -z "${index_environment:-}" || -z "${moss_environment:-}" || "${index_environment}" != "${moss_environment}" ]] || die "INDEX_TTS_PYTHON and MOSS_TTS_PYTHON must use separate environments."
+  [[ -z "${qwen_environment:-}" || -z "${moss_environment:-}" || "${qwen_environment}" != "${moss_environment}" ]] || die "QWEN_TTS_PYTHON and MOSS_TTS_PYTHON must use separate environments."
+}
+validate_tts_configuration() {
+  local configured_python
+  local resolved_python
+
+  if [[ -n "${INDEX_TTS_PYTHON:-}" ]]; then
+    configured_python="${INDEX_TTS_PYTHON}"
+    resolved_python="$(resolve_executable "${configured_python}")" || die "INDEX_TTS_PYTHON is not executable: ${configured_python}"
+    python_environment_id "${resolved_python}" >/dev/null || die "INDEX_TTS_PYTHON does not point to a working Python interpreter."
+    INDEX_TTS_PYTHON="${resolved_python}"
+  fi
+  if [[ -n "${QWEN_TTS_PYTHON:-}" ]]; then
+    configured_python="${QWEN_TTS_PYTHON}"
+    resolved_python="$(resolve_executable "${configured_python}")" || die "QWEN_TTS_PYTHON is not executable: ${configured_python}"
+    python_environment_id "${resolved_python}" >/dev/null || die "QWEN_TTS_PYTHON does not point to a working Python interpreter."
+    QWEN_TTS_PYTHON="${resolved_python}"
+  fi
+  if [[ -n "${MOSS_TTS_PYTHON:-}" ]]; then
+    configured_python="${MOSS_TTS_PYTHON}"
+    resolved_python="$(resolve_executable "${configured_python}")" || die "MOSS_TTS_PYTHON is not executable: ${configured_python}"
+    python_environment_id "${resolved_python}" >/dev/null || die "MOSS_TTS_PYTHON does not point to a working Python interpreter."
+    MOSS_TTS_PYTHON="${resolved_python}"
+  fi
+  if [[ -n "${INDEX_TTS_SOURCE_DIR:-}" ]]; then
+    [[ -f "${INDEX_TTS_SOURCE_DIR}/indextts/infer_v2.py" ]] || \
+      die "INDEX_TTS_SOURCE_DIR must be the official IndexTTS repository root containing indextts/infer_v2.py."
+    INDEX_TTS_SOURCE_DIR="$(cd "${INDEX_TTS_SOURCE_DIR}" && pwd -P)"
+  fi
+  assert_isolated_tts_pythons
+}
 trim() {
   local var="$1"
   var="${var#"${var%%[![:space:]]*}"}"
   var="${var%"${var##*[![:space:]]}"}"
   printf '%s' "$var"
+}
+read_env_txt_value() {
+  local wanted_key="$1"
+  local line
+  local key
+  local value
+  local found=""
+  [[ -f "env.txt" ]] || return 0
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    if [[ "${line}" == export\ * ]]; then
+      line="${line#export }"
+    fi
+    [[ "${line}" != *=* ]] && continue
+    key="$(trim "${line%%=*}")"
+    [[ "${key}" == "${wanted_key}" ]] || continue
+    value="$(trim "${line#*=}")"
+    found="${value}"
+  done < env.txt
+  printf '%s' "${found}"
 }
 prompt_yes_no() {
   local prompt="$1"
@@ -70,62 +173,26 @@ is_truthy() {
     *) return 1 ;;
   esac
 }
-install_tts_requirements() {
-  local python_bin="${PYTHON_BIN:-python3}"
-  if [[ "${python_bin}" == */* ]]; then
-    if [ ! -x "${python_bin}" ]; then
-      log "Python executable ${python_bin} not found; skipping IndexTTS dependency installation."
-      return 0
-    fi
-  elif command -v "${python_bin}" >/dev/null 2>&1; then
-    python_bin="$(command -v "${python_bin}")"
-  else
-    log "Python executable ${python_bin} not found; skipping IndexTTS dependency installation."
-    return 0
-  fi
-  log "Installing IndexTTS python dependencies with ${python_bin}..."
-  "${python_bin}" - <<'PY'
-import sys
-import traceback
-import subprocess
-
-try:
-    from server.python import index_tts_worker as worker
-    for spec in ("indextts", "huggingface_hub", "modelscope", "soundfile", "torch"):
-        worker.ensure_package(spec)
-    worker.ensure_runtime_dependencies()
-except ModuleNotFoundError as exc:
-    if exc.name == "tensorflow":
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", "tensorflow==2.17.0"])
-        except subprocess.CalledProcessError:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", "tensorflow"])
-        worker.ensure_package("keras==2.13.1", "keras")
-        worker.ensure_runtime_dependencies()
-    else:
-        traceback.print_exc()
-        sys.exit(1)
-except Exception:
-    traceback.print_exc()
-    sys.exit(1)
-PY
-  log "IndexTTS dependencies installed."
-}
 install_qwen_tts_requirements() {
-  local python_bin="${PYTHON_BIN:-python3}"
-  if [[ "${python_bin}" == */* ]]; then
-    if [ ! -x "${python_bin}" ]; then
-      log "Python executable ${python_bin} not found; skipping Qwen3 TTS dependency installation."
-      return 0
+  local qwen_venv="${QWEN_TTS_VENV_DIR:-${APP_DIR}/.venv-qwen-tts}"
+  if [[ -z "${QWEN_TTS_PYTHON:-}" ]]; then
+    if [ ! -x "${qwen_venv}/bin/python3" ]; then
+      log "Creating isolated Qwen3 TTS environment at ${qwen_venv}..."
+      python3 -m venv "${qwen_venv}"
+    else
+      log "Reusing isolated Qwen3 TTS environment at ${qwen_venv}."
     fi
-  elif command -v "${python_bin}" >/dev/null 2>&1; then
-    python_bin="$(command -v "${python_bin}")"
-  else
-    log "Python executable ${python_bin} not found; skipping Qwen3 TTS dependency installation."
-    return 0
+    QWEN_TTS_PYTHON="${qwen_venv}/bin/python3"
   fi
-  log "Installing Qwen3 TTS python dependencies with ${python_bin}..."
-  "${python_bin}" - <<'PY'
+
+  validate_tts_configuration
+  is_isolated_python_environment "${QWEN_TTS_PYTHON}" || \
+    die "QWEN_TTS_PYTHON must point to a virtual or Conda environment, not the system Python."
+  log "Installing pinned Qwen3 TTS dependencies only in ${QWEN_TTS_PYTHON}..."
+  "${QWEN_TTS_PYTHON}" -m pip install --upgrade pip >/dev/null
+  "${QWEN_TTS_PYTHON}" -m pip install --upgrade --no-cache-dir "qwen-tts==0.1.1"
+  log "Validating the isolated Qwen3 TTS environment..."
+  "${QWEN_TTS_PYTHON}" - <<'PY'
 import sys
 import traceback
 
@@ -137,6 +204,44 @@ except Exception:
     sys.exit(1)
 PY
   log "Qwen3 TTS dependencies installed."
+}
+install_moss_tts_requirements() {
+  local moss_venv="${MOSS_TTS_VENV_DIR:-${APP_DIR}/.venv-moss-tts}"
+  if [[ -z "${MOSS_TTS_PYTHON:-}" ]]; then
+    if [ ! -x "${moss_venv}/bin/python3" ]; then
+      log "Creating isolated MOSS-TTS v1.5 environment at ${moss_venv}..."
+      python3 -m venv "${moss_venv}"
+    else
+      log "Reusing isolated MOSS-TTS environment at ${moss_venv}."
+    fi
+    MOSS_TTS_PYTHON="${moss_venv}/bin/python3"
+  fi
+
+  validate_tts_configuration
+  is_isolated_python_environment "${MOSS_TTS_PYTHON}" || \
+    die "MOSS_TTS_PYTHON must point to a virtual or Conda environment, not the system Python."
+  log "Installing pinned MOSS-TTS v1.5 dependencies only in ${MOSS_TTS_PYTHON}..."
+  "${MOSS_TTS_PYTHON}" -m pip install --upgrade pip >/dev/null
+  "${MOSS_TTS_PYTHON}" -m pip install --upgrade --no-cache-dir \
+    --extra-index-url https://download.pytorch.org/whl/cu128 \
+    "torch==2.9.1" "torchaudio==2.9.1" "torchcodec==0.8.1" \
+    "transformers==5.0.0" "safetensors==0.6.2" "numpy==2.1.0" \
+    "orjson==3.11.4" "tqdm==4.67.1" "PyYAML==6.0.3" "einops==0.8.1" \
+    "scipy==1.16.2" "librosa==0.11.0" "tiktoken==0.12.0" \
+    "soundfile==0.13.1" "huggingface_hub"
+  log "Validating the isolated MOSS-TTS environment..."
+  "${MOSS_TTS_PYTHON}" - <<'PY'
+from importlib import metadata
+import torch
+import torchaudio
+import torchcodec
+import transformers
+
+assert metadata.version("transformers") == "5.0.0"
+assert tuple(map(int, torch.__version__.split("+", 1)[0].split(".")[:2])) >= (2, 9)
+print(f"MOSS-TTS runtime ready: torch={torch.__version__}, transformers={transformers.__version__}")
+PY
+  log "MOSS-TTS v1.5 dependencies installed."
 }
 install_ollama() {
   if have ollama; then
@@ -153,8 +258,7 @@ export DEBIAN_FRONTEND=noninteractive
 REPO_URL="${REPO_URL:-https://github.com/mikeymcfish/VoiceForge.git}"
 APP_DIR="${APP_DIR:-$SCRIPT_DIR}"
 PORT="${PORT:-5000}"
-NODE_MAJOR="${NODE_MAJOR:-20}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+NODE_MAJOR="${NODE_MAJOR:-22}"
 
 log "Installing base OS deps..."
 apt-get update -y
@@ -179,72 +283,49 @@ if [ "$need_node" = true ]; then
   log "Node installed: $(node -v); npm $(npm -v)"
 fi
 
-# Fetch code (idempotent): pull if exists, else bootstrap into APP_DIR.
-if [ -d "${APP_DIR}/.git" ]; then
-  log "Repo exists at ${APP_DIR}; pulling latest..."
-  git -C "${APP_DIR}" fetch --all --prune
-  git -C "${APP_DIR}" reset --hard origin/HEAD || true
-  git -C "${APP_DIR}" pull --ff-only || true
+# Fetch code without rewriting local work. Dirty checkouts are preserved as-is;
+# clean checkouts may advance only through their configured upstream.
+if [ -e "${APP_DIR}/.git" ]; then
+  if [[ -n "$(git -C "${APP_DIR}" status --porcelain --untracked-files=normal)" ]]; then
+    log "Repo at ${APP_DIR} has local changes; preserving them and skipping the update."
+  elif git -C "${APP_DIR}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+    log "Clean repo found at ${APP_DIR}; applying a fast-forward-only update..."
+    git -C "${APP_DIR}" pull --ff-only --prune
+  else
+    log "Repo at ${APP_DIR} has no configured upstream; preserving it and skipping the update."
+  fi
 else
   mkdir -p "${APP_DIR}"
   log "Bootstrapping ${REPO_URL} into ${APP_DIR}..."
   if [[ -z "$(find "${APP_DIR}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     git clone "${REPO_URL}" "${APP_DIR}"
   else
-    tmp_clone_root="$(mktemp -d)"
-    git clone "${REPO_URL}" "${tmp_clone_root}/repo"
-    if [[ "${SCRIPT_PATH}" == "${APP_DIR}/"* ]]; then
-      find "${APP_DIR}" -mindepth 1 -maxdepth 1 ! -path "${SCRIPT_PATH}" -exec rm -rf {} +
-    else
-      find "${APP_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-    fi
-    cp -a "${tmp_clone_root}/repo/." "${APP_DIR}/"
-    rm -rf "${tmp_clone_root}"
+    die "${APP_DIR} is non-empty and is not a Git checkout. Choose an empty APP_DIR or clone VoiceForge there first; no files were changed."
   fi
 fi
 
 cd "${APP_DIR}"
 
-VENV_DIR="${APP_DIR}/.venv"
-if [ ! -d "${VENV_DIR}" ]; then
-  log "Creating Python virtual environment at ${VENV_DIR}..."
-  python3 -m venv "${VENV_DIR}"
-else
-  log "Reusing Python virtual environment at ${VENV_DIR}."
+# Load legacy backend settings before any optional Python installation. Explicit
+# process environment variables take precedence over env.txt.
+if [[ -f "env.txt" ]]; then
+  [[ -n "${INDEX_TTS_PYTHON:-}" ]] || INDEX_TTS_PYTHON="$(read_env_txt_value "INDEX_TTS_PYTHON")"
+  [[ -n "${INDEX_TTS_SOURCE_DIR:-}" ]] || INDEX_TTS_SOURCE_DIR="$(read_env_txt_value "INDEX_TTS_SOURCE_DIR")"
+  [[ -n "${QWEN_TTS_PYTHON:-}" ]] || QWEN_TTS_PYTHON="$(read_env_txt_value "QWEN_TTS_PYTHON")"
+  [[ -n "${MOSS_TTS_PYTHON:-}" ]] || MOSS_TTS_PYTHON="$(read_env_txt_value "MOSS_TTS_PYTHON")"
 fi
 
-PYTHON_BIN="${VENV_DIR}/bin/python3"
-if [ ! -x "${PYTHON_BIN}" ]; then
-  log "Python virtual environment is missing an executable at ${PYTHON_BIN}."
-  exit 1
+if is_truthy "${INSTALL_TTS_REQUIREMENTS:-}"; then
+  die "Automatic IndexTTS installation was removed. Prepare an isolated official IndexTTS environment, then set INDEX_TTS_PYTHON and INDEX_TTS_SOURCE_DIR."
 fi
-
-log "Upgrading pip inside the virtual environment..."
-"${PYTHON_BIN}" -m pip install --upgrade pip >/dev/null
-
-log "Installing Python helper utilities in the virtual environment..."
-"${PYTHON_BIN}" -m pip install --no-cache-dir hf_transfer >/dev/null
-
-if [[ -z "${INDEX_TTS_PYTHON:-}" ]]; then
-  INDEX_TTS_PYTHON="${PYTHON_BIN}"
-fi
+validate_tts_configuration
 
 log "Installing npm dependencies..."
 if [ -f package-lock.json ]; then
-  npm ci || { log "npm ci failed; falling back to npm install"; npm install; }
+  npm ci
 else
+  log "package-lock.json is absent; using npm install to create one."
   npm install
-fi
-
-if [[ -z "${INSTALL_TTS_REQUIREMENTS:-}" ]]; then
-  if prompt_yes_no "Install IndexTTS Python dependencies now?" "n"; then
-    INSTALL_TTS_REQUIREMENTS="yes"
-  else
-    INSTALL_TTS_REQUIREMENTS="no"
-  fi
-fi
-if is_truthy "${INSTALL_TTS_REQUIREMENTS:-}"; then
-  install_tts_requirements
 fi
 
 if [[ -z "${INSTALL_QWEN_TTS_REQUIREMENTS:-}" ]]; then
@@ -257,6 +338,17 @@ fi
 if is_truthy "${INSTALL_QWEN_TTS_REQUIREMENTS:-}"; then
   install_qwen_tts_requirements
 fi
+if [[ -z "${INSTALL_MOSS_TTS_REQUIREMENTS:-}" ]]; then
+  if prompt_yes_no "Install MOSS-TTS v1.5 Python dependencies now?" "n"; then
+    INSTALL_MOSS_TTS_REQUIREMENTS="yes"
+  else
+    INSTALL_MOSS_TTS_REQUIREMENTS="no"
+  fi
+fi
+if is_truthy "${INSTALL_MOSS_TTS_REQUIREMENTS:-}"; then
+  install_moss_tts_requirements
+fi
+assert_isolated_tts_pythons
 
 if [[ -z "${INSTALL_OLLAMA:-}" ]]; then
   if prompt_yes_no "Install Ollama on this machine?" "n"; then
@@ -279,9 +371,7 @@ if [[ -z "${SESSION_SECRET:-}" && -f "env.txt" ]]; then
 fi
 
 if [[ -z "${SESSION_SECRET:-}" ]]; then
-  if [[ -n "${PYTHON_BIN:-}" && -x "${PYTHON_BIN}" ]]; then
-    SESSION_SECRET="$("${PYTHON_BIN}" -c 'import secrets; print(secrets.token_hex(32))')"
-  elif have python3; then
+  if have python3; then
     SESSION_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
   else
     SESSION_SECRET="$(openssl rand -hex 32)"
@@ -299,8 +389,10 @@ declare -A env_values=(
 )
 [[ -n "${HUGGINGFACE_API_TOKEN:-}" ]] && env_values["HUGGINGFACE_API_TOKEN"]="${HUGGINGFACE_API_TOKEN}"
 [[ -n "${OLLAMA_BASE_URL:-}" ]] && env_values["OLLAMA_BASE_URL"]="${OLLAMA_BASE_URL}"
-[[ -n "${INDEX_TTS_REPO:-}" ]] && env_values["INDEX_TTS_REPO"]="${INDEX_TTS_REPO}"
 [[ -n "${INDEX_TTS_PYTHON:-}" ]] && env_values["INDEX_TTS_PYTHON"]="${INDEX_TTS_PYTHON}"
+[[ -n "${INDEX_TTS_SOURCE_DIR:-}" ]] && env_values["INDEX_TTS_SOURCE_DIR"]="${INDEX_TTS_SOURCE_DIR}"
+[[ -n "${QWEN_TTS_PYTHON:-}" ]] && env_values["QWEN_TTS_PYTHON"]="${QWEN_TTS_PYTHON}"
+[[ -n "${MOSS_TTS_PYTHON:-}" ]] && env_values["MOSS_TTS_PYTHON"]="${MOSS_TTS_PYTHON}"
 [[ -n "${HF_PROVIDER:-}" ]] && env_values["HF_PROVIDER"]="${HF_PROVIDER}"
 [[ -n "${LLM_DEBUG:-}" ]] && env_values["LLM_DEBUG"]="${LLM_DEBUG}"
 [[ -n "${LLM_DEBUG_FULL:-}" ]] && env_values["LLM_DEBUG_FULL"]="${LLM_DEBUG_FULL}"
@@ -326,6 +418,18 @@ if [[ -f "env.txt" ]]; then
     fi
   done < env.txt
 fi
+
+# env.txt may provide backend interpreter settings. Normalize and validate the
+# final merged values before persisting or starting the application.
+INDEX_TTS_PYTHON="${env_values[INDEX_TTS_PYTHON]:-}"
+INDEX_TTS_SOURCE_DIR="${env_values[INDEX_TTS_SOURCE_DIR]:-}"
+QWEN_TTS_PYTHON="${env_values[QWEN_TTS_PYTHON]:-}"
+MOSS_TTS_PYTHON="${env_values[MOSS_TTS_PYTHON]:-}"
+validate_tts_configuration
+[[ -n "${INDEX_TTS_PYTHON}" ]] && env_values["INDEX_TTS_PYTHON"]="${INDEX_TTS_PYTHON}"
+[[ -n "${INDEX_TTS_SOURCE_DIR}" ]] && env_values["INDEX_TTS_SOURCE_DIR"]="${INDEX_TTS_SOURCE_DIR}"
+[[ -n "${QWEN_TTS_PYTHON}" ]] && env_values["QWEN_TTS_PYTHON"]="${QWEN_TTS_PYTHON}"
+[[ -n "${MOSS_TTS_PYTHON}" ]] && env_values["MOSS_TTS_PYTHON"]="${MOSS_TTS_PYTHON}"
 
 {
   for key in "${!env_values[@]}"; do

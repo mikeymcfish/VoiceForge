@@ -101,7 +101,7 @@ export type FileUploadResponse = z.infer<typeof fileUploadResponseSchema>;
 
 // Processing Request
 export const processTextRequestSchema = z.object({
-  text: z.string(),
+  text: z.string().min(1).max(5_000_000),
   config: processingConfigSchema,
 });
 
@@ -165,6 +165,8 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
     payload: z.object({
       processedText: z.string(),
       totalChunks: z.number(),
+      failedChunks: z.number().optional(),
+      failedChunkIndexes: z.array(z.number()).optional(),
       totalInputTokens: z.number().optional(),
       totalOutputTokens: z.number().optional(),
       totalCost: z.number().optional(),
@@ -184,7 +186,7 @@ export type WSMessage = z.infer<typeof wsMessageSchema>;
 // PDF OCR integration schemas
 export const pdfOcrJobStatusSchema = z.object({
   id: z.string(),
-  status: z.enum(["queued", "running", "completed", "failed"]),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
   progress: z.number().min(0).max(100),
   message: z.string().optional(),
   pageCount: z.number().optional(),
@@ -261,10 +263,9 @@ export type TtsDownloadStatus = z.infer<typeof ttsDownloadStatusSchema>;
 
 export const ttsJobStatusSchema = z.object({
   id: z.string(),
-  status: z.enum(["queued", "running", "completed", "failed"]),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
   progress: z.number().min(0).max(100),
   message: z.string().optional(),
-  steps: z.number().optional(),
   outputFile: z.string().optional(),
   voiceFileName: z.string().optional(),
   textFileName: z.string().optional(),
@@ -279,6 +280,7 @@ export const ttsStatusSchema = z.object({
   downloadStatus: ttsDownloadStatusSchema,
   loadStatus: ttsDownloadStatusSchema,
   modelsReady: z.boolean(),
+  runtimeConfigured: z.boolean(),
   modelsPath: z.string(),
   lastDownloadError: z.string().optional(),
   lastLoadError: z.string().optional(),
@@ -321,7 +323,7 @@ export type VibevoiceSetupStatus = z.infer<typeof vibevoiceSetupStatusSchema>;
 
 export const vibevoiceJobStatusSchema = z.object({
   id: z.string(),
-  status: z.enum(["queued", "running", "completed", "failed"]),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
   progress: z.number().min(0).max(100),
   message: z.string().optional(),
   outputFile: z.string().optional(),
@@ -378,8 +380,133 @@ export const huggingFaceTokenStatusSchema = z.object({
 
 export type HuggingFaceTokenStatus = z.infer<typeof huggingFaceTokenStatusSchema>;
 
+const huggingFaceTokenValueSchema = z
+  .string()
+  .max(512)
+  .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), {
+    message: "Hugging Face tokens cannot contain control characters",
+  })
+  .transform((value) => value.trim())
+  .refine((value) => value.length === 0 || /^hf_[A-Za-z0-9_-]{20,256}$/.test(value), {
+    message: "Enter a valid Hugging Face access token",
+  });
+
 export const huggingFaceTokenUpdateSchema = z.object({
-  token: z.string().optional().nullable(),
+  token: huggingFaceTokenValueSchema.optional().nullable(),
 });
 
 export type HuggingFaceTokenUpdate = z.infer<typeof huggingFaceTokenUpdateSchema>;
+
+// Additional speech engines (Qwen3-TTS and MOSS-TTS) share one job/status
+// contract. IndexTTS and VibeVoice keep their existing compatibility APIs.
+export const speechEngineSchema = z.enum(["qwen", "moss"]);
+export type SpeechEngine = z.infer<typeof speechEngineSchema>;
+
+export const speechExecutionTargetSchema = z.enum(["local", "hf-space"]);
+export type SpeechExecutionTarget = z.infer<typeof speechExecutionTargetSchema>;
+
+export const speechJobStatusSchema = z.object({
+  id: z.string(),
+  engine: speechEngineSchema,
+  target: speechExecutionTargetSchema,
+  mode: z.string(),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
+  progress: z.number().min(0).max(100),
+  message: z.string().optional(),
+  outputFile: z.string().optional(),
+  voiceFileName: z.string().optional(),
+  modelId: z.string().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  error: z.string().optional(),
+  queuePosition: z.number().int().nonnegative().optional(),
+  etaSeconds: z.number().nonnegative().optional(),
+});
+
+export type SpeechJobStatus = z.infer<typeof speechJobStatusSchema>;
+
+export const speechEngineRuntimeStatusSchema = z.object({
+  engine: speechEngineSchema,
+  setupStatus: z.enum(["idle", "in-progress", "completed", "failed"]),
+  setupProgress: z.number().min(0).max(100).optional(),
+  setupMessage: z.string().optional(),
+  setupUpdatedAt: z.number().int().nonnegative().optional(),
+  setupStalled: z.boolean().optional(),
+  runtimeConfigured: z.boolean(),
+  modelsReady: z.boolean(),
+  availableModels: z.array(z.string()),
+  modelsPath: z.string(),
+  lastSetupError: z.string().optional(),
+  spaceId: z.string(),
+  hostedAvailable: z.boolean(),
+  localModes: z.array(z.string()),
+  hostedModes: z.array(z.string()),
+});
+
+export type SpeechEngineRuntimeStatus = z.infer<typeof speechEngineRuntimeStatusSchema>;
+
+export const speechStatusSchema = z.object({
+  tokenConfigured: z.boolean(),
+  engines: z.array(speechEngineRuntimeStatusSchema),
+  jobs: z.array(speechJobStatusSchema),
+});
+
+export type SpeechStatus = z.infer<typeof speechStatusSchema>;
+
+export const speechWsMessageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("status"), payload: speechStatusSchema }),
+  z.object({ type: z.literal("job"), payload: speechJobStatusSchema }),
+  z.object({
+    type: z.literal("log"),
+    payload: z.object({
+      id: z.string(),
+      level: z.enum(["info", "warn", "error"]),
+      message: z.string(),
+      timestamp: z.number(),
+    }),
+  }),
+]);
+
+export type SpeechWsMessage = z.infer<typeof speechWsMessageSchema>;
+
+export const huggingFaceUsageMetricSchema = z.object({
+  status: z.enum(["reported", "estimated", "unavailable"]),
+  authoritative: z.boolean(),
+  unit: z.enum(["seconds", "usd"]),
+  limit: z.number().nonnegative().optional(),
+  used: z.number().nonnegative().optional(),
+  remaining: z.number().nonnegative().optional(),
+  resetAt: z.number().optional(),
+  message: z.string(),
+});
+
+export type HuggingFaceUsageMetric = z.infer<typeof huggingFaceUsageMetricSchema>;
+
+export const huggingFaceUsageStatusSchema = z.object({
+  tokenConfigured: z.boolean(),
+  accountName: z.string().optional(),
+  plan: z.string().optional(),
+  fetchedAt: z.number(),
+  zeroGpu: huggingFaceUsageMetricSchema,
+  inferenceCredits: huggingFaceUsageMetricSchema,
+});
+
+export type HuggingFaceUsageStatus = z.infer<typeof huggingFaceUsageStatusSchema>;
+
+export const defaultVoiceSchema = z.object({
+  id: z.string(),
+  displayName: z.string(),
+  format: z.string(),
+  sizeBytes: z.number().int().positive(),
+  hasTranscript: z.boolean(),
+  transcript: z.string().optional(),
+});
+
+export type DefaultVoice = z.infer<typeof defaultVoiceSchema>;
+
+export const defaultVoiceCatalogSchema = z.object({
+  voices: z.array(defaultVoiceSchema),
+  warnings: z.array(z.string()).default([]),
+});
+
+export type DefaultVoiceCatalog = z.infer<typeof defaultVoiceCatalogSchema>;

@@ -70,10 +70,10 @@ export function PromptPreview({
   };
 
   return (
-    <Card className="p-3">
+    <Card className="rounded-xl p-3 shadow-none">
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">LLM Prompt Preview</h3>
+          <h3 className="text-sm font-bold">Prompt preview</h3>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"

@@ -16,8 +16,8 @@ export function CustomInstructions({
   disabled,
 }: CustomInstructionsProps) {
   return (
-    <Card className="p-3">
-      <h3 className="text-sm font-medium mb-3">Custom Instructions</h3>
+    <Card className="rounded-xl p-3 shadow-none">
+      <h3 className="text-sm font-bold mb-3">Custom instructions</h3>
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
           <Label htmlFor="custom-instructions" className="text-sm font-medium">

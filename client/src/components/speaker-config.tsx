@@ -29,13 +29,14 @@ export function SpeakerConfigPanel({
   const characterMapping = config.characterMapping ?? [];
 
   return (
-    <Card className="p-3">
-      <h3 className="text-sm font-medium mb-3">Multi-Speaker Configuration</h3>
+    <Card className="rounded-2xl border-card-border p-4 shadow-sm sm:p-5">
+      <h3 className="text-sm font-bold">3. Choose voice structure</h3>
+      <p className="mb-4 mt-1 text-xs leading-5 text-muted-foreground">Keep one voice, normalize existing labels, or ask AI to cast dialogue.</p>
 
       <div className="space-y-4">
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <Label className="text-sm font-medium">Processing Mode</Label>
+            <Label className="text-sm font-medium">Desired outcome</Label>
             <Tooltip>
               <TooltipTrigger asChild>
                 <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
@@ -60,7 +61,7 @@ export function SpeakerConfigPanel({
               <div className="space-y-0.5">
                 <div className="flex items-center gap-2">
                   <Label htmlFor="mode-none" className="text-sm font-medium cursor-pointer">
-                    Single Speaker (No Tags)
+                    Single voice
                   </Label>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -69,6 +70,7 @@ export function SpeakerConfigPanel({
                     <TooltipContent>Clean text only; do not add any speaker labels</TooltipContent>
                   </Tooltip>
                 </div>
+                <p className="text-[11px] leading-4 text-muted-foreground">Keep the prose intact without adding speaker tags.</p>
               </div>
             </div>
             <div className="flex items-start gap-2.5">
@@ -80,7 +82,7 @@ export function SpeakerConfigPanel({
               <div className="space-y-0.5">
                 <div className="flex items-center gap-2">
                   <Label htmlFor="mode-format" className="text-sm font-medium cursor-pointer">
-                    Format Conversion
+                    Preserve existing speakers
                   </Label>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -89,6 +91,7 @@ export function SpeakerConfigPanel({
                     <TooltipContent>Convert existing multi-speaker text into your selected label style</TooltipContent>
                   </Tooltip>
                 </div>
+                <p className="text-[11px] leading-4 text-muted-foreground">Normalize a script that already identifies each speaker.</p>
               </div>
             </div>
             <div className="flex items-start gap-2.5">
@@ -100,7 +103,7 @@ export function SpeakerConfigPanel({
               <div className="space-y-0.5">
                 <div className="flex items-center gap-2">
                   <Label htmlFor="mode-intelligent" className="text-sm font-medium cursor-pointer">
-                    Intelligent Parsing
+                    Detect dialogue & speakers
                   </Label>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -109,6 +112,7 @@ export function SpeakerConfigPanel({
                     <TooltipContent>Use the LLM to detect speakers and structure dialogue</TooltipContent>
                   </Tooltip>
                 </div>
+                <p className="text-[11px] leading-4 text-muted-foreground">Identify quoted speech, narration, and stable character labels.</p>
               </div>
             </div>
           </RadioGroup>
@@ -119,7 +123,7 @@ export function SpeakerConfigPanel({
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
                 <Label htmlFor="speaker-count" className="text-sm font-medium">
-                  Number of Speakers
+                  Available voice slots
                 </Label>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -181,6 +185,12 @@ export function SpeakerConfigPanel({
                 </SelectContent>
               </Select>
             </div>
+
+            {isIntelligentMode && !config.includeNarrator && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] leading-5 text-amber-800 dark:text-amber-200">
+                Dialogue-only mode removes descriptive prose from the result. Enable narration in character detection to preserve it.
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">

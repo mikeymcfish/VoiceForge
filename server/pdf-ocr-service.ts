@@ -2,7 +2,7 @@ import fs from "fs";
 import fsPromises from "fs/promises";
 import path from "path";
 import { EventEmitter } from "events";
-import { spawn } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import readline from "readline";
 import { fileURLToPath } from "url";
 import { nanoid } from "nanoid";
@@ -14,6 +14,7 @@ import type {
   PdfOcrStatus,
   PdfOcrWsMessage,
 } from "@shared/schema";
+import { terminateChildProcess } from "./process-utils";
 
 const DEFAULT_PYTHON_BIN =
   process.env.PDF_OCR_PYTHON || (process.platform === "win32" ? "python" : "python3");
@@ -28,7 +29,7 @@ const __dirname = path.dirname(__filename);
 
 interface InternalJob {
   id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   progress: number;
   message?: string;
   pageCount?: number;
@@ -63,6 +64,7 @@ class PdfOcrService extends EventEmitter {
   private readonly configPath: string;
   private readonly subscribers = new Set<(message: PdfOcrWsMessage) => void>();
   private readonly jobs = new Map<string, InternalJob>();
+  private readonly activeProcesses = new Map<string, ChildProcess>();
   private config: PersistedPdfOcrConfig = {};
   private lastResolvedModulePath?: string;
   private modelDownloadStatus: PdfOcrDownloadStatus = "idle";
@@ -310,9 +312,27 @@ class PdfOcrService extends EventEmitter {
     return job?.outputFile;
   }
 
+  public cancelJob(jobId: string): PdfOcrJobStatus | undefined {
+    const job = this.jobs.get(jobId);
+    if (!job) return undefined;
+    if (job.status !== "queued" && job.status !== "running") return this.toPublicJob(job);
+
+    this.updateJob(jobId, {
+      status: "cancelled",
+      message: "OCR cancelled",
+      error: undefined,
+      outputFile: undefined,
+    });
+    const child = this.activeProcesses.get(jobId);
+    if (child) terminateChildProcess(child);
+    this.broadcastLog(jobId, "info", "PDF OCR cancellation requested");
+    return this.getJob(jobId);
+  }
+
   private updateJob(jobId: string, updates: Partial<InternalJob>) {
     const job = this.jobs.get(jobId);
     if (!job) return;
+    if (job.status === "cancelled") return;
     Object.assign(job, updates, { updatedAt: Date.now() });
     this.jobs.set(jobId, job);
     this.broadcast({
@@ -324,7 +344,8 @@ class PdfOcrService extends EventEmitter {
   private runPython(
     args: string[],
     onMessage?: (message: PythonMessage) => void,
-    onError?: (message: string) => void
+    onError?: (message: string) => void,
+    jobId?: string
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const pythonEnv = {
@@ -337,10 +358,19 @@ class PdfOcrService extends EventEmitter {
       const python = spawn(this.getPythonBinary(), ["-u", this.workerScript, ...args], {
         env: pythonEnv,
       });
+      if (jobId) this.activeProcesses.set(jobId, python);
+
+      const releaseProcess = () => {
+        if (jobId && this.activeProcesses.get(jobId) === python) {
+          this.activeProcesses.delete(jobId);
+        }
+      };
 
       python.on("error", (error) => {
+        releaseProcess();
         reject(error);
       });
+      python.on("exit", releaseProcess);
 
       const rl = readline.createInterface({ input: python.stdout });
       rl.on("line", (line) => {
@@ -359,6 +389,7 @@ class PdfOcrService extends EventEmitter {
       });
 
       python.on("close", (code) => {
+        releaseProcess();
         if (code === 0) {
           resolve();
         } else {
@@ -417,6 +448,7 @@ class PdfOcrService extends EventEmitter {
         String(Math.max(1, params.totalPages)),
       ],
       (message) => {
+        if (this.jobs.get(jobId)?.status === "cancelled") return;
         if (message.event === "progress") {
           const processed = typeof message.processed_pages === "number" ? message.processed_pages : job.processedPages || 0;
           const total = typeof message.total_pages === "number" ? message.total_pages : job.pageCount || params.totalPages;
@@ -434,6 +466,17 @@ class PdfOcrService extends EventEmitter {
         } else if (message.event === "log") {
           this.broadcastLog(jobId, message.level || "info", message.message || "");
         } else if (message.event === "complete") {
+          if (!fs.existsSync(outputPath)) {
+            const errorMessage = "OCR worker exited without creating combined.txt";
+            this.updateJob(jobId, {
+              status: "failed",
+              error: errorMessage,
+              message: "OCR output is missing",
+              outputFile: undefined,
+            });
+            this.broadcastLog(jobId, "error", errorMessage);
+            return;
+          }
           const processed = typeof message.processed_pages === "number" ? message.processed_pages : job.processedPages;
           const total = typeof message.total_pages === "number" ? message.total_pages : job.pageCount;
           this.updateJob(jobId, {
@@ -442,7 +485,7 @@ class PdfOcrService extends EventEmitter {
             processedPages: processed,
             pageCount: total,
             message: message.message ?? "OCR complete",
-            outputFile: message.output_path || outputPath,
+            outputFile: outputPath,
           });
           if (message.text) {
             this.broadcast({
@@ -465,17 +508,45 @@ class PdfOcrService extends EventEmitter {
         }
       },
       (stderrLine) => {
+        if (this.jobs.get(jobId)?.status === "cancelled") return;
         this.broadcastLog(jobId, "info", stderrLine);
+      },
+      jobId
+    ).then(
+      () => {
+        const finalJob = this.jobs.get(jobId);
+        if (!finalJob || finalJob.status === "cancelled" || finalJob.status === "failed") return;
+        if (!fs.existsSync(outputPath)) {
+          const errorMessage = "OCR worker exited successfully but combined.txt is missing";
+          this.updateJob(jobId, {
+            status: "failed",
+            error: errorMessage,
+            message: "OCR output is missing",
+            outputFile: undefined,
+          });
+          this.broadcastLog(jobId, "error", errorMessage);
+          return;
+        }
+        if (finalJob.status === "queued" || finalJob.status === "running") {
+          this.updateJob(jobId, {
+            status: "completed",
+            progress: 100,
+            message: "OCR complete",
+            outputFile: outputPath,
+          });
+        }
+      },
+      (error) => {
+        if (this.jobs.get(jobId)?.status === "cancelled") return;
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.updateJob(jobId, {
+          status: "failed",
+          error: errorMessage,
+          message: "OCR job failed",
+        });
+        this.broadcastLog(jobId, "error", errorMessage);
       }
-    ).catch((error) => {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.updateJob(jobId, {
-        status: "failed",
-        error: errorMessage,
-        message: "OCR job failed",
-      });
-      this.broadcastLog(jobId, "error", errorMessage);
-    });
+    );
 
     return this.toPublicJob(job);
   }
