@@ -49,6 +49,7 @@ export type VoiceForgeJob = {
   outputMimeType: "audio/wav" | "audio/mpeg";
   chapterCount: number;
   referenceEnhancement: SpeechReferenceEnhancement;
+  levelNormalized?: boolean;
   audioResourceUri?: string;
   audioPath?: string;
 };
@@ -74,6 +75,7 @@ export type GenerateSpeechInput = {
   useChapters?: boolean;
   chapterPauseMs?: number;
   mp3Quality?: number;
+  normalizeLevels?: boolean;
   referenceEnhancement?: SpeechReferenceEnhancement;
   audioSrModel?: "speech" | "basic";
   audioSrDevice?: string;
@@ -349,6 +351,7 @@ export class VoiceForgeOrchestrator {
         input.useChapters,
         input.chapterPauseMs,
         input.mp3Quality,
+        input.normalizeLevels === true ? true : undefined,
         input.referenceEnhancement,
         input.audioSrModel,
         input.audioSrDevice,
@@ -383,7 +386,7 @@ export class VoiceForgeOrchestrator {
       const status = this.getModelStatuses().find((item) => item.id === model);
       if (!status) throw new Error("Choose a supported VoiceForge model.");
       if (audioProcessingRequested && !voiceForgeModelSupportsAudioProcessing(model)) {
-        throw new Error("MP3 export, chapters, and reference-audio enhancement are available only with Qwen3-TTS or MOSS-TTS.");
+        throw new Error("Level normalization, MP3 export, chapters, and reference-audio enhancement are available only with Qwen3-TTS or MOSS-TTS.");
       }
       if (!status.targets.includes(input.target)) {
         throw new Error(`${status.label} does not support ${input.target === "agent" ? "Hugging Face Agent" : "Local"} inference.`);
@@ -410,6 +413,7 @@ export class VoiceForgeOrchestrator {
       if (!isVibeModel(model) && voices.length > 1) throw new Error(`${status.label} accepts one reference voice per job.`);
 
       const outputFormat = input.outputFormat ?? "wav";
+      const normalizeLevels = input.normalizeLevels ?? true;
       const useChapters = input.useChapters ?? false;
       if (useChapters && input.target !== "local") {
         throw new Error("Exact MP3 chapter timing is available for Local synthesis only.");
@@ -506,6 +510,7 @@ export class VoiceForgeOrchestrator {
         instruction: input.instruction?.trim().slice(0, 1_000),
         modelSize: model === "qwen3-tts-0.6b" ? "0.6B" : "1.7B",
         outputFormat,
+        normalizeLevels,
         useChapters,
         chapterPauseMs,
         mp3Quality,
@@ -584,6 +589,7 @@ export class VoiceForgeOrchestrator {
       outputMimeType?: "audio/wav" | "audio/mpeg";
       chapterCount?: number;
       referenceEnhancement?: SpeechReferenceEnhancement;
+      levelNormalized?: boolean;
     }
   ): VoiceForgeJob {
     const completed = job.status === "completed";
@@ -603,6 +609,7 @@ export class VoiceForgeOrchestrator {
       outputMimeType: outputFormat === "mp3" ? "audio/mpeg" : "audio/wav",
       chapterCount: job.chapterCount ?? 0,
       referenceEnhancement: job.referenceEnhancement ?? "none",
+      levelNormalized: job.levelNormalized ?? false,
       audioResourceUri: completed ? `voiceforge://speech/jobs/${id}/audio` : undefined,
       audioPath: completed ? `/api/mcp/speech/jobs/${id}/audio` : undefined,
     };

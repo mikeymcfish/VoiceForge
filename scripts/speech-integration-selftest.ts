@@ -6,6 +6,8 @@ import {
 } from "../shared/schema";
 import { parseZeroGpuQuotaError } from "../server/huggingface-usage-utils";
 import {
+  MOSS_DEFAULT_TEMPERATURE,
+  MOSS_DEFAULT_TOP_P,
   MOSS_DELAY_MODEL_ID,
   MOSS_DURATION_TOKENS_PLACEHOLDER,
   MOSS_LOCAL_CHECKPOINTS,
@@ -13,6 +15,8 @@ import {
   mossHostedDurationTokens,
 } from "../shared/moss-tts";
 
+assert.equal(MOSS_DEFAULT_TEMPERATURE, 1.3);
+assert.equal(MOSS_DEFAULT_TOP_P, 0.75);
 assert.equal(MOSS_DURATION_TOKENS_PLACEHOLDER, 1);
 assert.equal(mossHostedDurationTokens(false, 400), 1);
 assert.equal(mossHostedDurationTokens(true, 400), 400);

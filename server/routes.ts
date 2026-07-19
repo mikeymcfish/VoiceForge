@@ -16,7 +16,12 @@ import {
   speechExecutionTargetSchema,
 } from "@shared/schema";
 import { clampCharacterSampleSize, getCharacterSampleCeiling } from "@shared/model-utils";
-import { MOSS_DELAY_MODEL_ID, MOSS_LOCAL_MODEL_ID } from "@shared/moss-tts";
+import {
+  MOSS_DEFAULT_TEMPERATURE,
+  MOSS_DEFAULT_TOP_P,
+  MOSS_DELAY_MODEL_ID,
+  MOSS_LOCAL_MODEL_ID,
+} from "@shared/moss-tts";
 import { chunkTextBySentences, countWords, segmentSentences } from "@shared/text-utils";
 import { indexTtsService } from "./tts-service";
 import { vibevoiceService } from "./vibevoice-service";
@@ -1177,6 +1182,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
         const useChapters = booleanValue(req.body?.useChapters);
         const outputFormat = useChapters ? "mp3" : requestedOutputFormat;
+        const normalizeLevels =
+          req.body?.normalizeLevels === undefined
+            ? true
+            : booleanValue(req.body.normalizeLevels);
         const referenceEnhancement =
           typeof req.body?.referenceEnhancement === "string"
             ? req.body.referenceEnhancement.trim().toLowerCase()
@@ -1208,9 +1217,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         }
         const audioProcessing = speechService.getStatus().audioProcessing;
-        if ((outputFormat === "mp3" || referenceEnhancement === "cleanup") && !audioProcessing.ffmpegAvailable) {
+        if (
+          (outputFormat === "mp3" || normalizeLevels || referenceEnhancement === "cleanup") &&
+          !audioProcessing.ffmpegAvailable
+        ) {
           return res.status(409).json({
-            error: "FFmpeg is required for MP3 export and gentle reference cleanup",
+            error:
+              "FFmpeg is required for output level normalization, MP3 export, and gentle reference cleanup",
           });
         }
         if (referenceEnhancement === "audiosr" && !audioProcessing.audioSrAvailable) {
@@ -1305,14 +1318,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
           modelSize,
           durationControl: booleanValue(req.body?.durationControl),
           durationTokens: Math.round(finiteNumber(req.body?.durationTokens, 1, 1, 4_096)),
-          temperature: finiteNumber(req.body?.temperature, 1.7, 0.1, 3),
-          topP: finiteNumber(req.body?.topP, 0.8, 0.1, 1),
+          temperature: finiteNumber(
+            req.body?.temperature,
+            MOSS_DEFAULT_TEMPERATURE,
+            0.1,
+            3
+          ),
+          topP: finiteNumber(req.body?.topP, MOSS_DEFAULT_TOP_P, 0.1, 1),
           topK: Math.round(finiteNumber(req.body?.topK, 25, 1, 200)),
           repetitionPenalty: finiteNumber(req.body?.repetitionPenalty, 1, 0.5, 2),
           maxNewTokens: Math.round(finiteNumber(req.body?.maxNewTokens, 4_096, 128, 8_192)),
           maxChars: Math.round(finiteNumber(req.body?.maxChars, engine === "qwen" ? 320 : 1_800, 50, 10_000)),
           gapMs: Math.round(finiteNumber(req.body?.gapMs, 120, 0, 2_000)),
           outputFormat,
+          normalizeLevels,
           useChapters,
           chapterPauseMs: Math.round(finiteNumber(req.body?.chapterPauseMs, 0, 0, 10_000)),
           mp3Quality: Math.round(finiteNumber(req.body?.mp3Quality, 2, 0, 9)),

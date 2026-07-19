@@ -16,6 +16,8 @@ import type {
   SpeechWsMessage,
 } from "@shared/schema";
 import {
+  MOSS_DEFAULT_TEMPERATURE,
+  MOSS_DEFAULT_TOP_P,
   MOSS_DELAY_MODEL_ID,
   MOSS_LOCAL_MODEL_ID,
   mossHostedDurationTokens,
@@ -791,6 +793,7 @@ class SpeechService {
     useChapters?: boolean;
     chapterPauseMs?: number;
     mp3Quality?: number;
+    normalizeLevels?: boolean;
     referenceEnhancement?: SpeechReferenceEnhancement;
     audioSrModel?: "speech" | "basic";
     audioSrDevice?: string;
@@ -827,6 +830,7 @@ class SpeechService {
 
     const useChapters = params.useChapters === true;
     const outputFormat: SpeechOutputFormat = useChapters ? "mp3" : params.outputFormat ?? "wav";
+    const normalizeLevels = params.normalizeLevels ?? true;
     const referenceEnhancement: SpeechReferenceEnhancement =
       params.referenceEnhancement ?? "none";
     const audioCapabilities = getAudioProcessingCapabilities();
@@ -850,7 +854,7 @@ class SpeechService {
       throw new Error("Reference-audio enhancement requires a voice reference.");
     }
     if (
-      (outputFormat === "mp3" || referenceEnhancement === "cleanup") &&
+      (outputFormat === "mp3" || normalizeLevels || referenceEnhancement === "cleanup") &&
       !audioCapabilities.ffmpegAvailable
     ) {
       throw new Error("FFmpeg is required for the requested audio processing.");
@@ -888,6 +892,7 @@ class SpeechService {
       outputFormat,
       outputMimeType: outputFormat === "mp3" ? "audio/mpeg" : "audio/wav",
       referenceEnhancement,
+      levelNormalized: normalizeLevels,
       createdAt: now,
       updatedAt: now,
       workingDir,
@@ -908,6 +913,7 @@ class SpeechService {
       modelSize: effectiveModelSize,
       outputFormat,
       useChapters,
+      normalizeLevels,
       referenceEnhancement,
     };
     const execute = async () => {
@@ -1022,11 +1028,21 @@ class SpeechService {
   }> {
     this.assertJobActive(job.id);
     const outputFormat = params.outputFormat ?? "wav";
-    if (outputFormat === "mp3") {
+    const normalizeLevels = params.normalizeLevels ?? true;
+    if (outputFormat === "mp3" || normalizeLevels) {
       this.updateJob(job.id, {
         status: "running",
         progress: 97,
-        message: params.useChapters ? "Encoding chaptered MP3…" : "Encoding MP3…",
+        message:
+          outputFormat === "mp3"
+            ? params.useChapters
+              ? normalizeLevels
+                ? "Normalizing levels and encoding chaptered MP3…"
+                : "Encoding chaptered MP3…"
+              : normalizeLevels
+                ? "Normalizing levels and encoding MP3…"
+                : "Encoding MP3…"
+            : "Normalizing output level…",
       });
     }
     return this.withManagedAudioProcess(job.id, (onSpawn) =>
@@ -1034,6 +1050,7 @@ class SpeechService {
         inputWavPath: rawOutputPath,
         workingDir: job.workingDir,
         outputFormat,
+        normalizeLevels,
         chapterManifestPath: params.useChapters ? chapterManifestPath : undefined,
         mp3Quality: params.mp3Quality ?? 2,
         onSpawn,
@@ -1064,8 +1081,8 @@ class SpeechService {
       args.push("--max-chars", String(params.maxChars ?? 320));
       args.push("--gap-ms", String(params.gapMs ?? 120));
     } else {
-      args.push("--temperature", String(params.temperature ?? 1.7));
-      args.push("--top-p", String(params.topP ?? 0.8));
+      args.push("--temperature", String(params.temperature ?? MOSS_DEFAULT_TEMPERATURE));
+      args.push("--top-p", String(params.topP ?? MOSS_DEFAULT_TOP_P));
       args.push("--top-k", String(params.topK ?? 25));
       args.push("--repetition-penalty", String(params.repetitionPenalty ?? 1));
       args.push("--max-new-tokens", String(params.maxNewTokens ?? 4096));
@@ -1203,8 +1220,8 @@ class SpeechService {
         params.durationTokens
       ),
       language_tag: params.language || "Auto (omit)",
-      temperature: params.temperature ?? 1.7,
-      top_p: params.topP ?? 0.8,
+      temperature: params.temperature ?? MOSS_DEFAULT_TEMPERATURE,
+      top_p: params.topP ?? MOSS_DEFAULT_TOP_P,
       top_k: params.topK ?? 25,
       repetition_penalty: params.repetitionPenalty ?? 1,
       max_new_tokens: params.maxNewTokens ?? 4096,

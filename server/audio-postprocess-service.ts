@@ -56,6 +56,7 @@ export interface FinalizeSpeechAudioOptions extends AudioProcessHooks {
   inputWavPath: string;
   workingDir: string;
   outputFormat: SpeechOutputFormat;
+  normalizeLevels?: boolean;
   chapterManifestPath?: string;
   mp3Quality?: number;
 }
@@ -96,6 +97,7 @@ const MAX_PROCESS_LOG_LINE_CHARS = 2_048;
 const MAX_AUDIO_SR_SCAN_ENTRIES = 2_000;
 const MAX_AUDIO_SR_SCAN_DEPTH = 6;
 const MAX_MANAGED_ARTIFACT_BYTES = 250 * 1024 * 1024;
+const MAX_WAV_HEADER_BYTES = 1024 * 1024;
 const AUDIO_SR_SUFFIX = "_voiceforge_audiosr";
 
 export const CONSERVATIVE_CLEANUP_FILTER = [
@@ -117,6 +119,9 @@ export const CONSERVATIVE_CLEANUP_FILTER = [
   "loudnorm=I=-20:LRA=7:TP=-1.5:linear=true",
   "alimiter=limit=0.95:attack=5:release=50:level=true",
 ].join(",");
+
+export const SPEECH_LEVEL_NORMALIZATION_FILTER =
+  "loudnorm=I=-18:LRA=7:TP=-1.5";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -355,6 +360,8 @@ export function buildMp3FfmpegArgs(options: {
   outputMp3Path: string;
   ffmetadataPath?: string;
   mp3Quality?: number;
+  normalizeLevels?: boolean;
+  sampleRate?: number;
 }): string[] {
   const input = requireNonEmptyPath(options.inputWavPath, "inputWavPath");
   const output = requireNonEmptyPath(options.outputMp3Path, "outputMp3Path");
@@ -374,7 +381,22 @@ export function buildMp3FfmpegArgs(options: {
       "3"
     );
   }
-  args.push("-map", "0:a", "-vn", "-codec:a", "libmp3lame");
+  args.push("-map", "0:a", "-vn");
+  if (options.normalizeLevels) {
+    const sampleRate = requireSafeInteger(
+      options.sampleRate,
+      "sampleRate",
+      1,
+      MAX_SAMPLE_RATE
+    );
+    args.push(
+      "-af",
+      SPEECH_LEVEL_NORMALIZATION_FILTER,
+      "-ar",
+      String(sampleRate)
+    );
+  }
+  args.push("-codec:a", "libmp3lame");
   if (options.ffmetadataPath) {
     args.push("-b:a", "192k", "-write_xing", "0");
   } else {
@@ -382,6 +404,39 @@ export function buildMp3FfmpegArgs(options: {
   }
   args.push(output);
   return args;
+}
+
+export function buildLevelNormalizedWavFfmpegArgs(options: {
+  inputWavPath: string;
+  outputWavPath: string;
+  sampleRate: number;
+}): string[] {
+  const sampleRate = requireSafeInteger(
+    options.sampleRate,
+    "sampleRate",
+    1,
+    MAX_SAMPLE_RATE
+  );
+  return [
+    "-y",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-i",
+    requireNonEmptyPath(options.inputWavPath, "inputWavPath"),
+    "-map",
+    "0:a",
+    "-vn",
+    "-af",
+    SPEECH_LEVEL_NORMALIZATION_FILTER,
+    "-ar",
+    String(sampleRate),
+    "-map_metadata",
+    "-1",
+    "-codec:a",
+    "pcm_s16le",
+    requireNonEmptyPath(options.outputWavPath, "outputWavPath"),
+  ];
 }
 
 export function buildCleanupFfmpegArgs(options: {
@@ -1128,6 +1183,48 @@ export async function enhanceReferenceAudio(
   }
 }
 
+export async function readWavSampleRate(inputPath: string): Promise<number> {
+  const handle = await fsPromises.open(inputPath, "r");
+  try {
+    const stat = await handle.stat();
+    const headerLength = Math.min(stat.size, MAX_WAV_HEADER_BYTES);
+    if (headerLength < 12) throw new Error("WAV output has an incomplete header.");
+    const header = Buffer.alloc(headerLength);
+    const { bytesRead } = await handle.read(header, 0, headerLength, 0);
+    if (
+      bytesRead < 12 ||
+      !["RIFF", "RF64"].includes(header.toString("ascii", 0, 4)) ||
+      header.toString("ascii", 8, 12) !== "WAVE"
+    ) {
+      throw new Error("WAV output does not contain a supported RIFF/WAVE header.");
+    }
+
+    let offset = 12;
+    while (offset + 8 <= bytesRead) {
+      const chunkId = header.toString("ascii", offset, offset + 4);
+      const chunkSize = header.readUInt32LE(offset + 4);
+      const chunkDataOffset = offset + 8;
+      if (chunkId === "fmt ") {
+        if (chunkSize < 16 || chunkDataOffset + 16 > bytesRead) {
+          throw new Error("WAV output has an incomplete fmt chunk.");
+        }
+        return requireSafeInteger(
+          header.readUInt32LE(chunkDataOffset + 4),
+          "WAV sample rate",
+          1,
+          MAX_SAMPLE_RATE
+        );
+      }
+      const nextOffset = chunkDataOffset + chunkSize + (chunkSize % 2);
+      if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset) break;
+      offset = nextOffset;
+    }
+    throw new Error("WAV output does not contain a readable fmt chunk.");
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function finalizeSpeechAudio(
   options: FinalizeSpeechAudioOptions
 ): Promise<FinalizedSpeechAudio> {
@@ -1151,9 +1248,48 @@ export async function finalizeSpeechAudio(
   const metadata = manifest
     ? buildFfmetadataDocument(manifest)
     : { text: ";FFMETADATA1\n", chapterCount: 0 };
+  const normalizeLevels = options.normalizeLevels === true;
+  const sampleRate = normalizeLevels
+    ? await readWavSampleRate(inputWavPath)
+    : undefined;
   options.assertActive?.();
 
   if (options.outputFormat === "wav") {
+    if (normalizeLevels) {
+      const ffmpeg = resolveFfmpegBinary();
+      const outputPath = managedOutputPath(
+        root,
+        `${path.basename(inputWavPath, path.extname(inputWavPath))}-normalized.wav`
+      );
+      const temporaryOutput = temporaryOutputPath(
+        root,
+        path.basename(outputPath, ".wav"),
+        ".wav"
+      );
+      try {
+        await runControlledProcess({
+          executable: ffmpeg,
+          args: buildLevelNormalizedWavFfmpegArgs({
+            inputWavPath,
+            outputWavPath: temporaryOutput,
+            sampleRate: sampleRate!,
+          }),
+          cwd: root,
+          label: "Speech level normalization",
+          hooks: options,
+        });
+        await validateProducedFile(root, temporaryOutput, "Normalized WAV output");
+        await atomicReplaceManagedFile(root, temporaryOutput, outputPath);
+        return {
+          outputPath,
+          format: "wav",
+          mimeType: "audio/wav",
+          chapterCount: metadata.chapterCount,
+        };
+      } finally {
+        await fsPromises.rm(temporaryOutput, { force: true }).catch(() => undefined);
+      }
+    }
     return {
       outputPath: inputWavPath,
       format: "wav",
@@ -1193,6 +1329,8 @@ export async function finalizeSpeechAudio(
         outputMp3Path: temporaryOutput,
         ffmetadataPath: metadataPath,
         mp3Quality: quality,
+        normalizeLevels,
+        sampleRate,
       }),
       cwd: root,
       label: "MP3 encoding",

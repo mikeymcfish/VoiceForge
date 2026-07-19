@@ -28,11 +28,19 @@ import type {
   SpeechWsMessage,
 } from "@shared/schema";
 import {
+  MOSS_DEFAULT_TEMPERATURE,
+  MOSS_DEFAULT_TOP_P,
   MOSS_DELAY_MODEL_ID,
   MOSS_DURATION_TOKENS_PLACEHOLDER,
   MOSS_LOCAL_CHECKPOINTS,
   mossHostedDurationTokens,
 } from "@shared/moss-tts";
+import {
+  buildChapterRegexPattern,
+  type ChapterRegexMatch,
+  type ChapterRegexPreset,
+} from "@shared/chapter-assist";
+import { runChapterRegexWorker } from "@/lib/chapter-regex-worker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -62,6 +70,15 @@ const MOSS_LANGUAGES = [
   "Spanish", "Swahili", "Swedish", "Tagalog", "Thai", "Turkish", "Vietnamese",
 ];
 const QWEN_SPEAKERS = ["Aiden", "Dylan", "Eric", "Ono_anna", "Ryan", "Serena", "Sohee", "Uncle_fu", "Vivian"];
+const CHAPTER_REGEX_PRESETS: Array<{ value: ChapterRegexPreset; label: string }> = [
+  { value: "common-headings", label: "Common headings" },
+  { value: "chapter-number", label: "Chapter number" },
+  { value: "part-number", label: "Part number" },
+  { value: "month-day-heading", label: "Month + day (January 2)" },
+  { value: "roman-numerals", label: "Roman numerals" },
+  { value: "custom-word-number", label: "Custom word + number" },
+  { value: "custom-regex", label: "Custom regex" },
+];
 
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
   if (status === "completed") return "default";
@@ -171,8 +188,21 @@ export function NeuralSpeechPanel({
   const [audioSrGuidanceScale, setAudioSrGuidanceScale] = useState(3.5);
   const [audioSrSeed, setAudioSrSeed] = useState(42);
   const [outputFormat, setOutputFormat] = useState<SpeechOutputFormat>("wav");
+  const [normalizeLevels, setNormalizeLevels] = useState(true);
   const [useChapters, setUseChapters] = useState(false);
   const [chapterPauseMs, setChapterPauseMs] = useState(0);
+  const [chapterRegexPreset, setChapterRegexPreset] =
+    useState<ChapterRegexPreset>("common-headings");
+  const [chapterCustomHeadingWord, setChapterCustomHeadingWord] = useState("Section");
+  const [chapterRegexPattern, setChapterRegexPattern] = useState(() =>
+    buildChapterRegexPattern("common-headings")
+  );
+  const [chapterRegexCaseSensitive, setChapterRegexCaseSensitive] = useState(false);
+  const [chapterRegexMatches, setChapterRegexMatches] =
+    useState<ChapterRegexMatch[] | null>(null);
+  const [chapterRegexError, setChapterRegexError] = useState<string>();
+  const [chapterRegexWorking, setChapterRegexWorking] = useState(false);
+  const [chapterRegexUndoText, setChapterRegexUndoText] = useState<string>();
   const [mp3Quality, setMp3Quality] = useState(2);
   const [language, setLanguage] = useState(engine === "qwen" ? "Auto" : "Auto (omit)");
   const [voiceDescription, setVoiceDescription] = useState("Warm, natural, expressive narration");
@@ -180,8 +210,8 @@ export function NeuralSpeechPanel({
   const [instruction, setInstruction] = useState("");
   const [durationControl, setDurationControl] = useState(false);
   const [durationTokens, setDurationTokens] = useState(MOSS_DURATION_TOKENS_PLACEHOLDER);
-  const [temperature, setTemperature] = useState(1.7);
-  const [topP, setTopP] = useState(0.8);
+  const [temperature, setTemperature] = useState(MOSS_DEFAULT_TEMPERATURE);
+  const [topP, setTopP] = useState(MOSS_DEFAULT_TOP_P);
   const [topK, setTopK] = useState(25);
   const [repetitionPenalty, setRepetitionPenalty] = useState(1);
   const [maxNewTokens, setMaxNewTokens] = useState(4096);
@@ -189,8 +219,8 @@ export function NeuralSpeechPanel({
   const [settingUp, setSettingUp] = useState(false);
   const [connected, setConnected] = useState(false);
   const [cancelling, setCancelling] = useState<Set<string>>(() => new Set());
-  const ffmpegAvailable = status?.audioProcessing.ffmpegAvailable === true;
-  const audioSrAvailable = status?.audioProcessing.audioSrAvailable === true;
+  const ffmpegAvailable = status?.audioProcessing?.ffmpegAvailable === true;
+  const audioSrAvailable = status?.audioProcessing?.audioSrAvailable === true;
   const effectiveModelId =
     engine === "moss" && target === "hf-space" ? MOSS_DELAY_MODEL_ID : modelId;
   const selectedMossCheckpoint = MOSS_LOCAL_CHECKPOINTS.find(
@@ -243,6 +273,11 @@ export function NeuralSpeechPanel({
   }, [target, useChapters]);
 
   useEffect(() => {
+    setChapterRegexMatches(null);
+    setChapterRegexError(undefined);
+  }, [chapterRegexCaseSensitive, chapterRegexPattern, text]);
+
+  useEffect(() => {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${proto}://${window.location.host}/ws/speech`);
     socket.addEventListener("open", () => setConnected(true));
@@ -290,6 +325,8 @@ export function NeuralSpeechPanel({
       ? "A synthesis job can contain at most 500 [CHAPTER] markers"
       : outputFormat === "mp3" && !ffmpegAvailable
       ? "FFmpeg is required for MP3 export"
+      : normalizeLevels && !ffmpegAvailable
+        ? "FFmpeg is required for output level normalization; turn normalization off or install FFmpeg"
       : effectiveReferenceEnhancement === "cleanup" && !ffmpegAvailable
         ? "FFmpeg is required for gentle reference cleanup"
         : effectiveReferenceEnhancement === "audiosr" && !audioSrAvailable
@@ -437,6 +474,7 @@ export function NeuralSpeechPanel({
       form.append("repetitionPenalty", String(repetitionPenalty));
       form.append("maxNewTokens", String(maxNewTokens));
       form.append("outputFormat", requestUsesChapters ? "mp3" : outputFormat);
+      form.append("normalizeLevels", String(normalizeLevels));
       form.append("useChapters", String(requestUsesChapters));
       form.append("chapterPauseMs", String(chapterPauseMs));
       form.append("mp3Quality", String(mp3Quality));
@@ -489,6 +527,115 @@ export function NeuralSpeechPanel({
         return next;
       });
     }
+  };
+
+  const handleChapterRegexPreset = (value: string) => {
+    const preset = value as ChapterRegexPreset;
+    setChapterRegexPreset(preset);
+    setChapterRegexPattern(
+      preset === "custom-regex"
+        ? ""
+        : buildChapterRegexPattern(preset, chapterCustomHeadingWord)
+    );
+  };
+
+  const handleChapterCustomHeadingWord = (value: string) => {
+    setChapterCustomHeadingWord(value);
+    if (chapterRegexPreset === "custom-word-number") {
+      setChapterRegexPattern(
+        buildChapterRegexPattern("custom-word-number", value)
+      );
+    }
+  };
+
+  const previewChapterRegex = async () => {
+    setChapterRegexWorking(true);
+    try {
+      const result = await runChapterRegexWorker({
+        operation: "preview",
+        text,
+        pattern: chapterRegexPattern,
+        caseSensitive: chapterRegexCaseSensitive,
+      });
+      setChapterRegexMatches(result.matches);
+      setChapterRegexError(undefined);
+    } catch (error) {
+      setChapterRegexMatches(null);
+      setChapterRegexError(
+        error instanceof Error ? error.message : "Unable to evaluate the regex."
+      );
+    } finally {
+      setChapterRegexWorking(false);
+    }
+  };
+
+  const insertChapterRegexMarkers = async () => {
+    setChapterRegexWorking(true);
+    try {
+      const workerResult = await runChapterRegexWorker({
+        operation: "insert",
+        text,
+        pattern: chapterRegexPattern,
+        caseSensitive: chapterRegexCaseSensitive,
+      });
+      const result = workerResult.insertion;
+      if (!result) throw new Error("The chapter regex worker returned no edited text.");
+      const totalMarkers = chapterMarkerCount + result.insertedCount;
+      if (totalMarkers > 500) {
+        throw new Error(
+          `This would create ${totalMarkers} chapter markers; the maximum is 500.`
+        );
+      }
+      setChapterRegexMatches(result.matches);
+      setChapterRegexError(undefined);
+      if (result.insertedCount === 0) {
+        toast({
+          title: "No markers inserted",
+          description:
+            result.matches.length > 0
+              ? "Every matching line already has a [CHAPTER] marker."
+              : "The regex did not match any non-empty lines.",
+        });
+        return;
+      }
+      setChapterRegexUndoText(text);
+      setText(result.text);
+      setUseChapters(true);
+      setOutputFormat("mp3");
+      toast({
+        title: `${result.insertedCount} chapter marker${
+          result.insertedCount === 1 ? "" : "s"
+        } inserted`,
+        description:
+          result.skippedExistingCount > 0
+            ? `${result.skippedExistingCount} matching line${
+                result.skippedExistingCount === 1 ? " was" : "s were"
+              } already marked.`
+            : "The matching heading text is preserved as each chapter title.",
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to insert chapter markers.";
+      setChapterRegexMatches(null);
+      setChapterRegexError(message);
+      toast({
+        title: "Chapter regex could not be applied",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setChapterRegexWorking(false);
+    }
+  };
+
+  const undoChapterRegexMarkers = () => {
+    if (chapterRegexUndoText === undefined) return;
+    setText(chapterRegexUndoText);
+    setChapterRegexUndoText(undefined);
+    toast({
+      title: "Chapter insertion undone",
+      description: "The editor text was restored to its previous version.",
+    });
   };
 
   const availableModes = target === "local" ? engineStatus?.localModes ?? [] : engineStatus?.hostedModes ?? [];
@@ -806,7 +953,15 @@ export function NeuralSpeechPanel({
 
           <div className="space-y-2">
             <Label className="flex items-center gap-2"><FileText className="h-4 w-4" />Text to synthesize</Label>
-            <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder={engine === "moss" ? "Paste narration; [pause 1.5s] is supported…" : "Paste the text to speak…"} className="min-h-36" />
+            <Textarea
+              value={text}
+              onChange={(event) => {
+                setText(event.target.value);
+                setChapterRegexUndoText(undefined);
+              }}
+              placeholder={engine === "moss" ? "Paste narration; [pause 1.5s] is supported…" : "Paste the text to speak…"}
+              className="min-h-36"
+            />
             <p className={`text-xs ${text.length > characterLimit ? "text-destructive" : "text-muted-foreground"}`}>{text.length.toLocaleString()} / {characterLimit.toLocaleString()} characters for this target{target === "hf-space" ? " · choose Local for long-form work" : ""}</p>
           </div>
 
@@ -855,6 +1010,20 @@ export function NeuralSpeechPanel({
               )}
             </div>
 
+            <Label className="flex items-start gap-2 rounded-md border bg-muted/20 p-3 text-sm">
+              <Checkbox
+                checked={normalizeLevels}
+                onCheckedChange={(value) => setNormalizeLevels(value === true)}
+              />
+              <span>
+                <span className="block font-medium">Normalize output level</span>
+                <span className="mt-1 block text-xs font-normal text-muted-foreground">
+                  Master the assembled audio to a consistent speech loudness target. Enabled
+                  by default and requires FFmpeg.
+                </span>
+              </span>
+            </Label>
+
             {target === "local" && ffmpegAvailable ? (
               <div className="space-y-3 rounded-md border bg-muted/20 p-3">
                 <Label className="flex items-center gap-2 text-sm">
@@ -874,23 +1043,168 @@ export function NeuralSpeechPanel({
                   MP3 metadata name. {chapterMarkerCount} marker{chapterMarkerCount === 1 ? "" : "s"} detected.
                 </p>
                 {useChapters && (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label>Extra chapter pause (ms)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={10_000}
-                        step={50}
-                        value={chapterPauseMs}
-                        onChange={(event) => setChapterPauseMs(Number(event.target.value))}
-                      />
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Extra chapter pause (ms)</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={10_000}
+                          step={50}
+                          value={chapterPauseMs}
+                          onChange={(event) => setChapterPauseMs(Number(event.target.value))}
+                        />
+                      </div>
+                      <p className="self-end text-xs text-muted-foreground">
+                        Chaptered MP3 uses chapter-safe encoding for reliable player seeking;
+                        the nonchaptered MP3 quality setting is not used.
+                      </p>
                     </div>
-                    <p className="self-end text-xs text-muted-foreground">
-                      Chaptered MP3 uses chapter-safe encoding for reliable player seeking;
-                      the nonchaptered MP3 quality setting is not used.
-                    </p>
-                  </div>
+
+                    <div className="space-y-3 rounded-md border bg-background/60 p-3">
+                      <div>
+                        <p className="text-sm font-medium">Chapter Assist</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Match heading lines with a regular expression, preview them, then
+                          insert <code>[CHAPTER]</code> while preserving each heading as its
+                          spoken chapter title.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>Regex preset</Label>
+                          <Select
+                            value={chapterRegexPreset}
+                            onValueChange={handleChapterRegexPreset}
+                          >
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {CHAPTER_REGEX_PRESETS.map((preset) => (
+                                <SelectItem key={preset.value} value={preset.value}>
+                                  {preset.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <Label className="flex items-end gap-2 pb-2 text-sm">
+                          <Checkbox
+                            checked={chapterRegexCaseSensitive}
+                            onCheckedChange={(value) =>
+                              setChapterRegexCaseSensitive(value === true)
+                            }
+                          />
+                          Case-sensitive matching
+                        </Label>
+                      </div>
+
+                      {chapterRegexPreset === "custom-word-number" && (
+                        <div className="space-y-2">
+                          <Label>Custom heading word</Label>
+                          <Input
+                            value={chapterCustomHeadingWord}
+                            onChange={(event) =>
+                              handleChapterCustomHeadingWord(event.target.value)
+                            }
+                            placeholder="Section, Episode, Entry…"
+                          />
+                        </div>
+                      )}
+
+                      <div className="space-y-2">
+                        <Label>Regex pattern</Label>
+                        <Textarea
+                          value={chapterRegexPattern}
+                          onChange={(event) => setChapterRegexPattern(event.target.value)}
+                          placeholder={String.raw`^\s*(?:January|February)\s+\d{1,2}\b.*$`}
+                          className="min-h-20 font-mono text-xs"
+                          spellCheck={false}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Matching is line-by-line. The Month + day preset recognizes headings
+                          such as <code>January 2</code>, <code>Jan 2nd</code>, and
+                          <code> January 2, 2026</code>.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void previewChapterRegex()}
+                          disabled={
+                            chapterRegexWorking ||
+                            !text.trim() ||
+                            !chapterRegexPattern.trim()
+                          }
+                        >
+                          {chapterRegexWorking ? "Checking regex…" : "Preview matching lines"}
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={() => void insertChapterRegexMarkers()}
+                          disabled={
+                            chapterRegexWorking ||
+                            !text.trim() ||
+                            !chapterRegexPattern.trim()
+                          }
+                        >
+                          Insert [CHAPTER] markers
+                        </Button>
+                      </div>
+                      {chapterRegexUndoText !== undefined && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="w-full"
+                          onClick={undoChapterRegexMarkers}
+                          disabled={chapterRegexWorking}
+                        >
+                          Undo last regex insertion
+                        </Button>
+                      )}
+
+                      {chapterRegexError && (
+                        <p className="text-xs text-destructive">{chapterRegexError}</p>
+                      )}
+                      {chapterRegexMatches !== null && !chapterRegexError && (
+                        <div className="space-y-2 text-xs">
+                          <p className="font-medium">
+                            {chapterRegexMatches.length} matching line
+                            {chapterRegexMatches.length === 1 ? "" : "s"} found
+                            {chapterRegexMatches.length > 500
+                              ? " — reduce the matches to 500 or fewer"
+                              : "."}
+                          </p>
+                          {chapterRegexMatches.slice(0, 8).map((match) => (
+                            <div
+                              key={`${match.lineNumber}-${match.text}`}
+                              className="flex gap-2 rounded border bg-muted/30 px-2 py-1.5"
+                            >
+                              <span className="shrink-0 text-muted-foreground">
+                                Line {match.lineNumber}
+                              </span>
+                              <code className="min-w-0 truncate">
+                                {match.text.trim()}
+                              </code>
+                              {match.alreadyMarked && (
+                                <span className="ml-auto shrink-0 text-muted-foreground">
+                                  already marked
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                          {chapterRegexMatches.length > 8 && (
+                            <p className="text-muted-foreground">
+                              …and {chapterRegexMatches.length - 8} more.
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
             ) : (
@@ -913,6 +1227,12 @@ export function NeuralSpeechPanel({
                 <div><Label className="text-xs">Repetition</Label><Input type="number" min={0.5} max={2} step={0.05} value={repetitionPenalty} onChange={(event) => setRepetitionPenalty(Number(event.target.value))} /></div>
                 <div><Label className="text-xs">Max tokens</Label><Input type="number" min={128} max={8192} step={128} value={maxNewTokens} onChange={(event) => setMaxNewTokens(Number(event.target.value))} /></div>
               </div>
+              {target === "local" && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Local synthesis automatically retries a clear speaking-rate outlier once
+                  and keeps the attempt closest to the recent segment pace.
+                </p>
+              )}
             </div>
           )}
 
@@ -943,6 +1263,11 @@ export function NeuralSpeechPanel({
                   {job.referenceEnhancement && job.referenceEnhancement !== "none" && (
                     <p className="text-xs text-muted-foreground">
                       Reference enhancement: {referenceEnhancementLabel(job.referenceEnhancement)}
+                    </p>
+                  )}
+                  {job.levelNormalized && (
+                    <p className="text-xs text-muted-foreground">
+                      Output level normalized
                     </p>
                   )}
                   <Button variant="outline" size="sm" className="w-full" asChild>

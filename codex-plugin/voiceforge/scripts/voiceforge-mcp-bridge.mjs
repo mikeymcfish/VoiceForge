@@ -16358,7 +16358,7 @@ var VOICEFORGE_TOOLS = [
   {
     name: "voiceforge_generate_speech",
     title: "Generate speech with VoiceForge",
-    description: "Start asynchronous TTS. Local stays on this machine; Agent uploads text/reference audio to the official Hugging Face Space and consumes quota. MP3 export, exact chapters, and reference-audio enhancement are Qwen/MOSS-only; exact chapters require Local, MP3, and [CHAPTER] markers.",
+    description: "Start asynchronous TTS. Local stays on this machine; Agent uploads text/reference audio to the official Hugging Face Space and consumes quota. Level normalization, MP3 export, exact chapters, and reference-audio enhancement are Qwen/MOSS-only; exact chapters require Local, MP3, and [CHAPTER] markers.",
     inputSchema: {
       type: "object",
       properties: {
@@ -16398,6 +16398,10 @@ var VOICEFORGE_TOOLS = [
           minimum: 0,
           maximum: 9,
           description: "Qwen/MOSS only. FFmpeg VBR quality for non-chaptered MP3 (0 best, 9 smallest); defaults to 2."
+        },
+        normalize_levels: {
+          type: "boolean",
+          description: "Qwen/MOSS only. Normalize the assembled output to a consistent speech loudness target; defaults to true."
         },
         reference_enhancement: {
           type: "string",
@@ -16758,7 +16762,9 @@ function sanitizedLaunchEnvironment(token, port) {
   for (const [key, value] of Object.entries(process.env)) {
     if (value === void 0) continue;
     const upper = key.toUpperCase();
-    if (allowExact.has(upper) || allowPrefixes.some((prefix) => upper.startsWith(prefix))) env[key] = value;
+    if (allowExact.has(upper) || allowPrefixes.some((prefix) => upper.startsWith(prefix))) {
+      env[upper] = value;
+    }
   }
   const safePath = (process.env.PATH || "").split(path.delimiter).filter((entry) => entry && path.isAbsolute(entry) && fs.existsSync(entry));
   env.PATH = [...new Set(safePath)].join(path.delimiter);

@@ -108,6 +108,7 @@ const jobOutputSchema = z.object({
   output_mime_type: outputMimeTypeSchema,
   chapter_count: z.number().int().nonnegative(),
   reference_enhancement: referenceEnhancementSchema,
+  level_normalized: z.boolean(),
   audio_resource_uri: z.string().optional(),
   audio_url: z.string().optional(),
 });
@@ -139,6 +140,7 @@ function publicJob(job: VoiceForgeJob, publicBaseUrl: string) {
     output_mime_type: job.outputFormat === "mp3" ? "audio/mpeg" : "audio/wav",
     chapter_count: job.chapterCount ?? 0,
     reference_enhancement: job.referenceEnhancement ?? "none",
+    level_normalized: job.levelNormalized ?? false,
     audio_resource_uri: job.audioResourceUri,
     audio_url: job.audioPath ? `${normalizeBaseUrl(publicBaseUrl)}${job.audioPath}` : undefined,
   };
@@ -277,7 +279,7 @@ export function createVoiceForgeMcpServer(options?: {
     "voiceforge_generate_speech",
     {
       title: "Generate speech with VoiceForge",
-      description: "Start an asynchronous TTS job. Local stays on this machine. Agent sends text and any selected default voice to the official Hugging Face Space and consumes ZeroGPU quota. Explicit model choices are honored or rejected, never silently replaced. MP3 export, exact chapters, and reference-audio enhancement are Qwen/MOSS-only; exact chapters additionally require Local, MP3 output, and [CHAPTER] markers.",
+      description: "Start an asynchronous TTS job. Local stays on this machine. Agent sends text and any selected default voice to the official Hugging Face Space and consumes ZeroGPU quota. Explicit model choices are honored or rejected, never silently replaced. Level normalization, MP3 export, exact chapters, and reference-audio enhancement are Qwen/MOSS-only; exact chapters additionally require Local, MP3 output, and [CHAPTER] markers.",
       inputSchema: {
         request_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).describe("Stable idempotency key; reuse it only when retrying the exact same request."),
         text: z.string().min(1).max(500_000),
@@ -307,6 +309,9 @@ export function createVoiceForgeMcpServer(options?: {
         mp3_quality: z.number().int().min(0).max(9)
           .optional()
           .describe("Qwen/MOSS only. FFmpeg VBR quality for non-chaptered MP3 (0 best, 9 smallest); defaults to 2."),
+        normalize_levels: z.boolean()
+          .optional()
+          .describe("Qwen/MOSS only. Normalize the assembled output to a consistent speech loudness target; defaults to true."),
         reference_enhancement: referenceEnhancementSchema
           .optional()
           .describe("Qwen/MOSS only. Enhance the selected reference voice with none, gentle FFmpeg cleanup, or isolated AudioSR; defaults to none."),
@@ -359,6 +364,7 @@ export function createVoiceForgeMcpServer(options?: {
         useChapters: input.use_chapters,
         chapterPauseMs: input.chapter_pause_ms,
         mp3Quality: input.mp3_quality,
+        normalizeLevels: input.normalize_levels,
         referenceEnhancement: input.reference_enhancement,
         audioSrModel: input.audiosr_model,
         audioSrDevice: input.audiosr_device,

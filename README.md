@@ -159,6 +159,8 @@ Useful environment variables:
 | `QWEN_TTS_PYTHON` | Python executable for the isolated Qwen3-TTS environment. It must not share an environment with IndexTTS or MOSS. |
 | `MOSS_TTS_PYTHON` | Python executable for the isolated MOSS-TTS v1.5 environment. It must not share an environment with Qwen or IndexTTS. |
 | `MOSS_TTS_FFMPEG_BIN` | Windows-only path to an FFmpeg 4-7 shared-build `bin` directory used by MOSS/TorchCodec. The setup command discovers and writes this automatically. |
+| `MOSS_TTS_DURATION_OUTLIER_RETRIES` | Local MOSS retries for an eligible speaking-rate outlier; defaults to `1`. Set to `0` to disable or up to `3`. |
+| `MOSS_TTS_DURATION_OUTLIER_RATIO` | Local MOSS pace tolerance versus the median of recent eligible segments; defaults to `1.35`. |
 | `VOICEFORGE_FFMPEG_BIN` | Optional full path to `ffmpeg` (or a directory containing it) for reference cleanup, MP3 export, and chapter metadata. VoiceForge otherwise checks `MOSS_TTS_FFMPEG_BIN` and `PATH`. |
 | `VOICEFORGE_AUDIOSR_BIN` | Optional full path to the isolated AudioSR CLI executable. AudioSR is deliberately not installed into the Qwen or MOSS environments. |
 | `VIBEVOICE_PYTHON` | Python executable used by VibeVoice. |
@@ -189,7 +191,7 @@ VoiceForge calls that same Gradio API when the hosted target is selected.
 Local Qwen/MOSS jobs share a serialized GPU queue so two multi-gigabyte models
 are never loaded into device memory at the same time.
 
-### Reference enhancement and MP3 chapters
+### Output mastering, reference enhancement, and MP3 chapters
 
 Qwen and MOSS voice-clone jobs can prepare their reference recording before
 synthesis. **Gentle cleanup** uses FFmpeg for conservative noise reduction,
@@ -197,6 +199,12 @@ edge-silence trimming, loudness normalization, and limiting. **AudioSR** runs as
 an optional isolated subprocess; install its CLI in a separate environment and
 set `VOICEFORGE_AUDIOSR_BIN`. VoiceForge never adds AudioSR's pinned NumPy or
 Transformers packages to either speech backend.
+
+Qwen and MOSS output-level normalization is enabled by default and can be
+disabled per job. VoiceForge applies EBU R128 loudness normalization to the
+fully assembled output, targeting `-18 LUFS` with a `-1.5 dBTP` ceiling. WAV
+normalization preserves the source sample rate, and MP3 chapter timestamps are
+kept unchanged. FFmpeg is required when normalization is enabled.
 
 The output panel can keep the original WAV or encode an MP3. Local Qwen/MOSS
 jobs can also embed sample-accurate chapters by placing markers in the script:
@@ -211,6 +219,25 @@ This title is spoken and is also used as the MP3 chapter name.
 
 When chapter embedding is enabled, the `[CHAPTER]` control tag itself is removed
 before synthesis. With chapters disabled, existing text remains unchanged.
+The **Chapter Assist** controls can add these markers automatically from
+line-based regular expressions. Presets cover common chapter/part headings,
+Roman numerals, a custom word plus number, and month/day headings such as
+`January 2`. Preview the matching line numbers before inserting markers; the
+matching heading remains unchanged and becomes the spoken chapter title. For
+example, the **Month + day** preset transforms:
+
+```text
+January 2
+The first day's narration.
+```
+
+into:
+
+```text
+[CHAPTER] January 2
+The first day's narration.
+```
+
 Chaptered MP3s use 192 kbps CBR plus ID3v2.3 metadata, and the optional chapter
 pause is added before the recorded chapter start. Exact chapters are Local-only
 because hosted Space responses do not expose the worker sample offsets needed
@@ -401,6 +428,13 @@ generated audio from the immediately preceding segment. Keeping only one prior
 segment bounds the continuation context instead of allowing it to grow with the
 entire document, while carrying the recent voice and prosody forward.
 
+Local MOSS also compares each eligible segment's speaking rate with the median
+of up to five recent segments. A segment more than `1.35x` outside that pace is
+generated once more, and VoiceForge keeps whichever completed attempt is closer
+to the recent pace. Short segments and text containing explicit `[pause …]`
+controls are excluded. The default MOSS sampling controls are temperature `1.3`,
+top-p `0.75`, and top-k `25`.
+
 #### Comparing the local MOSS checkpoints
 
 [`scripts/moss-backend-benchmark.py`](scripts/moss-backend-benchmark.py)
@@ -493,6 +527,7 @@ npm run check
 npm run test:text
 npm run test:speech
 npm run test:audio-postprocess
+npm run test:chapter-assist
 npm run test:hf-contract
 npm run test:voices
 npm run test:mcp

@@ -431,6 +431,7 @@ export const speechJobStatusSchema = z.object({
   outputMimeType: z.enum(["audio/wav", "audio/mpeg"]).optional(),
   chapterCount: z.number().int().nonnegative().optional(),
   referenceEnhancement: speechReferenceEnhancementSchema.optional(),
+  levelNormalized: z.boolean().optional(),
 });
 
 export type SpeechJobStatus = z.infer<typeof speechJobStatusSchema>;

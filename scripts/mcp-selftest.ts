@@ -79,6 +79,7 @@ const completedMp3Job = {
   outputMimeType: "audio/mpeg",
   chapterCount: 2,
   referenceEnhancement: "cleanup",
+  levelNormalized: true,
   audioResourceUri: "voiceforge://speech/jobs/vf-qwen-completed/audio",
   audioPath: "/api/mcp/speech/jobs/vf-qwen-completed/audio",
 } satisfies VoiceForgeJob;
@@ -122,6 +123,7 @@ const backend: VoiceForgeMcpBackend = {
         outputMimeType: input.outputFormat === "mp3" ? "audio/mpeg" : "audio/wav",
         chapterCount: 0,
         referenceEnhancement: input.referenceEnhancement ?? "none",
+        levelNormalized: input.normalizeLevels ?? true,
       },
       selectedByRecommendation: true,
       recommendationReasons: ["test"],
@@ -189,6 +191,7 @@ const generated = await client.callTool({
     use_chapters: true,
     chapter_pause_ms: 275,
     mp3_quality: 1,
+    normalize_levels: false,
     reference_enhancement: "audiosr",
     audiosr_model: "basic",
     audiosr_device: "cuda:1",
@@ -202,11 +205,13 @@ assert.equal((generated.structuredContent as any).job.job_id, "vf-qwen-testjob")
 assert.equal((generated.structuredContent as any).job.output_format, "mp3");
 assert.equal((generated.structuredContent as any).job.output_mime_type, "audio/mpeg");
 assert.equal((generated.structuredContent as any).job.reference_enhancement, "audiosr");
+assert.equal((generated.structuredContent as any).job.level_normalized, false);
 assert.equal(capturedGenerateInput?.voiceId, publicVoice.voice_id);
 assert.equal(capturedGenerateInput?.outputFormat, "mp3");
 assert.equal(capturedGenerateInput?.useChapters, true);
 assert.equal(capturedGenerateInput?.chapterPauseMs, 275);
 assert.equal(capturedGenerateInput?.mp3Quality, 1);
+assert.equal(capturedGenerateInput?.normalizeLevels, false);
 assert.equal(capturedGenerateInput?.referenceEnhancement, "audiosr");
 assert.equal(capturedGenerateInput?.audioSrModel, "basic");
 assert.equal(capturedGenerateInput?.audioSrDevice, "cuda:1");
@@ -229,8 +234,10 @@ assert.equal((legacyGenerated.structuredContent as any).job.output_format, "wav"
 assert.equal((legacyGenerated.structuredContent as any).job.output_mime_type, "audio/wav");
 assert.equal((legacyGenerated.structuredContent as any).job.chapter_count, 0);
 assert.equal((legacyGenerated.structuredContent as any).job.reference_enhancement, "none");
+assert.equal((legacyGenerated.structuredContent as any).job.level_normalized, true);
 assert.equal(capturedGenerateInput?.outputFormat, undefined);
 assert.equal(capturedGenerateInput?.useChapters, undefined);
+assert.equal(capturedGenerateInput?.normalizeLevels, undefined);
 assert.equal(capturedGenerateInput?.referenceEnhancement, undefined);
 
 const invalidCudaDevice = await client.callTool({
@@ -258,6 +265,7 @@ assert.equal(completedPublicJob.output_format, "mp3");
 assert.equal(completedPublicJob.output_mime_type, "audio/mpeg");
 assert.equal(completedPublicJob.chapter_count, 2);
 assert.equal(completedPublicJob.reference_enhancement, "cleanup");
+assert.equal(completedPublicJob.level_normalized, true);
 const audioLink = (completed.content as any[]).find((content) => content.type === "resource_link");
 assert.equal(audioLink.name, "qwen3-tts-0.6b-vf-qwen-completed.mp3");
 assert.equal(audioLink.mimeType, "audio/mpeg");
@@ -278,6 +286,7 @@ assert.equal(legacyPublicJob.output_format, "wav");
 assert.equal(legacyPublicJob.output_mime_type, "audio/wav");
 assert.equal(legacyPublicJob.chapter_count, 0);
 assert.equal(legacyPublicJob.reference_enhancement, "none");
+assert.equal(legacyPublicJob.level_normalized, false);
 const legacyAudioResource = await client.readResource({
   uri: legacyCompletedWavJob.audioResourceUri!,
 });

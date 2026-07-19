@@ -87,15 +87,26 @@ MODEL_MANIFEST_NAME = str(PINNED_MODEL_SPECS[DEFAULT_MODEL_ID]["manifest_name"])
 MODEL_MANIFEST_VERSION = 1
 MODEL_WEIGHT_SUFFIXES = {".bin", ".pt", ".pth", ".safetensors"}
 DEFAULT_MAX_NEW_TOKENS = 4096
-DEFAULT_TEMPERATURE = 1.7
-DEFAULT_TOP_P = 0.8
+DEFAULT_TEMPERATURE = 1.3
+DEFAULT_TOP_P = 0.75
 DEFAULT_TOP_K = 25
 DEFAULT_REPETITION_PENALTY = 1.0
+DEFAULT_DURATION_OUTLIER_RETRIES = 1
+DEFAULT_DURATION_OUTLIER_RATIO = 1.35
+DURATION_RATE_HISTORY_SIZE = 5
+MIN_DURATION_RATE_HISTORY = 2
+MIN_DURATION_RATE_SPEECH_UNITS = 80
+MIN_DURATION_RATE_SECONDS = 2.0
 
 
 class RollingPrefix(NamedTuple):
     transcript: str
     audio_path: str
+
+
+class DurationOutlier(NamedTuple):
+    baseline_rate: float
+    rate_ratio: float
 
 
 def configure_utf8_streams() -> None:
@@ -717,6 +728,87 @@ def normalize_language(language: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def speech_unit_count(text: str) -> int:
+    """Count language-neutral visible speech units for relative pace checks."""
+    return sum(1 for character in text if character.isalnum())
+
+
+def segment_speaking_rate(
+    text: str,
+    audio: Any,
+    sample_rate: int,
+) -> Optional[float]:
+    """Return comparable speech units/second when a segment is suitable."""
+    if sample_rate <= 0 or re.search(r"\[\s*pause\b", text, flags=re.IGNORECASE):
+        return None
+    speech_units = speech_unit_count(text)
+    if speech_units < MIN_DURATION_RATE_SPEECH_UNITS:
+        return None
+    duration_seconds = int(audio.shape[1]) / float(sample_rate)
+    if duration_seconds < MIN_DURATION_RATE_SECONDS:
+        return None
+    return speech_units / duration_seconds
+
+
+def recent_rate_baseline(rate_history: Sequence[float]) -> Optional[float]:
+    recent = sorted(rate_history[-DURATION_RATE_HISTORY_SIZE:])
+    if len(recent) < MIN_DURATION_RATE_HISTORY:
+        return None
+    midpoint = len(recent) // 2
+    if len(recent) % 2:
+        return recent[midpoint]
+    return (recent[midpoint - 1] + recent[midpoint]) / 2.0
+
+
+def duration_outlier_analysis(
+    rate: Optional[float],
+    rate_history: Sequence[float],
+    maximum_ratio: float,
+) -> Optional[DurationOutlier]:
+    if rate is None or rate <= 0:
+        return None
+    baseline = recent_rate_baseline(rate_history)
+    if baseline is None or baseline <= 0:
+        return None
+    ratio = rate / baseline
+    if 1.0 / maximum_ratio <= ratio <= maximum_ratio:
+        return None
+    return DurationOutlier(baseline, ratio)
+
+
+def duration_candidate_is_closer(
+    candidate_rate: Optional[float],
+    current_rate: Optional[float],
+    baseline_rate: float,
+) -> bool:
+    if candidate_rate is None or candidate_rate <= 0 or baseline_rate <= 0:
+        return False
+    if current_rate is None or current_rate <= 0:
+        return True
+    candidate_deviation = max(
+        candidate_rate / baseline_rate,
+        baseline_rate / candidate_rate,
+    )
+    current_deviation = max(
+        current_rate / baseline_rate,
+        baseline_rate / current_rate,
+    )
+    return candidate_deviation < current_deviation
+
+
+def validate_duration_outlier_controls(retries: int, maximum_ratio: float) -> None:
+    if not 0 <= retries <= 3:
+        raise WorkerError(
+            "INVALID_ARGUMENT",
+            "duration_outlier_retries must be between 0 and 3.",
+        )
+    if not 1.05 <= maximum_ratio <= 3.0:
+        raise WorkerError(
+            "INVALID_ARGUMENT",
+            "duration_outlier_ratio must be between 1.05 and 3.",
+        )
+
+
 def validate_sampling(
     temperature: float,
     top_p: float,
@@ -1050,6 +1142,8 @@ def synthesize(
     model_id: str = DEFAULT_MODEL_ID,
     chapter_pause_ms: int = 0,
     chapter_manifest_path: Optional[str] = None,
+    duration_outlier_retries: int = DEFAULT_DURATION_OUTLIER_RETRIES,
+    duration_outlier_ratio: float = DEFAULT_DURATION_OUTLIER_RATIO,
 ) -> None:
     spec = _model_spec(model_id)
     validate_sampling(
@@ -1060,6 +1154,10 @@ def synthesize(
         max_new_tokens,
         max_chars,
         gap_ms,
+    )
+    validate_duration_outlier_controls(
+        duration_outlier_retries,
+        duration_outlier_ratio,
     )
     if chapter_pause_ms < 0:
         raise WorkerError(
@@ -1111,6 +1209,9 @@ def synthesize(
     audio_segments: List[Any] = []
     total = len(segments)
     rolling_prefix: Optional[RollingPrefix] = None
+    speaking_rate_history: List[float] = []
+    duration_retries_attempted = 0
+    duration_retried_segments: List[int] = []
     with tempfile.TemporaryDirectory(
         prefix=".voiceforge-moss-prefix-",
         dir=str(output.parent),
@@ -1133,17 +1234,48 @@ def synthesize(
                 batch = processor(conversation, mode=processor_mode)
                 input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
-                with torch.no_grad():
-                    outputs = model.generate(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        max_new_tokens=int(max_new_tokens),
-                        audio_temperature=float(temperature),
-                        audio_top_p=float(top_p),
-                        audio_top_k=int(top_k),
-                        audio_repetition_penalty=float(repetition_penalty),
-                    )
-                messages = processor.decode(outputs)
+
+                def generate_audio_candidate() -> Any:
+                    with torch.no_grad():
+                        outputs = model.generate(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            max_new_tokens=int(max_new_tokens),
+                            audio_temperature=float(temperature),
+                            audio_top_p=float(top_p),
+                            audio_top_k=int(top_k),
+                            audio_repetition_penalty=float(repetition_penalty),
+                        )
+                    messages = processor.decode(outputs)
+                    if not messages or messages[0] is None:
+                        raise WorkerError(
+                            "INVALID_MODEL_OUTPUT",
+                            f"MOSS-TTS returned no decodable message for segment {index}.",
+                        )
+                    audio_codes = getattr(messages[0], "audio_codes_list", None)
+                    if not audio_codes:
+                        raise WorkerError(
+                            "INVALID_MODEL_OUTPUT",
+                            f"MOSS-TTS returned no audio for segment {index}.",
+                        )
+                    audio = audio_codes[0]
+                    if isinstance(audio, torch.Tensor):
+                        candidate = audio.detach().float().cpu().numpy()
+                    else:
+                        candidate = np.asarray(audio, dtype=np.float32)
+                    try:
+                        return normalize_audio_channels(candidate)
+                    except WorkerError as exc:
+                        raise WorkerError(
+                            exc.code,
+                            (
+                                "MOSS-TTS returned an invalid waveform for "
+                                f"segment {index}: {exc}"
+                            ),
+                            details={"segment": index, "segment_count": total},
+                        ) from exc
+
+                audio_np = generate_audio_candidate()
             except Exception as exc:
                 raise WorkerError(
                     "SYNTHESIS_FAILED",
@@ -1151,30 +1283,74 @@ def synthesize(
                     details={"segment": index, "segment_count": total},
                 ) from exc
 
-            if not messages or messages[0] is None:
-                raise WorkerError(
-                    "INVALID_MODEL_OUTPUT",
-                    f"MOSS-TTS returned no decodable message for segment {index}.",
+            selected_rate = segment_speaking_rate(
+                segment.text,
+                audio_np,
+                sample_rate,
+            )
+            outlier = duration_outlier_analysis(
+                selected_rate,
+                speaking_rate_history,
+                duration_outlier_ratio,
+            )
+            if outlier is not None and duration_outlier_retries > 0:
+                duration_retried_segments.append(index)
+                pace_label = "faster" if outlier.rate_ratio > 1.0 else "slower"
+                pace_deviation = max(
+                    outlier.rate_ratio,
+                    1.0 / outlier.rate_ratio,
                 )
-            audio_codes = getattr(messages[0], "audio_codes_list", None)
-            if not audio_codes:
-                raise WorkerError(
-                    "INVALID_MODEL_OUTPUT",
-                    f"MOSS-TTS returned no audio for segment {index}.",
-                )
-            audio = audio_codes[0]
-            if isinstance(audio, torch.Tensor):
-                audio_np = audio.detach().float().cpu().numpy()
-            else:
-                audio_np = np.asarray(audio, dtype=np.float32)
-            try:
-                audio_np = normalize_audio_channels(audio_np)
-            except WorkerError as exc:
-                raise WorkerError(
-                    exc.code,
-                    f"MOSS-TTS returned an invalid waveform for segment {index}: {exc}",
-                    details={"segment": index, "segment_count": total},
-                ) from exc
+                for retry_number in range(1, duration_outlier_retries + 1):
+                    duration_retries_attempted += 1
+                    emit(
+                        "progress",
+                        progress=0.12 + (0.82 * index / total),
+                        message=(
+                            f"MOSS segment {index}/{total} was a "
+                            f"{pace_deviation:.2f}x pace outlier "
+                            f"({pace_label}); retrying "
+                            f"({retry_number}/{duration_outlier_retries})"
+                        ),
+                    )
+                    try:
+                        retry_audio = generate_audio_candidate()
+                    except Exception as exc:
+                        emit(
+                            "log",
+                            level="warn",
+                            message=(
+                                f"MOSS pace retry failed for segment {index}; "
+                                f"keeping the best completed attempt: {exc}"
+                            ),
+                        )
+                        break
+                    retry_rate = segment_speaking_rate(
+                        segment.text,
+                        retry_audio,
+                        sample_rate,
+                    )
+                    if duration_candidate_is_closer(
+                        retry_rate,
+                        selected_rate,
+                        outlier.baseline_rate,
+                    ):
+                        audio_np = retry_audio
+                        selected_rate = retry_rate
+                    outlier = duration_outlier_analysis(
+                        selected_rate,
+                        speaking_rate_history,
+                        duration_outlier_ratio,
+                    )
+                    if outlier is None:
+                        break
+
+            remaining_outlier = duration_outlier_analysis(
+                selected_rate,
+                speaking_rate_history,
+                duration_outlier_ratio,
+            )
+            if selected_rate is not None and remaining_outlier is None:
+                speaking_rate_history.append(selected_rate)
             audio_segments.append(audio_np)
 
             if index < total:
@@ -1220,6 +1396,9 @@ def synthesize(
         chapters=len(chapter_indices),
         continuation_segments=max(0, total - 1),
         rolling_continuation=total > 1,
+        duration_outlier_retries=duration_retries_attempted,
+        duration_retried_segments=duration_retried_segments,
+        duration_outlier_ratio=duration_outlier_ratio,
         sample_rate=sample_rate,
         total_samples=timing.total_samples,
         channels=int(combined.shape[0]),
@@ -1308,6 +1487,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--gap-ms",
         type=int,
         default=int(os.environ.get("MOSS_TTS_GAP_MS", "120")),
+    )
+    synth_parser.add_argument(
+        "--duration-outlier-retries",
+        type=int,
+        default=int(
+            os.environ.get(
+                "MOSS_TTS_DURATION_OUTLIER_RETRIES",
+                str(DEFAULT_DURATION_OUTLIER_RETRIES),
+            )
+        ),
+        help="Automatic pace-outlier retries per eligible local segment",
+    )
+    synth_parser.add_argument(
+        "--duration-outlier-ratio",
+        type=float,
+        default=float(
+            os.environ.get(
+                "MOSS_TTS_DURATION_OUTLIER_RATIO",
+                str(DEFAULT_DURATION_OUTLIER_RATIO),
+            )
+        ),
+        help="Maximum speaking-rate ratio versus the recent segment median",
     )
     synth_parser.add_argument(
         "--chapter-pause-ms",
@@ -1403,6 +1604,8 @@ def run(argv: Optional[Sequence[str]] = None) -> None:
             args.model_id,
             args.chapter_pause_ms,
             args.chapter_manifest,
+            args.duration_outlier_retries,
+            args.duration_outlier_ratio,
         )
         return
     raise WorkerError("INVALID_ARGUMENT", f"Unknown command: {args.command}")

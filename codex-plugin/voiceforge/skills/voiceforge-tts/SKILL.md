@@ -34,9 +34,10 @@ The bridge discovers or starts VoiceForge automatically. Surface startup, runtim
 
 ## Audio processing
 
-Audio format, chapters, and reference-audio enhancement are available only for Qwen3-TTS and MOSS-TTS. Do not send these options to IndexTTS or VibeVoice.
+Audio format, output-level normalization, chapters, and reference-audio enhancement are available only for Qwen3-TTS and MOSS-TTS. Do not send these options to IndexTTS or VibeVoice.
 
 - `output_format` defaults to `wav`. Choose `mp3` only when the user requests MP3 or chapters; FFmpeg must be available.
+- `normalize_levels` defaults to `true` for Qwen3-TTS and MOSS-TTS. It masters the assembled output to the VoiceForge speech loudness target with FFmpeg. Set it to `false` only when the user wants the model's raw output levels or FFmpeg is unavailable.
 - For exact chapter timing, use Local with `output_format: "mp3"` and `use_chapters: true`. Mark each boundary in the narration as `[CHAPTER] Title`. `chapter_pause_ms` adds extra silence before each later chapter's spoken audio and defaults to `0`.
 - `mp3_quality` controls non-chaptered MP3 VBR encoding from `0` (best) through `9` (smallest); it defaults to `2`.
 - `reference_enhancement` defaults to `none` and requires a selected reference voice. `cleanup` applies gentle FFmpeg cleanup. `audiosr` uses the optional isolated AudioSR executable and is best reserved for short, degraded reference clips.

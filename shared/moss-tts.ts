@@ -1,4 +1,6 @@
 export const MOSS_DURATION_TOKENS_PLACEHOLDER = 1;
+export const MOSS_DEFAULT_TEMPERATURE = 1.3;
+export const MOSS_DEFAULT_TOP_P = 0.75;
 
 export const MOSS_DELAY_MODEL_ID = "OpenMOSS-Team/MOSS-TTS-v1.5";
 export const MOSS_LOCAL_MODEL_ID =

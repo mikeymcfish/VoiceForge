@@ -16,6 +16,7 @@
     "test:text": "tsx scripts/text-processing-selftest.ts",
     "test:speech": "tsx scripts/speech-integration-selftest.ts",
     "test:audio-postprocess": "tsx scripts/audio-postprocess-selftest.ts",
+    "test:chapter-assist": "tsx scripts/chapter-assist-selftest.ts",
     "test:hf-contract": "tsx scripts/hf-space-contract-selftest.ts",
     "test:voices": "tsx scripts/voice-library-selftest.ts",
     "test:mcp": "tsx scripts/mcp-selftest.ts",

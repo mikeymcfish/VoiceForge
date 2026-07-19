@@ -62,6 +62,7 @@ try {
     "use_chapters",
     "chapter_pause_ms",
     "mp3_quality",
+    "normalize_levels",
     "reference_enhancement",
     "audiosr_model",
     "audiosr_device",

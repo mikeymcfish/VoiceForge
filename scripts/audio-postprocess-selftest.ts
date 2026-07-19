@@ -5,16 +5,19 @@ import os from "node:os";
 import path from "node:path";
 import {
   CONSERVATIVE_CLEANUP_FILTER,
+  SPEECH_LEVEL_NORMALIZATION_FILTER,
   buildAudioSrArgs,
   buildCleanupFfmpegArgs,
   buildFfmetadata,
   buildFfmetadataDocument,
+  buildLevelNormalizedWavFfmpegArgs,
   buildMp3FfmpegArgs,
   enhanceReferenceAudio,
   escapeFfmetadataValue,
   finalizeSpeechAudio,
   getAudioProcessingCapabilities,
   parseWorkerChapterManifest,
+  readWavSampleRate,
   resolveAudioSrBinary,
   resolveFfmpegBinary,
   validateWorkerChapterManifest,
@@ -268,6 +271,39 @@ function testCommands(): void {
     /integer from 0 .* through 9/i
   );
 
+  const normalizedMp3Args = buildMp3FfmpegArgs({
+    inputWavPath: "input.wav",
+    outputMp3Path: "output.mp3",
+    normalizeLevels: true,
+    sampleRate: 24_000,
+  });
+  assert.equal(
+    normalizedMp3Args[normalizedMp3Args.indexOf("-af") + 1],
+    SPEECH_LEVEL_NORMALIZATION_FILTER
+  );
+  assert.equal(normalizedMp3Args[normalizedMp3Args.indexOf("-ar") + 1], "24000");
+  assert.throws(
+    () =>
+      buildMp3FfmpegArgs({
+        inputWavPath: "input.wav",
+        outputMp3Path: "output.mp3",
+        normalizeLevels: true,
+      }),
+    /sampleRate must be/i
+  );
+
+  const normalizedWavArgs = buildLevelNormalizedWavFfmpegArgs({
+    inputWavPath: "input.wav",
+    outputWavPath: "normalized.wav",
+    sampleRate: 48_000,
+  });
+  assert.equal(
+    normalizedWavArgs[normalizedWavArgs.indexOf("-af") + 1],
+    SPEECH_LEVEL_NORMALIZATION_FILTER
+  );
+  assert.equal(normalizedWavArgs[normalizedWavArgs.indexOf("-ar") + 1], "48000");
+  assert.equal(normalizedWavArgs.at(-1), "normalized.wav");
+
   const cleanupArgs = buildCleanupFfmpegArgs({
     inputPath: "reference.wav",
     outputWavPath: "cleaned.wav",
@@ -519,10 +555,21 @@ async function testRealFfmpegPipeline(): Promise<void> {
       JSON.stringify(realManifest),
       "utf8"
     );
+    assert.equal(await readWavSampleRate(inputPath), sampleRate);
+    const normalizedWav = await finalizeSpeechAudio({
+      inputWavPath: "reference.wav",
+      workingDir: sandbox,
+      outputFormat: "wav",
+      normalizeLevels: true,
+    });
+    assert.match(normalizedWav.outputPath, /normalized\.wav$/u);
+    assert.equal(await readWavSampleRate(normalizedWav.outputPath), sampleRate);
+
     const finalized = await finalizeSpeechAudio({
       inputWavPath: "reference.wav",
       workingDir: sandbox,
       outputFormat: "mp3",
+      normalizeLevels: true,
       chapterManifestPath: "chapters.json",
     });
     assert.equal(finalized.chapterCount, 2);

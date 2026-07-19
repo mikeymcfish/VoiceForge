@@ -396,11 +396,76 @@ class WorkerHelpersTest(unittest.TestCase):
                     )
 
     def test_sampling_validation(self) -> None:
-        moss.validate_sampling(1.7, 0.8, 25, 1.0, 4096, 800, 120)
+        self.assertEqual(moss.DEFAULT_TEMPERATURE, 1.3)
+        self.assertEqual(moss.DEFAULT_TOP_P, 0.75)
+        moss.validate_sampling(1.3, 0.75, 25, 1.0, 4096, 800, 120)
         with self.assertRaises(moss.WorkerError):
-            moss.validate_sampling(1.7, 1.1, 25, 1.0, 4096, 800, 120)
+            moss.validate_sampling(1.3, 1.1, 25, 1.0, 4096, 800, 120)
         with self.assertRaises(moss.WorkerError):
-            moss.validate_sampling(1.7, 0.8, 0, 1.0, 4096, 800, 120)
+            moss.validate_sampling(1.3, 0.75, 0, 1.0, 4096, 800, 120)
+
+    def test_moss_duration_outlier_detection_is_conservative(self) -> None:
+        text = "a" * 100
+        normal_audio = moss.normalize_audio_channels([0.0] * 1_000)
+        slow_audio = moss.normalize_audio_channels([0.0] * 2_000)
+        fast_audio = moss.normalize_audio_channels([0.0] * 500)
+
+        normal_rate = moss.segment_speaking_rate(text, normal_audio, 100)
+        slow_rate = moss.segment_speaking_rate(text, slow_audio, 100)
+        fast_rate = moss.segment_speaking_rate(text, fast_audio, 100)
+        self.assertEqual(normal_rate, 10.0)
+        self.assertEqual(slow_rate, 5.0)
+        self.assertEqual(fast_rate, 20.0)
+
+        history = [9.5, 10.0, 10.5]
+        self.assertIsNone(
+            moss.duration_outlier_analysis(normal_rate, history, 1.35)
+        )
+        slow_outlier = moss.duration_outlier_analysis(slow_rate, history, 1.35)
+        fast_outlier = moss.duration_outlier_analysis(fast_rate, history, 1.35)
+        self.assertIsNotNone(slow_outlier)
+        self.assertIsNotNone(fast_outlier)
+        self.assertAlmostEqual(slow_outlier.rate_ratio, 0.5)
+        self.assertAlmostEqual(fast_outlier.rate_ratio, 2.0)
+
+        self.assertIsNone(
+            moss.segment_speaking_rate("a" * 79, normal_audio, 100)
+        )
+        self.assertIsNone(
+            moss.segment_speaking_rate(
+                ("a" * 100) + " [pause 2s]",
+                normal_audio,
+                100,
+            )
+        )
+        self.assertIsNone(
+            moss.duration_outlier_analysis(fast_rate, [10.0], 1.35)
+        )
+
+    def test_moss_duration_retry_keeps_the_closest_pace(self) -> None:
+        self.assertTrue(
+            moss.duration_candidate_is_closer(11.0, 20.0, 10.0)
+        )
+        self.assertFalse(
+            moss.duration_candidate_is_closer(25.0, 20.0, 10.0)
+        )
+        self.assertFalse(
+            moss.duration_candidate_is_closer(None, 20.0, 10.0)
+        )
+        moss.validate_duration_outlier_controls(1, 1.35)
+        with self.assertRaises(moss.WorkerError):
+            moss.validate_duration_outlier_controls(4, 1.35)
+        with self.assertRaises(moss.WorkerError):
+            moss.validate_duration_outlier_controls(1, 1.0)
+
+    def test_moss_parser_uses_consistency_defaults(self) -> None:
+        parsed = moss.build_parser().parse_args(
+            ["synthesize", "--text", "input.txt", "--output", "output.wav"]
+        )
+        self.assertEqual(parsed.temperature, 1.3)
+        self.assertEqual(parsed.top_p, 0.75)
+        self.assertEqual(parsed.duration_outlier_retries, 1)
+        self.assertEqual(parsed.duration_outlier_ratio, 1.35)
 
     def test_snapshot_paths_include_pinned_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
