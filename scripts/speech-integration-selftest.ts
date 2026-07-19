@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   huggingFaceTokenUpdateSchema,
   huggingFaceUsageStatusSchema,
+  speechReviewSegmentSchema,
   speechStatusSchema,
 } from "../shared/schema";
 import { parseZeroGpuQuotaError } from "../server/huggingface-usage-utils";
@@ -48,6 +49,16 @@ assert.equal(
 assert.equal(huggingFaceTokenUpdateSchema.safeParse({ token: "not-a-token" }).success, false);
 assert.equal(huggingFaceTokenUpdateSchema.safeParse({ token: "" }).success, true);
 
+speechReviewSegmentSchema.parse({
+  index: 0,
+  text: "Review this take.",
+  durationSeconds: 2.4,
+  attempt: 2,
+  paceRatio: 1.42,
+  paceStatus: "unusually-fast",
+  updatedAt: Date.now(),
+});
+
 speechStatusSchema.parse({
   tokenConfigured: true,
   audioProcessing: {
@@ -80,7 +91,20 @@ speechStatusSchema.parse({
       hostedModes: ["direct", "clone", "continuation", "continuation-clone"],
     },
   ],
-  jobs: [],
+  jobs: [
+    {
+      id: "moss-review-job",
+      engine: "moss",
+      target: "local",
+      mode: "clone",
+      status: "awaiting-review",
+      progress: 95,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      reviewSegmentCount: 3,
+      reviewRevision: 1,
+    },
+  ],
 });
 
 huggingFaceUsageStatusSchema.parse({

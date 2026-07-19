@@ -411,12 +411,35 @@ export type SpeechOutputFormat = z.infer<typeof speechOutputFormatSchema>;
 export const speechReferenceEnhancementSchema = z.enum(["none", "cleanup", "audiosr"]);
 export type SpeechReferenceEnhancement = z.infer<typeof speechReferenceEnhancementSchema>;
 
+export const speechReviewSegmentSchema = z.object({
+  index: z.number().int().nonnegative(),
+  text: z.string(),
+  durationSeconds: z.number().positive(),
+  attempt: z.number().int().positive(),
+  startsChapter: z.boolean().optional(),
+  chapterTitle: z.string().optional(),
+  paceRatio: z.number().positive().optional(),
+  paceStatus: z
+    .enum(["typical", "unusually-fast", "unusually-slow", "not-compared"])
+    .optional(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export type SpeechReviewSegment = z.infer<typeof speechReviewSegmentSchema>;
+
 export const speechJobStatusSchema = z.object({
   id: z.string(),
   engine: speechEngineSchema,
   target: speechExecutionTargetSchema,
   mode: z.string(),
-  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
+  status: z.enum([
+    "queued",
+    "running",
+    "awaiting-review",
+    "completed",
+    "failed",
+    "cancelled",
+  ]),
   progress: z.number().min(0).max(100),
   message: z.string().optional(),
   outputFile: z.string().optional(),
@@ -432,6 +455,9 @@ export const speechJobStatusSchema = z.object({
   chapterCount: z.number().int().nonnegative().optional(),
   referenceEnhancement: speechReferenceEnhancementSchema.optional(),
   levelNormalized: z.boolean().optional(),
+  reviewSegmentCount: z.number().int().positive().optional(),
+  reviewRevision: z.number().int().nonnegative().optional(),
+  reviewError: z.string().optional(),
 });
 
 export type SpeechJobStatus = z.infer<typeof speechJobStatusSchema>;

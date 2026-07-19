@@ -24,6 +24,7 @@ import type {
   SpeechJobStatus,
   SpeechOutputFormat,
   SpeechReferenceEnhancement,
+  SpeechReviewSegment,
   SpeechStatus,
   SpeechWsMessage,
 } from "@shared/schema";
@@ -83,7 +84,12 @@ const CHAPTER_REGEX_PRESETS: Array<{ value: ChapterRegexPreset; label: string }>
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
   if (status === "completed") return "default";
   if (status === "failed") return "destructive";
-  if (status === "in-progress" || status === "running" || status === "cancelled") return "secondary";
+  if (
+    status === "in-progress" ||
+    status === "running" ||
+    status === "cancelled" ||
+    status === "awaiting-review"
+  ) return "secondary";
   return "outline";
 }
 
@@ -123,6 +129,177 @@ async function fetchSpeechStatus(): Promise<SpeechStatus> {
   const response = await fetch("/api/speech/status");
   if (!response.ok) throw new Error("Failed to load speech model status");
   return response.json();
+}
+
+async function fetchReviewSegments(jobId: string): Promise<SpeechReviewSegment[]> {
+  const response = await fetch(`/api/speech/jobs/${jobId}/segments`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || "Failed to load review segments");
+  return payload.segments;
+}
+
+function SegmentReview({ job }: { job: SpeechJobStatus }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [acting, setActing] = useState<string>();
+  const { data: segments, error, isLoading } = useQuery({
+    queryKey: ["speech-review-segments", job.id, job.reviewRevision ?? 0],
+    queryFn: () => fetchReviewSegments(job.id),
+    enabled: Boolean(job.reviewSegmentCount),
+    refetchOnWindowFocus: false,
+  });
+  const canAct = job.status === "awaiting-review" && !acting;
+
+  const runAction = async (
+    action: "rerun" | "compile",
+    segmentIndex?: number
+  ) => {
+    const actionKey = action === "compile" ? "compile" : `rerun-${segmentIndex}`;
+    setActing(actionKey);
+    try {
+      const endpoint =
+        action === "compile"
+          ? `/api/speech/jobs/${job.id}/compile`
+          : `/api/speech/jobs/${job.id}/segments/${segmentIndex}/rerun`;
+      const response = await fetch(endpoint, { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          payload?.error ||
+            (action === "compile"
+              ? "Compilation could not start"
+              : "Segment re-run could not start")
+        );
+      }
+      toast({
+        title:
+          action === "compile"
+            ? "Compilation queued"
+            : `Segment ${(segmentIndex ?? 0) + 1} queued`,
+        description:
+          action === "compile"
+            ? "VoiceForge is assembling and mastering the approved takes."
+            : "The existing take stays available unless the replacement succeeds.",
+      });
+      await queryClient.invalidateQueries({ queryKey: ["speech-status"] });
+    } catch (actionError) {
+      toast({
+        title: action === "compile" ? "Compilation failed" : "Re-run failed",
+        description:
+          actionError instanceof Error ? actionError.message : "Unknown review error",
+        variant: "destructive",
+      });
+    } finally {
+      setActing(undefined);
+    }
+  };
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-muted/15 p-3">
+      <div>
+        <p className="text-sm font-semibold">Review segments before compiling</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Audition every raw take. Re-run only the ones you dislike, then compile
+          the current set into the requested output format.
+        </p>
+      </div>
+      {isLoading && (
+        <p className="text-xs text-muted-foreground">Loading review audio…</p>
+      )}
+      {error && (
+        <p className="text-xs text-destructive">
+          {error instanceof Error ? error.message : "Unable to load review audio"}
+        </p>
+      )}
+      {job.reviewError && (
+        <p className="text-xs text-destructive">{job.reviewError}</p>
+      )}
+      {segments?.map((segment) => {
+        const actionKey = `rerun-${segment.index}`;
+        const paceLabel =
+          segment.paceStatus === "unusually-fast"
+            ? "pace looks fast"
+            : segment.paceStatus === "unusually-slow"
+              ? "pace looks slow"
+              : segment.paceStatus === "typical"
+                ? "pace looks typical"
+                : undefined;
+        return (
+          <div
+            key={segment.index}
+            className="space-y-2 rounded-md border bg-background p-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-medium">Segment {segment.index + 1}</p>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline">
+                  {segment.durationSeconds.toFixed(1)}s
+                </Badge>
+                <Badge variant="outline">
+                  take {segment.attempt}
+                </Badge>
+                {paceLabel && (
+                  <Badge
+                    variant={
+                      segment.paceStatus === "typical" ? "outline" : "secondary"
+                    }
+                  >
+                    {paceLabel}
+                    {segment.paceRatio
+                      ? ` (${segment.paceRatio.toFixed(2)}×)`
+                      : ""}
+                  </Badge>
+                )}
+              </div>
+            </div>
+            {segment.chapterTitle && (
+              <p className="text-xs font-medium text-muted-foreground">
+                Chapter: {segment.chapterTitle}
+              </p>
+            )}
+            <p className="whitespace-pre-wrap text-xs text-muted-foreground">
+              {segment.text}
+            </p>
+            <audio
+              key={segment.updatedAt}
+              controls
+              preload="none"
+              className="w-full"
+              src={`/api/speech/jobs/${job.id}/segments/${segment.index}/audio?v=${segment.updatedAt}`}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full"
+              disabled={!canAct}
+              onClick={() => void runAction("rerun", segment.index)}
+            >
+              {acting === actionKey ? (
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              Re-run this segment
+            </Button>
+          </div>
+        );
+      })}
+      <Button
+        type="button"
+        className="w-full"
+        disabled={!canAct || !segments?.length}
+        onClick={() => void runAction("compile")}
+      >
+        {acting === "compile" ? (
+          <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+        ) : (
+          <Waves className="mr-2 h-4 w-4" />
+        )}
+        Compile approved segments
+      </Button>
+    </div>
+  );
 }
 
 export function NeuralSpeechPanel({
@@ -189,6 +366,7 @@ export function NeuralSpeechPanel({
   const [audioSrSeed, setAudioSrSeed] = useState(42);
   const [outputFormat, setOutputFormat] = useState<SpeechOutputFormat>("wav");
   const [normalizeLevels, setNormalizeLevels] = useState(true);
+  const [reviewSegments, setReviewSegments] = useState(true);
   const [useChapters, setUseChapters] = useState(false);
   const [chapterPauseMs, setChapterPauseMs] = useState(0);
   const [chapterRegexPreset, setChapterRegexPreset] =
@@ -475,6 +653,10 @@ export function NeuralSpeechPanel({
       form.append("maxNewTokens", String(maxNewTokens));
       form.append("outputFormat", requestUsesChapters ? "mp3" : outputFormat);
       form.append("normalizeLevels", String(normalizeLevels));
+      form.append(
+        "reviewSegments",
+        String(engine === "moss" && target === "local" && reviewSegments)
+      );
       form.append("useChapters", String(requestUsesChapters));
       form.append("chapterPauseMs", String(chapterPauseMs));
       form.append("mp3Quality", String(mp3Quality));
@@ -1228,10 +1410,23 @@ export function NeuralSpeechPanel({
                 <div><Label className="text-xs">Max tokens</Label><Input type="number" min={128} max={8192} step={128} value={maxNewTokens} onChange={(event) => setMaxNewTokens(Number(event.target.value))} /></div>
               </div>
               {target === "local" && (
-                <p className="mt-3 text-xs text-muted-foreground">
-                  Local synthesis automatically retries a clear speaking-rate outlier once
-                  and keeps the attempt closest to the recent segment pace.
-                </p>
+                <Label className="mt-4 flex items-start gap-2 rounded-md border bg-muted/20 p-3 text-sm">
+                  <Checkbox
+                    checked={reviewSegments}
+                    onCheckedChange={(value) => setReviewSegments(value === true)}
+                  />
+                  <span>
+                    <span className="block font-medium">
+                      Review segments before compile
+                    </span>
+                    <span className="mt-1 block text-xs font-normal text-muted-foreground">
+                      Enabled by default. VoiceForge generates each segment once,
+                      lets you audition and re-run individual takes, and waits for
+                      you to compile the approved set. Pace checks are advisory;
+                      they never trigger an automatic re-run.
+                    </span>
+                  </span>
+                </Label>
               )}
             </div>
           )}
@@ -1241,8 +1436,8 @@ export function NeuralSpeechPanel({
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Button variant="outline" onClick={() => void submit(true)} disabled={!ready || submitting}><PlayCircle className="mr-2 h-4 w-4" />Preview first 600 characters</Button>
-            <Button onClick={() => void submit(false)} disabled={!ready || submitting}><Waves className="mr-2 h-4 w-4" />Generate audio</Button>
+            <Button variant="outline" onClick={() => void submit(true)} disabled={!ready || submitting}><PlayCircle className="mr-2 h-4 w-4" />{engine === "moss" && target === "local" && reviewSegments ? "Generate preview segments" : "Preview first 600 characters"}</Button>
+            <Button onClick={() => void submit(false)} disabled={!ready || submitting}><Waves className="mr-2 h-4 w-4" />{engine === "moss" && target === "local" && reviewSegments ? "Generate segments for review" : "Generate audio"}</Button>
           </div>
         </CardContent>
       </Card>
@@ -1255,6 +1450,9 @@ export function NeuralSpeechPanel({
             <div key={job.id} className="space-y-2 rounded-md border p-3">
               <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-medium">Job {job.id}</p><p className="text-xs text-muted-foreground">{targetLabel(job.target)} · {modeLabel(engine, job.mode)} · updated {formatDistanceToNow(job.updatedAt, { addSuffix: true })}</p></div><Badge variant={statusVariant(job.status)}>{job.status}</Badge></div>
               <Progress value={job.progress} />
+              {job.reviewSegmentCount && job.status !== "completed" && (
+                <SegmentReview job={job} />
+              )}
               <p className="text-xs text-muted-foreground">{job.message || "Waiting…"}{job.queuePosition !== undefined ? ` · queue ${job.queuePosition}` : ""}{job.etaSeconds !== undefined ? ` · ETA ${Math.ceil(job.etaSeconds)}s` : ""}</p>
               {(job.status === "queued" || job.status === "running") && <Button variant="destructive" size="sm" className="w-full" disabled={cancelling.has(job.id)} onClick={() => void cancelJob(job)}>{cancelling.has(job.id) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Square className="mr-2 h-4 w-4" />}{cancelling.has(job.id) ? "Cancelling…" : "Cancel job"}</Button>}
               {job.status === "completed" && (

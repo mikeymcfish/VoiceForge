@@ -1186,6 +1186,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           req.body?.normalizeLevels === undefined
             ? true
             : booleanValue(req.body.normalizeLevels);
+        const reviewSegments =
+          engine === "moss" &&
+          target === "local" &&
+          booleanValue(req.body?.reviewSegments);
         const referenceEnhancement =
           typeof req.body?.referenceEnhancement === "string"
             ? req.body.referenceEnhancement.trim().toLowerCase()
@@ -1332,6 +1336,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           gapMs: Math.round(finiteNumber(req.body?.gapMs, 120, 0, 2_000)),
           outputFormat,
           normalizeLevels,
+          reviewSegments,
           useChapters,
           chapterPauseMs: Math.round(finiteNumber(req.body?.chapterPauseMs, 0, 0, 10_000)),
           mp3Quality: Math.round(finiteNumber(req.body?.mp3Quality, 2, 0, 9)),
@@ -1367,6 +1372,76 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(409).json({ error: `Job is already ${job.status}`, job });
     }
     res.json({ job });
+  });
+
+  app.get("/api/speech/jobs/:id/segments", (req, res) => {
+    try {
+      const job = speechService.getJob(req.params.id);
+      if (!job) return res.status(404).json({ error: "Job not found" });
+      const segments = speechService.getReviewSegments(req.params.id);
+      if (!segments) {
+        return res.status(409).json({ error: "This job has no segments to review" });
+      }
+      res.json({ segments });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to load review segments",
+      });
+    }
+  });
+
+  app.get("/api/speech/jobs/:id/segments/:segmentIndex/audio", (req, res) => {
+    const segmentIndex = Number(req.params.segmentIndex);
+    if (!Number.isInteger(segmentIndex) || segmentIndex < 0) {
+      return res.status(400).json({ error: "Choose a valid segment" });
+    }
+    try {
+      const job = speechService.getJob(req.params.id);
+      if (!job) return res.status(404).json({ error: "Job not found" });
+      const audioPath = speechService.getReviewSegmentAudioPath(
+        req.params.id,
+        segmentIndex
+      );
+      if (!audioPath) return res.status(404).json({ error: "Segment audio not found" });
+      res.type("audio/wav");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="moss-${job.id}-segment-${segmentIndex + 1}.wav"`
+      );
+      res.sendFile(audioPath);
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to load segment audio",
+      });
+    }
+  });
+
+  app.post("/api/speech/jobs/:id/segments/:segmentIndex/rerun", (req, res) => {
+    const segmentIndex = Number(req.params.segmentIndex);
+    if (!Number.isInteger(segmentIndex) || segmentIndex < 0) {
+      return res.status(400).json({ error: "Choose a valid segment" });
+    }
+    try {
+      const job = speechService.rerunReviewSegment(req.params.id, segmentIndex);
+      if (!job) return res.status(404).json({ error: "Job not found" });
+      res.status(202).json({ job });
+    } catch (error) {
+      res.status(409).json({
+        error: error instanceof Error ? error.message : "Unable to re-run segment",
+      });
+    }
+  });
+
+  app.post("/api/speech/jobs/:id/compile", (req, res) => {
+    try {
+      const job = speechService.compileReview(req.params.id);
+      if (!job) return res.status(404).json({ error: "Job not found" });
+      res.status(202).json({ job });
+    } catch (error) {
+      res.status(409).json({
+        error: error instanceof Error ? error.message : "Unable to compile segments",
+      });
+    }
   });
 
   app.get("/api/speech/jobs/:id/audio", (req, res) => {

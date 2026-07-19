@@ -12,6 +12,7 @@ import type {
   SpeechJobStatus,
   SpeechOutputFormat,
   SpeechReferenceEnhancement,
+  SpeechReviewSegment,
   SpeechStatus,
   SpeechWsMessage,
 } from "@shared/schema";
@@ -60,8 +61,77 @@ type EngineConfig = {
   hostedModes: readonly string[];
 };
 
+type SynthesisParams = {
+  engine: SpeechEngine;
+  target: SpeechExecutionTarget;
+  mode: string;
+  text: string;
+  voiceBuffer?: Buffer;
+  voiceFileName?: string;
+  modelId?: string;
+  referenceText?: string;
+  language?: string;
+  xVectorOnly?: boolean;
+  voiceDescription?: string;
+  speaker?: string;
+  instruction?: string;
+  modelSize?: string;
+  durationControl?: boolean;
+  durationTokens?: number;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  repetitionPenalty?: number;
+  maxNewTokens?: number;
+  maxChars?: number;
+  gapMs?: number;
+  outputFormat?: SpeechOutputFormat;
+  useChapters?: boolean;
+  chapterPauseMs?: number;
+  mp3Quality?: number;
+  normalizeLevels?: boolean;
+  reviewSegments?: boolean;
+  referenceEnhancement?: SpeechReferenceEnhancement;
+  audioSrModel?: "speech" | "basic";
+  audioSrDevice?: string;
+  audioSrDdimSteps?: number;
+  audioSrGuidanceScale?: number;
+  audioSrSeed?: number;
+};
+
+type MossReviewManifestSegment = {
+  index: number;
+  text: string;
+  audio_file: string;
+  sample_count: number;
+  duration_seconds: number;
+  attempt: number;
+  starts_chapter: boolean;
+  chapter_title: string | null;
+  speaking_rate: number | null;
+  pace_ratio: number | null;
+  pace_status: "typical" | "unusually-fast" | "unusually-slow" | "not-compared";
+  updated_at: number;
+};
+
+type MossReviewManifest = {
+  version: 1;
+  sample_rate: number;
+  gap_ms: number;
+  chapter_pause_ms: number;
+  segments: MossReviewManifestSegment[];
+};
+
 type InternalJob = SpeechJobStatus & {
   workingDir: string;
+  reviewContext?: {
+    config: EngineConfig;
+    params: SynthesisParams;
+    rawOutputPath: string;
+    chapterManifestPath: string;
+    reviewManifestPath: string;
+    voicePath?: string;
+  };
 };
 
 type WorkerMessage = {
@@ -411,7 +481,11 @@ class SpeechService {
   }
 
   private publicJob(job: InternalJob): SpeechJobStatus {
-    const { workingDir: _workingDir, ...result } = job;
+    const {
+      workingDir: _workingDir,
+      reviewContext: _reviewContext,
+      ...result
+    } = job;
     return result;
   }
 
@@ -765,42 +839,7 @@ class SpeechService {
     }
   }
 
-  public async startSynthesis(params: {
-    engine: SpeechEngine;
-    target: SpeechExecutionTarget;
-    mode: string;
-    text: string;
-    voiceBuffer?: Buffer;
-    voiceFileName?: string;
-    modelId?: string;
-    referenceText?: string;
-    language?: string;
-    xVectorOnly?: boolean;
-    voiceDescription?: string;
-    speaker?: string;
-    instruction?: string;
-    modelSize?: string;
-    durationControl?: boolean;
-    durationTokens?: number;
-    temperature?: number;
-    topP?: number;
-    topK?: number;
-    repetitionPenalty?: number;
-    maxNewTokens?: number;
-    maxChars?: number;
-    gapMs?: number;
-    outputFormat?: SpeechOutputFormat;
-    useChapters?: boolean;
-    chapterPauseMs?: number;
-    mp3Quality?: number;
-    normalizeLevels?: boolean;
-    referenceEnhancement?: SpeechReferenceEnhancement;
-    audioSrModel?: "speech" | "basic";
-    audioSrDevice?: string;
-    audioSrDdimSteps?: number;
-    audioSrGuidanceScale?: number;
-    audioSrSeed?: number;
-  }): Promise<SpeechJobStatus> {
+  public async startSynthesis(params: SynthesisParams): Promise<SpeechJobStatus> {
     const config = this.configs[params.engine];
     assertAllowedMode(config, params.target, params.mode);
     let modelId = params.modelId?.trim() || config.defaultModelId;
@@ -831,6 +870,10 @@ class SpeechService {
     const useChapters = params.useChapters === true;
     const outputFormat: SpeechOutputFormat = useChapters ? "mp3" : params.outputFormat ?? "wav";
     const normalizeLevels = params.normalizeLevels ?? true;
+    const reviewSegments =
+      params.engine === "moss" &&
+      params.target === "local" &&
+      params.reviewSegments === true;
     const referenceEnhancement: SpeechReferenceEnhancement =
       params.referenceEnhancement ?? "none";
     const audioCapabilities = getAudioProcessingCapabilities();
@@ -871,6 +914,7 @@ class SpeechService {
     const textPath = path.join(workingDir, "script.txt");
     const rawOutputPath = path.join(workingDir, "output.wav");
     const chapterManifestPath = path.join(workingDir, "chapters.json");
+    const reviewManifestPath = path.join(workingDir, "review.json");
     await fsPromises.writeFile(textPath, params.text, "utf-8");
     let voicePath: string | undefined;
     if (params.voiceBuffer) {
@@ -914,6 +958,7 @@ class SpeechService {
       outputFormat,
       useChapters,
       normalizeLevels,
+      reviewSegments,
       referenceEnhancement,
     };
     const execute = async () => {
@@ -930,6 +975,7 @@ class SpeechService {
           textPath,
           rawOutputPath,
           chapterManifestPath,
+          reviewManifestPath,
           effectiveVoicePath
         );
       } else {
@@ -1060,6 +1106,98 @@ class SpeechService {
     );
   }
 
+  private readMossReview(
+    job: InternalJob,
+    reviewManifestPath = job.reviewContext?.reviewManifestPath
+  ): MossReviewManifest {
+    if (!reviewManifestPath) throw new Error("This job has no segment review.");
+    let value: unknown;
+    try {
+      value = JSON.parse(fs.readFileSync(reviewManifestPath, "utf-8"));
+    } catch (error) {
+      throw new Error(
+        `The MOSS segment review is unreadable: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+    if (!value || typeof value !== "object") {
+      throw new Error("The MOSS segment review is invalid.");
+    }
+    const manifest = value as Partial<MossReviewManifest>;
+    if (
+      manifest.version !== 1 ||
+      !Number.isInteger(manifest.sample_rate) ||
+      Number(manifest.sample_rate) <= 0 ||
+      !Number.isInteger(manifest.gap_ms) ||
+      Number(manifest.gap_ms) < 0 ||
+      !Number.isInteger(manifest.chapter_pause_ms) ||
+      Number(manifest.chapter_pause_ms) < 0 ||
+      !Array.isArray(manifest.segments) ||
+      manifest.segments.length === 0
+    ) {
+      throw new Error("The MOSS segment review has an unsupported structure.");
+    }
+    const paceStatuses = new Set([
+      "typical",
+      "unusually-fast",
+      "unusually-slow",
+      "not-compared",
+    ]);
+    manifest.segments.forEach((segment, expectedIndex) => {
+      if (
+        !segment ||
+        segment.index !== expectedIndex ||
+        typeof segment.text !== "string" ||
+        !segment.text.trim() ||
+        typeof segment.audio_file !== "string" ||
+        !Number.isInteger(segment.sample_count) ||
+        segment.sample_count <= 0 ||
+        !Number.isFinite(segment.duration_seconds) ||
+        segment.duration_seconds <= 0 ||
+        !Number.isInteger(segment.attempt) ||
+        segment.attempt <= 0 ||
+        typeof segment.starts_chapter !== "boolean" ||
+        (segment.chapter_title !== null &&
+          (typeof segment.chapter_title !== "string" ||
+            !segment.chapter_title.trim())) ||
+        (segment.pace_ratio !== null &&
+          (!Number.isFinite(segment.pace_ratio) || segment.pace_ratio <= 0)) ||
+        !paceStatuses.has(segment.pace_status) ||
+        !Number.isInteger(segment.updated_at) ||
+        segment.updated_at <= 0
+      ) {
+        throw new Error(
+          `The MOSS segment review entry ${expectedIndex + 1} is invalid.`
+        );
+      }
+      this.resolveReviewSegmentPath(job, reviewManifestPath, segment.audio_file);
+    });
+    return manifest as MossReviewManifest;
+  }
+
+  private resolveReviewSegmentPath(
+    job: InternalJob,
+    reviewManifestPath: string,
+    audioFile: string
+  ): string {
+    if (
+      path.isAbsolute(audioFile) ||
+      audioFile.split(/[\\/]+/).some((part) => part === "..")
+    ) {
+      throw new Error("The MOSS segment review contains an unsafe audio path.");
+    }
+    const resolved = path.resolve(path.dirname(reviewManifestPath), audioFile);
+    const root = path.resolve(job.workingDir);
+    if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+      throw new Error("The MOSS segment review points outside its job directory.");
+    }
+    if (!fs.existsSync(resolved)) {
+      throw new Error("A reviewed MOSS segment audio file is missing.");
+    }
+    return resolved;
+  }
+
   private async runLocal(
     job: InternalJob,
     config: EngineConfig,
@@ -1067,6 +1205,7 @@ class SpeechService {
     textPath: string,
     outputPath: string,
     chapterManifestPath: string,
+    reviewManifestPath: string,
     voicePath?: string
   ): Promise<void> {
     this.assertJobActive(job.id);
@@ -1088,6 +1227,10 @@ class SpeechService {
       args.push("--max-new-tokens", String(params.maxNewTokens ?? 4096));
       args.push("--max-chars", String(params.maxChars ?? 1800));
       args.push("--gap-ms", String(params.gapMs ?? 120));
+      if (params.reviewSegments) {
+        args.push("--duration-outlier-retries", "0");
+        args.push("--review-manifest", reviewManifestPath);
+      }
     }
 
     this.updateJob(job.id, { status: "running", progress: 5, message: "Running locally…" });
@@ -1116,6 +1259,29 @@ class SpeechService {
       job.id
     );
     if (!fs.existsSync(outputPath)) throw new Error("The local worker exited without creating audio.");
+    if (params.engine === "moss" && params.reviewSegments) {
+      const review = this.readMossReview(job, reviewManifestPath);
+      const { voiceBuffer: _voiceBuffer, ...reviewParams } = params;
+      const reviewContext = {
+        config,
+        params: reviewParams,
+        rawOutputPath: outputPath,
+        chapterManifestPath,
+        reviewManifestPath,
+        voicePath,
+      };
+      this.updateJob(job.id, {
+        status: "awaiting-review",
+        progress: 95,
+        message: `${review.segments.length} segments ready for review`,
+        reviewSegmentCount: review.segments.length,
+        reviewRevision: 1,
+        reviewError: undefined,
+        outputFile: undefined,
+        reviewContext,
+      });
+      return;
+    }
     const finalized = await this.finalizeOutput(
       job,
       params,
@@ -1418,6 +1584,218 @@ class SpeechService {
       if (fileHandle) await fileHandle.close().catch(() => undefined);
       if (!completed) await fsPromises.rm(temporaryPath, { force: true }).catch(() => undefined);
     }
+  }
+
+  public getReviewSegments(id: string): SpeechReviewSegment[] | undefined {
+    const job = this.jobs.get(id);
+    if (!job?.reviewContext) return undefined;
+    const review = this.readMossReview(job);
+    return review.segments.map((segment) => ({
+      index: segment.index,
+      text: segment.text,
+      durationSeconds: segment.duration_seconds,
+      attempt: segment.attempt,
+      startsChapter: segment.starts_chapter || undefined,
+      chapterTitle: segment.chapter_title || undefined,
+      paceRatio: segment.pace_ratio ?? undefined,
+      paceStatus: segment.pace_status,
+      updatedAt: segment.updated_at,
+    }));
+  }
+
+  public getReviewSegmentAudioPath(
+    id: string,
+    segmentIndex: number
+  ): string | undefined {
+    const job = this.jobs.get(id);
+    if (!job?.reviewContext || !Number.isInteger(segmentIndex)) return undefined;
+    const review = this.readMossReview(job);
+    const segment = review.segments[segmentIndex];
+    if (!segment) return undefined;
+    return this.resolveReviewSegmentPath(
+      job,
+      job.reviewContext.reviewManifestPath,
+      segment.audio_file
+    );
+  }
+
+  public rerunReviewSegment(
+    id: string,
+    segmentIndex: number
+  ): SpeechJobStatus | undefined {
+    const job = this.jobs.get(id);
+    if (!job) return undefined;
+    if (job.status !== "awaiting-review" || !job.reviewContext) {
+      throw new Error("This job is not waiting for segment review.");
+    }
+    if (!Number.isInteger(segmentIndex)) {
+      throw new Error("Choose a valid segment to re-run.");
+    }
+    const review = this.readMossReview(job);
+    if (!review.segments[segmentIndex]) {
+      throw new Error("The requested review segment does not exist.");
+    }
+    const context = job.reviewContext;
+    const params = context.params;
+    const args = [
+      "--model-id",
+      job.modelId!,
+      "--review-manifest",
+      context.reviewManifestPath,
+      "--segment-index",
+      String(segmentIndex),
+      "--temperature",
+      String(params.temperature ?? MOSS_DEFAULT_TEMPERATURE),
+      "--top-p",
+      String(params.topP ?? MOSS_DEFAULT_TOP_P),
+      "--top-k",
+      String(params.topK ?? 25),
+      "--repetition-penalty",
+      String(params.repetitionPenalty ?? 1),
+      "--max-new-tokens",
+      String(params.maxNewTokens ?? 4096),
+    ];
+    if (context.voicePath && params.mode !== "direct") {
+      args.push("--voice", context.voicePath);
+    }
+    if (params.language) args.push("--language", params.language);
+    this.updateJob(id, {
+      status: "queued",
+      progress: 5,
+      message: `Waiting to re-run segment ${segmentIndex + 1}…`,
+      reviewError: undefined,
+    });
+    void this.enqueueLocal(id, async () => {
+      this.updateJob(id, {
+        status: "running",
+        progress: 8,
+        message: `Re-running segment ${segmentIndex + 1}/${review.segments.length}…`,
+      });
+      await this.runPython(
+        context.config,
+        "rerun-segment",
+        args,
+        (message) => {
+          if (message.event === "progress") {
+            const raw = typeof message.progress === "number" ? message.progress : 0;
+            this.updateJob(id, {
+              progress: raw <= 1 ? Math.max(8, raw * 90) : Math.min(92, raw),
+              message: message.message,
+            });
+          } else if (message.event === "log") {
+            this.log(message.level || "info", message.message || "");
+          } else if (message.event === "error") {
+            throw new Error(
+              message.error || message.message || "MOSS segment re-run failed."
+            );
+          }
+        },
+        id
+      );
+      const updatedReview = this.readMossReview(job);
+      this.updateJob(id, {
+        status: "awaiting-review",
+        progress: 95,
+        message: `Segment ${segmentIndex + 1} re-run is ready to review`,
+        reviewSegmentCount: updatedReview.segments.length,
+        reviewRevision: (this.jobs.get(id)?.reviewRevision ?? 0) + 1,
+        reviewError: undefined,
+      });
+    }).catch((error) => {
+      if (this.jobs.get(id)?.status === "cancelled") return;
+      const detail = error instanceof Error ? error.message : String(error);
+      this.updateJob(id, {
+        status: "awaiting-review",
+        progress: 95,
+        message: `Segment ${segmentIndex + 1} re-run failed; the prior take was kept`,
+        reviewError: detail,
+      });
+      this.log("error", `MOSS review job ${id} could not re-run segment ${segmentIndex + 1}: ${detail}`);
+    });
+    return this.getJob(id);
+  }
+
+  public compileReview(id: string): SpeechJobStatus | undefined {
+    const job = this.jobs.get(id);
+    if (!job) return undefined;
+    if (job.status !== "awaiting-review" || !job.reviewContext) {
+      throw new Error("This job is not waiting for segment review.");
+    }
+    const context = job.reviewContext;
+    const review = this.readMossReview(job);
+    this.updateJob(id, {
+      status: "queued",
+      progress: 5,
+      message: "Waiting to compile reviewed segments…",
+      reviewError: undefined,
+    });
+    void this.enqueueLocal(id, async () => {
+      this.updateJob(id, {
+        status: "running",
+        progress: 8,
+        message: `Compiling ${review.segments.length} reviewed segments…`,
+      });
+      const args = [
+        "--review-manifest",
+        context.reviewManifestPath,
+        "--output",
+        context.rawOutputPath,
+      ];
+      if (context.params.useChapters) {
+        args.push("--chapter-manifest", context.chapterManifestPath);
+      }
+      await this.runPython(
+        context.config,
+        "compile-review",
+        args,
+        (message) => {
+          if (message.event === "progress") {
+            const raw = typeof message.progress === "number" ? message.progress : 0;
+            this.updateJob(id, {
+              progress: raw <= 1 ? Math.max(8, raw * 90) : Math.min(92, raw),
+              message: message.message,
+            });
+          } else if (message.event === "log") {
+            this.log(message.level || "info", message.message || "");
+          } else if (message.event === "error") {
+            throw new Error(
+              message.error || message.message || "MOSS review compilation failed."
+            );
+          }
+        },
+        id
+      );
+      if (!fs.existsSync(context.rawOutputPath)) {
+        throw new Error("The MOSS review compiler did not create audio.");
+      }
+      const finalized = await this.finalizeOutput(
+        job,
+        context.params,
+        context.rawOutputPath,
+        context.chapterManifestPath
+      );
+      this.updateJob(id, {
+        status: "completed",
+        progress: 100,
+        message: "Reviewed MOSS segments compiled",
+        outputFile: finalized.outputPath,
+        outputFormat: finalized.format,
+        outputMimeType: finalized.mimeType,
+        chapterCount: finalized.chapterCount,
+        reviewError: undefined,
+      });
+    }).catch((error) => {
+      if (this.jobs.get(id)?.status === "cancelled") return;
+      const detail = error instanceof Error ? error.message : String(error);
+      this.updateJob(id, {
+        status: "awaiting-review",
+        progress: 95,
+        message: "Compilation failed; the reviewed segments are still available",
+        reviewError: detail,
+      });
+      this.log("error", `MOSS review job ${id} could not compile: ${detail}`);
+    });
+    return this.getJob(id);
   }
 
   public getJob(id: string): SpeechJobStatus | undefined {

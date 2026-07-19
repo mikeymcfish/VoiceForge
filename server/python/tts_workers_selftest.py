@@ -464,8 +464,27 @@ class WorkerHelpersTest(unittest.TestCase):
         )
         self.assertEqual(parsed.temperature, 1.3)
         self.assertEqual(parsed.top_p, 0.75)
-        self.assertEqual(parsed.duration_outlier_retries, 1)
+        self.assertEqual(parsed.duration_outlier_retries, 0)
         self.assertEqual(parsed.duration_outlier_ratio, 1.35)
+
+    def test_moss_review_parser_commands(self) -> None:
+        rerun = moss.build_parser().parse_args([
+            "rerun-segment",
+            "--review-manifest",
+            "review.json",
+            "--segment-index",
+            "2",
+        ])
+        self.assertEqual(rerun.segment_index, 2)
+        self.assertEqual(rerun.temperature, 1.3)
+        compile_args = moss.build_parser().parse_args([
+            "compile-review",
+            "--review-manifest",
+            "review.json",
+            "--output",
+            "output.wav",
+        ])
+        self.assertEqual(compile_args.output, "output.wav")
 
     def test_snapshot_paths_include_pinned_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -549,6 +568,91 @@ class WorkerHelpersTest(unittest.TestCase):
         self.assertEqual(timing.gap_samples_before, (0, 30))
         self.assertEqual(timing.start_samples, (0, 32))
         self.assertTrue((combined[:, 2:32] == 0).all())
+
+    def test_moss_review_manifest_compiles_current_segment_takes(self) -> None:
+        import numpy as np
+        import soundfile as sf
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            segment_dir = root / "segments"
+            segment_dir.mkdir()
+            sf.write(
+                segment_dir / "segment-0001.wav",
+                np.full(1_000, 0.1, dtype=np.float32),
+                1_000,
+                subtype="FLOAT",
+            )
+            sf.write(
+                segment_dir / "segment-0002.wav",
+                np.full(500, 0.2, dtype=np.float32),
+                1_000,
+                subtype="FLOAT",
+            )
+            review_path = root / "review.json"
+            manifest = {
+                "version": moss.REVIEW_MANIFEST_VERSION,
+                "sample_rate": 1_000,
+                "gap_ms": 100,
+                "chapter_pause_ms": 200,
+                "segments": [
+                    {
+                        "index": 0,
+                        "text": "First segment.",
+                        "audio_file": "segments/segment-0001.wav",
+                        "sample_count": 1_000,
+                        "duration_seconds": 1.0,
+                        "attempt": 1,
+                        "starts_chapter": False,
+                        "chapter_title": None,
+                        "speaking_rate": None,
+                        "pace_ratio": None,
+                        "pace_status": "not-compared",
+                        "updated_at": 1,
+                    },
+                    {
+                        "index": 1,
+                        "text": "Chapter Two.",
+                        "audio_file": "segments/segment-0002.wav",
+                        "sample_count": 500,
+                        "duration_seconds": 0.5,
+                        "attempt": 2,
+                        "starts_chapter": True,
+                        "chapter_title": "Chapter Two",
+                        "speaking_rate": None,
+                        "pace_ratio": None,
+                        "pace_status": "not-compared",
+                        "updated_at": 2,
+                    },
+                ],
+            }
+            moss.write_review_manifest(review_path, manifest)
+            self.assertEqual(
+                moss.read_review_manifest(review_path)["segments"][1]["attempt"],
+                2,
+            )
+
+            output_path = root / "compiled.wav"
+            chapter_path = root / "chapters.json"
+            moss.compile_review(
+                str(review_path),
+                str(output_path),
+                str(chapter_path),
+            )
+            output_info = sf.info(output_path)
+            self.assertEqual(output_info.samplerate, 1_000)
+            self.assertEqual(output_info.frames, 1_800)
+            chapter_manifest = json.loads(chapter_path.read_text(encoding="utf-8"))
+            self.assertEqual(chapter_manifest["chapters"][0]["start_sample"], 1_300)
+
+            unsafe = json.loads(json.dumps(manifest))
+            unsafe["segments"][0]["audio_file"] = "../outside.wav"
+            with self.assertRaises(moss.WorkerError):
+                moss.validate_review_manifest(
+                    unsafe,
+                    review_path,
+                    require_audio=False,
+                )
 
     def test_qwen_manifest_detects_snapshot_tampering(self) -> None:
         original_minimum = qwen.MINIMUM_MODEL_BYTES

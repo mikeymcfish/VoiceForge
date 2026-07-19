@@ -159,7 +159,7 @@ Useful environment variables:
 | `QWEN_TTS_PYTHON` | Python executable for the isolated Qwen3-TTS environment. It must not share an environment with IndexTTS or MOSS. |
 | `MOSS_TTS_PYTHON` | Python executable for the isolated MOSS-TTS v1.5 environment. It must not share an environment with Qwen or IndexTTS. |
 | `MOSS_TTS_FFMPEG_BIN` | Windows-only path to an FFmpeg 4-7 shared-build `bin` directory used by MOSS/TorchCodec. The setup command discovers and writes this automatically. |
-| `MOSS_TTS_DURATION_OUTLIER_RETRIES` | Local MOSS retries for an eligible speaking-rate outlier; defaults to `1`. Set to `0` to disable or up to `3`. |
+| `MOSS_TTS_DURATION_OUTLIER_RETRIES` | Optional worker-level MOSS pace retries for direct CLI use; defaults to `0`. VoiceForge's review workflow never enables automatic retries. |
 | `MOSS_TTS_DURATION_OUTLIER_RATIO` | Local MOSS pace tolerance versus the median of recent eligible segments; defaults to `1.35`. |
 | `VOICEFORGE_FFMPEG_BIN` | Optional full path to `ffmpeg` (or a directory containing it) for reference cleanup, MP3 export, and chapter metadata. VoiceForge otherwise checks `MOSS_TTS_FFMPEG_BIN` and `PATH`. |
 | `VOICEFORGE_AUDIOSR_BIN` | Optional full path to the isolated AudioSR CLI executable. AudioSR is deliberately not installed into the Qwen or MOSS environments. |
@@ -428,12 +428,20 @@ generated audio from the immediately preceding segment. Keeping only one prior
 segment bounds the continuation context instead of allowing it to grow with the
 entire document, while carrying the recent voice and prosody forward.
 
-Local MOSS also compares each eligible segment's speaking rate with the median
-of up to five recent segments. A segment more than `1.35x` outside that pace is
-generated once more, and VoiceForge keeps whichever completed attempt is closer
-to the recent pace. Short segments and text containing explicit `[pause …]`
-controls are excluded. The default MOSS sampling controls are temperature `1.3`,
-top-p `0.75`, and top-k `25`.
+The browser app enables **Review segments before compile** for Local MOSS by
+default. Each segment is generated once and retained as an individual WAV. When
+generation reaches **awaiting-review**, audition every segment, re-run any take
+you dislike, and then click **Compile approved segments**. A successful re-run
+atomically replaces only that segment; a failed re-run leaves the prior take in
+place. Output normalization, MP3 encoding, and chapter packaging happen only
+after Compile.
+
+VoiceForge still compares eligible segments with the recent median and labels
+an unusually fast or slow pace as an advisory review hint. It does not
+automatically re-run anything. Short segments and text containing explicit
+`[pause …]` controls are not pace-compared. The default MOSS sampling controls
+are temperature `1.3`, top-p `0.75`, and top-k `25`. Turn the review option off
+to retain one-shot generation and compilation.
 
 #### Comparing the local MOSS checkpoints
 

@@ -570,7 +570,23 @@ export class VoiceForgeOrchestrator {
     if (!job || job.engine !== parsed.engine) return undefined;
     const model = modelForEngine(parsed.engine, job.modelId);
     const mode = (job.mode === "custom" ? "preset" : job.mode) as Exclude<VoiceForgeMode, "auto">;
-    return this.normalizeJob(id, model, job.target === "hf-space" ? "agent" : "local", mode, job);
+    const automationJob = {
+      ...job,
+      status: (
+        job.status === "awaiting-review" ? "running" : job.status
+      ) as PublicJobState,
+      message:
+        job.status === "awaiting-review"
+          ? "Waiting for manual segment review in the VoiceForge app"
+          : job.message,
+    };
+    return this.normalizeJob(
+      id,
+      model,
+      job.target === "hf-space" ? "agent" : "local",
+      mode,
+      automationJob
+    );
   }
 
   private normalizeJob(

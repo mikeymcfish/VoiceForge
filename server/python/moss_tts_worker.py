@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
@@ -91,8 +92,9 @@ DEFAULT_TEMPERATURE = 1.3
 DEFAULT_TOP_P = 0.75
 DEFAULT_TOP_K = 25
 DEFAULT_REPETITION_PENALTY = 1.0
-DEFAULT_DURATION_OUTLIER_RETRIES = 1
+DEFAULT_DURATION_OUTLIER_RETRIES = 0
 DEFAULT_DURATION_OUTLIER_RATIO = 1.35
+REVIEW_MANIFEST_VERSION = 1
 DURATION_RATE_HISTORY_SIZE = 5
 MIN_DURATION_RATE_HISTORY = 2
 MIN_DURATION_RATE_SPEECH_UNITS = 80
@@ -809,6 +811,256 @@ def validate_duration_outlier_controls(retries: int, maximum_ratio: float) -> No
         )
 
 
+def _review_audio_path(manifest_path: Path, audio_file: object) -> Path:
+    if not isinstance(audio_file, str) or not audio_file.strip():
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "A review segment has no audio file.",
+        )
+    relative = Path(audio_file)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "A review segment contains an unsafe audio path.",
+        )
+    root = manifest_path.parent.resolve()
+    resolved = (root / relative).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "A review segment points outside the managed job directory.",
+        ) from exc
+    return resolved
+
+
+def validate_review_manifest(
+    manifest: object,
+    manifest_path: Path | str,
+    *,
+    require_audio: bool = True,
+) -> Dict[str, Any]:
+    path = Path(manifest_path).expanduser().resolve()
+    if not isinstance(manifest, dict):
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "The MOSS review manifest must be a JSON object.",
+        )
+    required_top_level = {
+        "version",
+        "sample_rate",
+        "gap_ms",
+        "chapter_pause_ms",
+        "segments",
+    }
+    if set(manifest) != required_top_level:
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "The MOSS review manifest has unexpected fields.",
+        )
+    if manifest.get("version") != REVIEW_MANIFEST_VERSION:
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "The MOSS review manifest version is unsupported.",
+        )
+    for field in ("sample_rate", "gap_ms", "chapter_pause_ms"):
+        value = manifest.get(field)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise WorkerError(
+                "INVALID_REVIEW_MANIFEST",
+                f"The MOSS review manifest {field} value is invalid.",
+            )
+    if int(manifest["sample_rate"]) <= 0:
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "The MOSS review sample rate must be positive.",
+        )
+    if int(manifest["gap_ms"]) < 0 or int(manifest["chapter_pause_ms"]) < 0:
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "MOSS review pauses cannot be negative.",
+        )
+
+    segments = manifest.get("segments")
+    if not isinstance(segments, list) or not segments:
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "The MOSS review manifest contains no segments.",
+        )
+    required_segment_fields = {
+        "index",
+        "text",
+        "audio_file",
+        "sample_count",
+        "duration_seconds",
+        "attempt",
+        "starts_chapter",
+        "chapter_title",
+        "speaking_rate",
+        "pace_ratio",
+        "pace_status",
+        "updated_at",
+    }
+    for expected_index, segment in enumerate(segments):
+        if not isinstance(segment, dict) or set(segment) != required_segment_fields:
+            raise WorkerError(
+                "INVALID_REVIEW_MANIFEST",
+                "A MOSS review segment has unexpected fields.",
+            )
+        if segment.get("index") != expected_index:
+            raise WorkerError(
+                "INVALID_REVIEW_MANIFEST",
+                "MOSS review segment indices are not contiguous.",
+            )
+        if not isinstance(segment.get("text"), str) or not segment["text"].strip():
+            raise WorkerError(
+                "INVALID_REVIEW_MANIFEST",
+                "A MOSS review segment has no text.",
+            )
+        for field in ("sample_count", "attempt", "updated_at"):
+            value = segment.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise WorkerError(
+                    "INVALID_REVIEW_MANIFEST",
+                    f"A MOSS review segment has an invalid {field} value.",
+                )
+        duration = segment.get("duration_seconds")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration <= 0:
+            raise WorkerError(
+                "INVALID_REVIEW_MANIFEST",
+                "A MOSS review segment has an invalid duration.",
+            )
+        if not isinstance(segment.get("starts_chapter"), bool):
+            raise WorkerError(
+                "INVALID_REVIEW_MANIFEST",
+                "A MOSS review segment has invalid chapter state.",
+            )
+        chapter_title = segment.get("chapter_title")
+        if chapter_title is not None and (
+            not isinstance(chapter_title, str) or not chapter_title.strip()
+        ):
+            raise WorkerError(
+                "INVALID_REVIEW_MANIFEST",
+                "A MOSS review segment has an invalid chapter title.",
+            )
+        for field in ("speaking_rate", "pace_ratio"):
+            value = segment.get(field)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0
+            ):
+                raise WorkerError(
+                    "INVALID_REVIEW_MANIFEST",
+                    f"A MOSS review segment has an invalid {field} value.",
+                )
+        if segment.get("pace_status") not in {
+            "typical",
+            "unusually-fast",
+            "unusually-slow",
+            "not-compared",
+        }:
+            raise WorkerError(
+                "INVALID_REVIEW_MANIFEST",
+                "A MOSS review segment has an invalid pace status.",
+            )
+        audio_path = _review_audio_path(path, segment.get("audio_file"))
+        if require_audio and not audio_path.is_file():
+            raise WorkerError(
+                "FILE_NOT_FOUND",
+                f"MOSS review audio is missing for segment {expected_index + 1}.",
+            )
+    return manifest
+
+
+def read_review_manifest(path: Path | str) -> Dict[str, Any]:
+    manifest_path = Path(path).expanduser().resolve()
+    if not manifest_path.is_file():
+        raise WorkerError(
+            "FILE_NOT_FOUND",
+            f"MOSS review manifest not found: {manifest_path}",
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkerError(
+            "INVALID_REVIEW_MANIFEST",
+            "The MOSS review manifest is unreadable.",
+        ) from exc
+    return validate_review_manifest(manifest, manifest_path)
+
+
+def write_review_manifest(
+    path: Path | str,
+    manifest: Dict[str, Any],
+) -> Path:
+    destination = Path(path).expanduser().resolve()
+    validate_review_manifest(manifest, destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            dir=destination.parent,
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(manifest, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+        temporary_path.replace(destination)
+        return destination
+    except Exception:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def pace_metadata(
+    rate: Optional[float],
+    rate_history: Sequence[float],
+    maximum_ratio: float,
+) -> tuple[Optional[float], str]:
+    if rate is None:
+        return None, "not-compared"
+    baseline = recent_rate_baseline(rate_history)
+    if baseline is None or baseline <= 0:
+        return None, "not-compared"
+    ratio = rate / baseline
+    if ratio > maximum_ratio:
+        return ratio, "unusually-fast"
+    if ratio < 1.0 / maximum_ratio:
+        return ratio, "unusually-slow"
+    return ratio, "typical"
+
+
+def refresh_review_pace_metadata(
+    segments: Sequence[Dict[str, Any]],
+    maximum_ratio: float,
+) -> None:
+    history: List[float] = []
+    for segment in segments:
+        raw_rate = segment.get("speaking_rate")
+        rate = float(raw_rate) if raw_rate is not None else None
+        pace_ratio, pace_status = pace_metadata(
+            rate,
+            history,
+            maximum_ratio,
+        )
+        segment["pace_ratio"] = pace_ratio
+        segment["pace_status"] = pace_status
+        if rate is not None and pace_status not in {
+            "unusually-fast",
+            "unusually-slow",
+        }:
+            history.append(rate)
+
+
 def validate_sampling(
     temperature: float,
     top_p: float,
@@ -1062,6 +1314,77 @@ def normalize_audio_channels(audio: Any) -> Any:
     return np.ascontiguousarray(waveform, dtype=np.float32)
 
 
+def generate_segment_audio(
+    model: Any,
+    processor: Any,
+    device: Any,
+    torch: Any,
+    np: Any,
+    segment_text: str,
+    reference_audio: Optional[str],
+    language: Optional[str],
+    rolling_prefix: Optional[RollingPrefix],
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    repetition_penalty: float,
+    segment_index: int,
+    segment_count: int,
+) -> Any:
+    conversation, processor_mode = build_segment_conversation(
+        processor,
+        segment_text,
+        reference_audio,
+        language,
+        rolling_prefix,
+    )
+    batch = processor(conversation, mode=processor_mode)
+    input_ids = batch["input_ids"].to(device)
+    attention_mask = batch["attention_mask"].to(device)
+    with torch.no_grad():
+        outputs = model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=int(max_new_tokens),
+            audio_temperature=float(temperature),
+            audio_top_p=float(top_p),
+            audio_top_k=int(top_k),
+            audio_repetition_penalty=float(repetition_penalty),
+        )
+    messages = processor.decode(outputs)
+    if not messages or messages[0] is None:
+        raise WorkerError(
+            "INVALID_MODEL_OUTPUT",
+            f"MOSS-TTS returned no decodable message for segment {segment_index}.",
+        )
+    audio_codes = getattr(messages[0], "audio_codes_list", None)
+    if not audio_codes:
+        raise WorkerError(
+            "INVALID_MODEL_OUTPUT",
+            f"MOSS-TTS returned no audio for segment {segment_index}.",
+        )
+    audio = audio_codes[0]
+    if isinstance(audio, torch.Tensor):
+        candidate = audio.detach().float().cpu().numpy()
+    else:
+        candidate = np.asarray(audio, dtype=np.float32)
+    try:
+        return normalize_audio_channels(candidate)
+    except WorkerError as exc:
+        raise WorkerError(
+            exc.code,
+            (
+                "MOSS-TTS returned an invalid waveform for "
+                f"segment {segment_index}: {exc}"
+            ),
+            details={
+                "segment": segment_index,
+                "segment_count": segment_count,
+            },
+        ) from exc
+
+
 def combine_audio_segments(
     audio_segments: Sequence[Any],
     sample_rate: int,
@@ -1144,6 +1467,7 @@ def synthesize(
     chapter_manifest_path: Optional[str] = None,
     duration_outlier_retries: int = DEFAULT_DURATION_OUTLIER_RETRIES,
     duration_outlier_ratio: float = DEFAULT_DURATION_OUTLIER_RATIO,
+    review_manifest_path: Optional[str] = None,
 ) -> None:
     spec = _model_spec(model_id)
     validate_sampling(
@@ -1180,10 +1504,17 @@ def synthesize(
         if chapter_manifest_path and chapter_manifest_path.strip()
         else None
     )
-    if manifest_path == output:
+    review_path = (
+        Path(review_manifest_path).expanduser().resolve()
+        if review_manifest_path and review_manifest_path.strip()
+        else None
+    )
+    if manifest_path == output or review_path == output or (
+        manifest_path is not None and manifest_path == review_path
+    ):
         raise WorkerError(
             "INVALID_ARGUMENT",
-            "The chapter manifest path must differ from the audio output path.",
+            "Audio, chapter, and review output paths must be different.",
         )
 
     reference_audio: Optional[str] = None
@@ -1212,6 +1543,11 @@ def synthesize(
     speaking_rate_history: List[float] = []
     duration_retries_attempted = 0
     duration_retried_segments: List[int] = []
+    review_segments: List[Dict[str, Any]] = []
+    review_audio_dir: Optional[Path] = None
+    if review_path is not None:
+        review_audio_dir = review_path.parent / "segments"
+        review_audio_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".voiceforge-moss-prefix-",
         dir=str(output.parent),
@@ -1224,56 +1560,25 @@ def synthesize(
                 message=f"Synthesizing MOSS segment {index}/{total}",
             )
             try:
-                conversation, processor_mode = build_segment_conversation(
-                    processor,
-                    segment.text,
-                    reference_audio,
-                    language,
-                    rolling_prefix,
-                )
-                batch = processor(conversation, mode=processor_mode)
-                input_ids = batch["input_ids"].to(device)
-                attention_mask = batch["attention_mask"].to(device)
-
                 def generate_audio_candidate() -> Any:
-                    with torch.no_grad():
-                        outputs = model.generate(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            max_new_tokens=int(max_new_tokens),
-                            audio_temperature=float(temperature),
-                            audio_top_p=float(top_p),
-                            audio_top_k=int(top_k),
-                            audio_repetition_penalty=float(repetition_penalty),
-                        )
-                    messages = processor.decode(outputs)
-                    if not messages or messages[0] is None:
-                        raise WorkerError(
-                            "INVALID_MODEL_OUTPUT",
-                            f"MOSS-TTS returned no decodable message for segment {index}.",
-                        )
-                    audio_codes = getattr(messages[0], "audio_codes_list", None)
-                    if not audio_codes:
-                        raise WorkerError(
-                            "INVALID_MODEL_OUTPUT",
-                            f"MOSS-TTS returned no audio for segment {index}.",
-                        )
-                    audio = audio_codes[0]
-                    if isinstance(audio, torch.Tensor):
-                        candidate = audio.detach().float().cpu().numpy()
-                    else:
-                        candidate = np.asarray(audio, dtype=np.float32)
-                    try:
-                        return normalize_audio_channels(candidate)
-                    except WorkerError as exc:
-                        raise WorkerError(
-                            exc.code,
-                            (
-                                "MOSS-TTS returned an invalid waveform for "
-                                f"segment {index}: {exc}"
-                            ),
-                            details={"segment": index, "segment_count": total},
-                        ) from exc
+                    return generate_segment_audio(
+                        model,
+                        processor,
+                        device,
+                        torch,
+                        np,
+                        segment.text,
+                        reference_audio,
+                        language,
+                        rolling_prefix,
+                        max_new_tokens,
+                        temperature,
+                        top_p,
+                        top_k,
+                        repetition_penalty,
+                        index,
+                        total,
+                    )
 
                 audio_np = generate_audio_candidate()
             except Exception as exc:
@@ -1349,9 +1654,38 @@ def synthesize(
                 speaking_rate_history,
                 duration_outlier_ratio,
             )
+            pace_ratio, pace_status = pace_metadata(
+                selected_rate,
+                speaking_rate_history,
+                duration_outlier_ratio,
+            )
             if selected_rate is not None and remaining_outlier is None:
                 speaking_rate_history.append(selected_rate)
             audio_segments.append(audio_np)
+            if review_path is not None and review_audio_dir is not None:
+                segment_audio_path = review_audio_dir / f"segment-{index:04d}.wav"
+                sf.write(
+                    str(segment_audio_path),
+                    soundfile_waveform(audio_np),
+                    sample_rate,
+                    subtype="FLOAT",
+                )
+                review_segments.append({
+                    "index": index - 1,
+                    "text": segment.text,
+                    "audio_file": segment_audio_path.relative_to(
+                        review_path.parent
+                    ).as_posix(),
+                    "sample_count": int(audio_np.shape[1]),
+                    "duration_seconds": int(audio_np.shape[1]) / float(sample_rate),
+                    "attempt": 1,
+                    "starts_chapter": bool(segment.starts_chapter),
+                    "chapter_title": segment.chapter_title,
+                    "speaking_rate": selected_rate,
+                    "pace_ratio": pace_ratio,
+                    "pace_status": pace_status,
+                    "updated_at": int(time.time() * 1000),
+                })
 
             if index < total:
                 # Reuse one file and replace one state object: only the most
@@ -1363,6 +1697,18 @@ def synthesize(
                     subtype="FLOAT",
                 )
                 rolling_prefix = RollingPrefix(segment.text, str(rolling_audio_path))
+
+    if review_path is not None:
+        write_review_manifest(
+            review_path,
+            {
+                "version": REVIEW_MANIFEST_VERSION,
+                "sample_rate": sample_rate,
+                "gap_ms": gap_ms,
+                "chapter_pause_ms": chapter_pause_ms,
+                "segments": review_segments,
+            },
+        )
 
     chapter_indices = [
         index for index, segment in enumerate(segments) if segment.starts_chapter
@@ -1405,6 +1751,258 @@ def synthesize(
         used_voice_reference=bool(reference_audio),
         language=normalize_language(language) or "auto",
         chapter_manifest_path=str(manifest_path) if manifest_path else None,
+        review_manifest_path=str(review_path) if review_path else None,
+    )
+
+
+def rerun_review_segment(
+    models_root: Path,
+    review_manifest_path: str,
+    segment_index: int,
+    voice_path: Optional[str],
+    language: Optional[str],
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    repetition_penalty: float,
+    max_new_tokens: int,
+    requested_attention: str,
+    model_id: str = DEFAULT_MODEL_ID,
+    duration_outlier_ratio: float = DEFAULT_DURATION_OUTLIER_RATIO,
+) -> None:
+    validate_sampling(
+        temperature,
+        top_p,
+        top_k,
+        repetition_penalty,
+        max_new_tokens,
+        50,
+        0,
+    )
+    validate_duration_outlier_controls(0, duration_outlier_ratio)
+    manifest_path = Path(review_manifest_path).expanduser().resolve()
+    manifest = read_review_manifest(manifest_path)
+    segments = manifest["segments"]
+    if (
+        isinstance(segment_index, bool)
+        or not isinstance(segment_index, int)
+        or segment_index < 0
+        or segment_index >= len(segments)
+    ):
+        raise WorkerError(
+            "INVALID_ARGUMENT",
+            "The requested MOSS review segment does not exist.",
+        )
+
+    reference_audio: Optional[str] = None
+    if voice_path:
+        reference = Path(voice_path).expanduser().resolve()
+        if not reference.is_file():
+            raise WorkerError("FILE_NOT_FOUND", f"Voice reference not found: {reference}")
+        reference_audio = str(reference)
+
+    model_snapshot, codec_snapshot = load_pinned_snapshots(models_root, model_id)
+    model, processor, device, sample_rate = load_backend(
+        model_snapshot,
+        codec_snapshot,
+        os.environ.get("MOSS_TTS_DEVICE"),
+        requested_attention,
+        model_id,
+    )
+    if sample_rate != int(manifest["sample_rate"]):
+        raise WorkerError(
+            "INVALID_MODEL_OUTPUT",
+            "The MOSS model sample rate changed since the review was created.",
+        )
+    import numpy as np  # type: ignore
+    import soundfile as sf  # type: ignore
+    import torch  # type: ignore
+
+    segment = segments[segment_index]
+    rolling_prefix: Optional[RollingPrefix] = None
+    if segment_index > 0:
+        previous = segments[segment_index - 1]
+        previous_audio = _review_audio_path(
+            manifest_path,
+            previous["audio_file"],
+        )
+        rolling_prefix = RollingPrefix(previous["text"], str(previous_audio))
+    emit(
+        "progress",
+        progress=0.12,
+        message=(
+            f"Re-running MOSS segment {segment_index + 1}/{len(segments)}"
+        ),
+    )
+    try:
+        audio = generate_segment_audio(
+            model,
+            processor,
+            device,
+            torch,
+            np,
+            segment["text"],
+            reference_audio,
+            language,
+            rolling_prefix,
+            max_new_tokens,
+            temperature,
+            top_p,
+            top_k,
+            repetition_penalty,
+            segment_index + 1,
+            len(segments),
+        )
+    except Exception as exc:
+        raise WorkerError(
+            "SYNTHESIS_FAILED",
+            (
+                "MOSS-TTS failed while re-running segment "
+                f"{segment_index + 1}/{len(segments)}: {exc}"
+            ),
+            details={
+                "segment": segment_index + 1,
+                "segment_count": len(segments),
+            },
+        ) from exc
+
+    rate = segment_speaking_rate(segment["text"], audio, sample_rate)
+    destination = _review_audio_path(manifest_path, segment["audio_file"])
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{destination.stem}.",
+            suffix=".wav",
+            dir=destination.parent,
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+        sf.write(
+            str(temporary_path),
+            soundfile_waveform(audio),
+            sample_rate,
+            subtype="FLOAT",
+        )
+        temporary_path.replace(destination)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+    segment.update({
+        "sample_count": int(audio.shape[1]),
+        "duration_seconds": int(audio.shape[1]) / float(sample_rate),
+        "attempt": int(segment["attempt"]) + 1,
+        "speaking_rate": rate,
+        "updated_at": int(time.time() * 1000),
+    })
+    refresh_review_pace_metadata(segments, duration_outlier_ratio)
+    write_review_manifest(manifest_path, manifest)
+    emit(
+        "complete",
+        progress=1.0,
+        message=f"MOSS segment {segment_index + 1} is ready for review",
+        segment_index=segment_index,
+        attempt=segment["attempt"],
+        duration_seconds=segment["duration_seconds"],
+        pace_ratio=segment["pace_ratio"],
+        pace_status=segment["pace_status"],
+    )
+
+
+def compile_review(
+    review_manifest_path: str,
+    output_path: str,
+    chapter_manifest_path: Optional[str] = None,
+) -> None:
+    manifest_path = Path(review_manifest_path).expanduser().resolve()
+    manifest = read_review_manifest(manifest_path)
+    output = Path(output_path).expanduser().resolve()
+    chapter_path = (
+        Path(chapter_manifest_path).expanduser().resolve()
+        if chapter_manifest_path and chapter_manifest_path.strip()
+        else None
+    )
+    if output == manifest_path or chapter_path in {output, manifest_path}:
+        raise WorkerError(
+            "INVALID_ARGUMENT",
+            "Compiled audio, chapter, and review paths must be different.",
+        )
+    import soundfile as sf  # type: ignore
+
+    sample_rate = int(manifest["sample_rate"])
+    audio_segments: List[Any] = []
+    chapter_segments: List[ChapterSegment] = []
+    for index, segment in enumerate(manifest["segments"]):
+        emit(
+            "progress",
+            progress=0.05 + (0.75 * (index + 1) / len(manifest["segments"])),
+            message=(
+                f"Reading reviewed MOSS segment "
+                f"{index + 1}/{len(manifest['segments'])}"
+            ),
+        )
+        audio_path = _review_audio_path(manifest_path, segment["audio_file"])
+        samples, actual_rate = sf.read(
+            str(audio_path),
+            dtype="float32",
+            always_2d=True,
+        )
+        if int(actual_rate) != sample_rate:
+            raise WorkerError(
+                "INVALID_MODEL_OUTPUT",
+                f"MOSS review segment {index + 1} has an inconsistent sample rate.",
+            )
+        audio = normalize_audio_channels(samples.T)
+        if int(audio.shape[1]) != int(segment["sample_count"]):
+            raise WorkerError(
+                "INVALID_MODEL_OUTPUT",
+                f"MOSS review segment {index + 1} does not match its manifest.",
+            )
+        audio_segments.append(audio)
+        chapter_segments.append(
+            ChapterSegment(
+                segment["text"],
+                bool(segment["starts_chapter"]),
+                segment["chapter_title"],
+            )
+        )
+
+    chapter_indices = [
+        index
+        for index, segment in enumerate(chapter_segments)
+        if segment.starts_chapter
+    ]
+    combined, timing = combine_audio_segments_with_timing(
+        audio_segments,
+        sample_rate,
+        int(manifest["gap_ms"]),
+        chapter_indices,
+        int(manifest["chapter_pause_ms"]),
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(output), soundfile_waveform(combined), sample_rate)
+    if chapter_path is not None:
+        write_chapter_manifest(
+            chapter_path,
+            build_chapter_manifest(
+                chapter_segments,
+                timing.start_samples,
+                sample_rate,
+                timing.total_samples,
+            ),
+        )
+    emit(
+        "complete",
+        progress=1.0,
+        message="Reviewed MOSS segments compiled",
+        output_path=str(output),
+        segments=len(audio_segments),
+        chapters=len(chapter_indices),
+        sample_rate=sample_rate,
+        total_samples=timing.total_samples,
+        channels=int(combined.shape[0]),
+        chapter_manifest_path=str(chapter_path) if chapter_path else None,
     )
 
 
@@ -1522,9 +2120,95 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional JSON path for exact chapter start timings",
     )
     synth_parser.add_argument(
+        "--review-manifest",
+        default=None,
+        help="Optional JSON path for per-segment review artifacts",
+    )
+    synth_parser.add_argument(
         "--attn-implementation",
         default=os.environ.get("MOSS_TTS_ATTN_IMPLEMENTATION", "auto"),
     )
+
+    rerun_parser = subparsers.add_parser(
+        "rerun-segment",
+        help="Replace one segment in an existing MOSS review",
+    )
+    rerun_parser.add_argument(
+        "--model-id",
+        choices=sorted(PINNED_MODEL_SPECS),
+        default=DEFAULT_MODEL_ID,
+    )
+    rerun_parser.add_argument("--review-manifest", required=True)
+    rerun_parser.add_argument("--segment-index", type=int, required=True)
+    rerun_parser.add_argument(
+        "--voice",
+        "--reference-audio",
+        dest="voice",
+        default=None,
+    )
+    rerun_parser.add_argument(
+        "--language",
+        default=os.environ.get("MOSS_TTS_LANGUAGE", "Auto"),
+    )
+    rerun_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=float(
+            os.environ.get("MOSS_TTS_TEMPERATURE", str(DEFAULT_TEMPERATURE))
+        ),
+    )
+    rerun_parser.add_argument(
+        "--top-p",
+        type=float,
+        default=float(os.environ.get("MOSS_TTS_TOP_P", str(DEFAULT_TOP_P))),
+    )
+    rerun_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=int(os.environ.get("MOSS_TTS_TOP_K", str(DEFAULT_TOP_K))),
+    )
+    rerun_parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=float(
+            os.environ.get(
+                "MOSS_TTS_REPETITION_PENALTY",
+                str(DEFAULT_REPETITION_PENALTY),
+            )
+        ),
+    )
+    rerun_parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=int(
+            os.environ.get(
+                "MOSS_TTS_MAX_NEW_TOKENS",
+                str(DEFAULT_MAX_NEW_TOKENS),
+            )
+        ),
+    )
+    rerun_parser.add_argument(
+        "--duration-outlier-ratio",
+        type=float,
+        default=float(
+            os.environ.get(
+                "MOSS_TTS_DURATION_OUTLIER_RATIO",
+                str(DEFAULT_DURATION_OUTLIER_RATIO),
+            )
+        ),
+    )
+    rerun_parser.add_argument(
+        "--attn-implementation",
+        default=os.environ.get("MOSS_TTS_ATTN_IMPLEMENTATION", "auto"),
+    )
+
+    compile_parser = subparsers.add_parser(
+        "compile-review",
+        help="Compile reviewed MOSS segments without loading the model",
+    )
+    compile_parser.add_argument("--review-manifest", required=True)
+    compile_parser.add_argument("--output", required=True)
+    compile_parser.add_argument("--chapter-manifest", default=None)
     return parser
 
 
@@ -1606,6 +2290,31 @@ def run(argv: Optional[Sequence[str]] = None) -> None:
             args.chapter_manifest,
             args.duration_outlier_retries,
             args.duration_outlier_ratio,
+            args.review_manifest,
+        )
+        return
+    if args.command == "rerun-segment":
+        rerun_review_segment(
+            models_root,
+            args.review_manifest,
+            args.segment_index,
+            args.voice,
+            args.language,
+            args.temperature,
+            args.top_p,
+            args.top_k,
+            args.repetition_penalty,
+            args.max_new_tokens,
+            args.attn_implementation,
+            args.model_id,
+            args.duration_outlier_ratio,
+        )
+        return
+    if args.command == "compile-review":
+        compile_review(
+            args.review_manifest,
+            args.output,
+            args.chapter_manifest,
         )
         return
     raise WorkerError("INVALID_ARGUMENT", f"Unknown command: {args.command}")
