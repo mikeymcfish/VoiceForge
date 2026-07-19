@@ -10,13 +10,25 @@ import type {
   SpeechEngine,
   SpeechExecutionTarget,
   SpeechJobStatus,
+  SpeechOutputFormat,
+  SpeechReferenceEnhancement,
   SpeechStatus,
   SpeechWsMessage,
 } from "@shared/schema";
+import {
+  MOSS_DELAY_MODEL_ID,
+  MOSS_LOCAL_MODEL_ID,
+  mossHostedDurationTokens,
+} from "@shared/moss-tts";
 import { getHuggingFaceApiToken } from "./llm-service";
 import { huggingFaceUsageService } from "./huggingface-usage-service";
 import { endpointParameters, exactParameterNames } from "./gradio-api-contract";
 import { terminateChildProcess, terminateChildProcessTree } from "./process-utils";
+import {
+  enhanceReferenceAudio,
+  finalizeSpeechAudio,
+  getAudioProcessingCapabilities,
+} from "./audio-postprocess-service";
 
 type JobState = SpeechJobStatus["status"];
 type SetupState = "idle" | "in-progress" | "completed" | "failed";
@@ -68,14 +80,33 @@ type RemoteSubmission = {
 const QWEN_BASE_06_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base";
 const QWEN_BASE_17_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base";
 const QWEN_MODELS = new Set([QWEN_BASE_06_MODEL, QWEN_BASE_17_MODEL]);
-const MOSS_MODELS = new Set(["OpenMOSS-Team/MOSS-TTS-v1.5"]);
+const MOSS_MODELS = new Set([MOSS_DELAY_MODEL_ID, MOSS_LOCAL_MODEL_ID]);
 const PINNED_QWEN_REVISIONS: Record<string, string> = {
   "Qwen/Qwen3-TTS-12Hz-0.6B-Base": "5d83992436eae1d760afd27aff78a71d676296fc",
   "Qwen/Qwen3-TTS-12Hz-1.7B-Base": "fd4b254389122332181a7c3db7f27e918eec64e3",
 };
-const PINNED_MOSS_REVISION = "cdd3b911b1585e3f2dbc7775ef10f9926f58850a";
-const PINNED_MOSS_CODEC_ID = "OpenMOSS-Team/MOSS-Audio-Tokenizer";
-const PINNED_MOSS_CODEC_REVISION = "3cd226ba2947efa357ef453bcad111b6eafba782";
+const PINNED_MOSS_MODELS: Record<
+  string,
+  {
+    revision: string;
+    codecId: string;
+    codecRevision: string;
+    manifestName: string;
+  }
+> = {
+  [MOSS_DELAY_MODEL_ID]: {
+    revision: "cdd3b911b1585e3f2dbc7775ef10f9926f58850a",
+    codecId: "OpenMOSS-Team/MOSS-Audio-Tokenizer",
+    codecRevision: "3cd226ba2947efa357ef453bcad111b6eafba782",
+    manifestName: ".voiceforge-moss-models.json",
+  },
+  [MOSS_LOCAL_MODEL_ID]: {
+    revision: "be7766a6735b98bd793f7c79fb720b4d0f5d13b8",
+    codecId: "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+    codecRevision: "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169",
+    manifestName: ".voiceforge-moss-local-v1.5-models.json",
+  },
+};
 const MAX_REMOTE_AUDIO_BYTES = 100 * 1024 * 1024;
 const SETUP_ACTIVITY_POLL_MS = 15_000;
 const SETUP_STALL_MS = 5 * 60_000;
@@ -123,7 +154,7 @@ function makeEngineConfig(engine: SpeechEngine): EngineConfig {
     workerScript: resolveWorkerScript("moss_tts_worker.py"),
     pythonEnvName: "MOSS_TTS_PYTHON",
     defaultPython: process.platform === "win32" ? "python" : "python3",
-    defaultModelId: "OpenMOSS-Team/MOSS-TTS-v1.5",
+    defaultModelId: MOSS_DELAY_MODEL_ID,
     allowedModels: MOSS_MODELS,
     spaceId: "OpenMOSS-Team/MOSS-TTS-v1.5",
     spaceHost: "openmoss-team-moss-tts-v1-5.hf.space",
@@ -262,49 +293,60 @@ class SpeechService {
     if (!fs.existsSync(config.modelsDir)) return [];
     const found = new Set<string>();
 
-    const managedManifest =
-      config.engine === "qwen"
-        ? path.join(config.modelsDir, ".voiceforge-qwen-models.json")
-        : path.join(config.modelsDir, ".voiceforge-moss-models.json");
-    try {
-      const manifest = JSON.parse(fs.readFileSync(managedManifest, "utf-8")) as {
-        models?: Record<string, { repo_id?: string; revision?: string; files?: unknown[] }>;
-        artifacts?: {
-          model?: { repo_id?: string; model_id?: string; revision?: string; files?: unknown[] };
-          codec?: { repo_id?: string; revision?: string; files?: unknown[] };
+    if (config.engine === "qwen") {
+      try {
+        const manifest = JSON.parse(
+          fs.readFileSync(path.join(config.modelsDir, ".voiceforge-qwen-models.json"), "utf-8")
+        ) as {
+          models?: Record<string, { repo_id?: string; revision?: string; files?: unknown[] }>;
         };
-      };
-      if (manifest.models && typeof manifest.models === "object") {
-        for (const [key, value] of Object.entries(manifest.models)) {
-          const modelId = (value.repo_id || key).trim();
-          if (
-            config.allowedModels.has(modelId) &&
-            value.revision === PINNED_QWEN_REVISIONS[modelId] &&
-            Array.isArray(value.files) &&
-            value.files.length > 0
-          ) {
-            found.add(modelId);
+        if (manifest.models && typeof manifest.models === "object") {
+          for (const [key, value] of Object.entries(manifest.models)) {
+            const modelId = (value.repo_id || key).trim();
+            if (
+              config.allowedModels.has(modelId) &&
+              value.revision === PINNED_QWEN_REVISIONS[modelId] &&
+              Array.isArray(value.files) &&
+              value.files.length > 0
+            ) {
+              found.add(modelId);
+            }
           }
         }
+      } catch {
+        // Continue with the legacy per-snapshot manifest scan below.
       }
-      const modelArtifact = manifest.artifacts?.model;
-      const codecArtifact = manifest.artifacts?.codec;
-      const artifactId = (modelArtifact?.repo_id || modelArtifact?.model_id || "").trim();
-      if (
-        artifactId &&
-        config.allowedModels.has(artifactId) &&
-        modelArtifact?.revision === PINNED_MOSS_REVISION &&
-        Array.isArray(modelArtifact?.files) &&
-        modelArtifact.files.length > 0 &&
-        codecArtifact?.repo_id === PINNED_MOSS_CODEC_ID &&
-        codecArtifact.revision === PINNED_MOSS_CODEC_REVISION &&
-        Array.isArray(codecArtifact.files) &&
-        codecArtifact.files.length > 0
-      ) {
-        found.add(artifactId);
+    } else {
+      for (const [modelId, pinned] of Object.entries(PINNED_MOSS_MODELS)) {
+        try {
+          const manifest = JSON.parse(
+            fs.readFileSync(path.join(config.modelsDir, pinned.manifestName), "utf-8")
+          ) as {
+            artifacts?: {
+              model?: { repo_id?: string; model_id?: string; revision?: string; files?: unknown[] };
+              codec?: { repo_id?: string; revision?: string; files?: unknown[] };
+            };
+          };
+          const modelArtifact = manifest.artifacts?.model;
+          const codecArtifact = manifest.artifacts?.codec;
+          const artifactId = (modelArtifact?.repo_id || modelArtifact?.model_id || "").trim();
+          if (
+            artifactId === modelId &&
+            config.allowedModels.has(artifactId) &&
+            modelArtifact?.revision === pinned.revision &&
+            Array.isArray(modelArtifact.files) &&
+            modelArtifact.files.length > 0 &&
+            codecArtifact?.repo_id === pinned.codecId &&
+            codecArtifact.revision === pinned.codecRevision &&
+            Array.isArray(codecArtifact.files) &&
+            codecArtifact.files.length > 0
+          ) {
+            found.add(artifactId);
+          }
+        } catch {
+          // A missing, partial, or stale checkpoint manifest is not selectable.
+        }
       }
-    } catch {
-      // Continue with the legacy per-snapshot manifest scan below.
     }
 
     const pending = [config.modelsDir];
@@ -330,7 +372,11 @@ class SpeechService {
             model_id?: string;
           };
           const modelId = (manifest.repo_id || manifest.model_id || "").trim();
-          if (manifest.complete && config.allowedModels.has(modelId)) found.add(modelId);
+          const trustedLegacyModel =
+            config.engine !== "moss" || modelId === MOSS_DELAY_MODEL_ID;
+          if (manifest.complete && trustedLegacyModel && config.allowedModels.has(modelId)) {
+            found.add(modelId);
+          }
         } catch {
           // An incomplete/corrupt snapshot is intentionally not selectable.
         }
@@ -368,8 +414,10 @@ class SpeechService {
   }
 
   public getStatus(): SpeechStatus {
+    const audioCapabilities = getAudioProcessingCapabilities();
     return {
       tokenConfigured: Boolean(getHuggingFaceApiToken()),
+      audioProcessing: audioCapabilities,
       engines: (Object.keys(this.configs) as SpeechEngine[]).map((engine) => {
         const config = this.configs[engine];
         const availableModels = this.listAvailableModels(config);
@@ -600,7 +648,7 @@ class SpeechService {
     this.broadcast({ type: "status", payload: this.getStatus() });
     let setupChild: ChildProcess | undefined;
     try {
-      const setupArgs = config.engine === "qwen" ? ["--model-id", selectedModel] : [];
+      const setupArgs = ["--model-id", selectedModel];
       await this.runPython(
         config,
         "setup",
@@ -739,6 +787,16 @@ class SpeechService {
     maxNewTokens?: number;
     maxChars?: number;
     gapMs?: number;
+    outputFormat?: SpeechOutputFormat;
+    useChapters?: boolean;
+    chapterPauseMs?: number;
+    mp3Quality?: number;
+    referenceEnhancement?: SpeechReferenceEnhancement;
+    audioSrModel?: "speech" | "basic";
+    audioSrDevice?: string;
+    audioSrDdimSteps?: number;
+    audioSrGuidanceScale?: number;
+    audioSrSeed?: number;
   }): Promise<SpeechJobStatus> {
     const config = this.configs[params.engine];
     assertAllowedMode(config, params.target, params.mode);
@@ -748,7 +806,14 @@ class SpeechService {
       else if (params.modelSize === "0.6B") modelId = QWEN_BASE_06_MODEL;
       else if (params.modelSize === "1.7B") modelId = QWEN_BASE_17_MODEL;
     }
-    if (!config.allowedModels.has(modelId)) throw new Error("Unsupported local model selection.");
+    if (!config.allowedModels.has(modelId)) throw new Error("Unsupported model selection.");
+    if (
+      params.engine === "moss" &&
+      params.target === "hf-space" &&
+      modelId !== MOSS_DELAY_MODEL_ID
+    ) {
+      throw new Error("The official MOSS ZeroGPU Space serves only MOSS-TTS v1.5 8B.");
+    }
     if (params.target === "local") {
       if (!this.isRuntimeConfigured(config)) {
         throw new Error(`Run VoiceForge.cmd setup-${params.engine}, restart, and download the model first.`);
@@ -760,11 +825,48 @@ class SpeechService {
       throw new Error("Add a Hugging Face token before using the hosted Space.");
     }
 
+    const useChapters = params.useChapters === true;
+    const outputFormat: SpeechOutputFormat = useChapters ? "mp3" : params.outputFormat ?? "wav";
+    const referenceEnhancement: SpeechReferenceEnhancement =
+      params.referenceEnhancement ?? "none";
+    const audioCapabilities = getAudioProcessingCapabilities();
+    if (useChapters && params.target !== "local") {
+      throw new Error("Exact MP3 chapter timing is available for Local synthesis only.");
+    }
+    const chapterMarkerCount = (params.text.match(/\[chapter\]/gi) || []).length;
+    const hasChapterContent = params.text
+      .split(/\[chapter\]/i)
+      .slice(1)
+      .some((section) => section.trim().length > 0);
+    if (useChapters && (chapterMarkerCount === 0 || !hasChapterContent)) {
+      throw new Error(
+        "Add at least one [CHAPTER] marker followed by spoken text before enabling MP3 chapters."
+      );
+    }
+    if (useChapters && chapterMarkerCount > 500) {
+      throw new Error("A synthesis job may contain at most 500 [CHAPTER] markers.");
+    }
+    if (referenceEnhancement !== "none" && !params.voiceBuffer) {
+      throw new Error("Reference-audio enhancement requires a voice reference.");
+    }
+    if (
+      (outputFormat === "mp3" || referenceEnhancement === "cleanup") &&
+      !audioCapabilities.ffmpegAvailable
+    ) {
+      throw new Error("FFmpeg is required for the requested audio processing.");
+    }
+    if (referenceEnhancement === "audiosr" && !audioCapabilities.audioSrAvailable) {
+      throw new Error(
+        "AudioSR is unavailable. Configure VOICEFORGE_AUDIOSR_BIN to an isolated AudioSR executable and restart VoiceForge."
+      );
+    }
+
     const jobId = nanoid();
     const workingDir = path.join(config.jobsDir, jobId);
     await fsPromises.mkdir(workingDir, { recursive: true });
     const textPath = path.join(workingDir, "script.txt");
-    const outputPath = path.join(workingDir, "output.wav");
+    const rawOutputPath = path.join(workingDir, "output.wav");
+    const chapterManifestPath = path.join(workingDir, "chapters.json");
     await fsPromises.writeFile(textPath, params.text, "utf-8");
     let voicePath: string | undefined;
     if (params.voiceBuffer) {
@@ -783,6 +885,9 @@ class SpeechService {
       message: params.target === "local" ? "Waiting for the local GPU…" : "Connecting to Hugging Face Space…",
       voiceFileName: params.voiceFileName,
       modelId,
+      outputFormat,
+      outputMimeType: outputFormat === "mp3" ? "audio/mpeg" : "audio/wav",
+      referenceEnhancement,
       createdAt: now,
       updatedAt: now,
       workingDir,
@@ -798,12 +903,43 @@ class SpeechService {
         : params.modelSize;
     const effectiveParams = {
       ...params,
+      text: params.text,
       modelId,
       modelSize: effectiveModelSize,
+      outputFormat,
+      useChapters,
+      referenceEnhancement,
     };
-    const runner = params.target === "local"
-      ? this.enqueueLocal(job.id, () => this.runLocal(job, config, effectiveParams, textPath, outputPath, voicePath))
-      : this.runHosted(job, config, effectiveParams, outputPath, voicePath);
+    const execute = async () => {
+      const effectiveVoicePath = await this.prepareReferenceAudio(
+        job,
+        effectiveParams,
+        voicePath
+      );
+      if (params.target === "local") {
+        await this.runLocal(
+          job,
+          config,
+          effectiveParams,
+          textPath,
+          rawOutputPath,
+          chapterManifestPath,
+          effectiveVoicePath
+        );
+      } else {
+        await this.runHosted(
+          job,
+          config,
+          effectiveParams,
+          rawOutputPath,
+          effectiveVoicePath
+        );
+      }
+    };
+    const runner =
+      params.target === "local" || referenceEnhancement === "audiosr"
+        ? this.enqueueLocal(job.id, execute)
+        : execute();
     void runner.catch((error) => {
       if (this.jobs.get(jobId)?.status === "cancelled") return;
       const detail = error instanceof Error ? error.message : String(error);
@@ -815,17 +951,110 @@ class SpeechService {
     return this.publicJob(job);
   }
 
+  private async withManagedAudioProcess<T>(
+    jobId: string,
+    operation: (onSpawn: (child: ChildProcess) => void) => Promise<T>
+  ): Promise<T> {
+    let activeChild: ChildProcess | undefined;
+    try {
+      return await operation((child) => {
+        activeChild = child;
+        this.activeProcesses.set(jobId, child);
+      });
+    } finally {
+      if (activeChild && this.activeProcesses.get(jobId) === activeChild) {
+        this.activeProcesses.delete(jobId);
+      }
+    }
+  }
+
+  private async prepareReferenceAudio(
+    job: InternalJob,
+    params: Parameters<SpeechService["startSynthesis"]>[0],
+    voicePath?: string
+  ): Promise<string | undefined> {
+    const mode = params.referenceEnhancement ?? "none";
+    if (!voicePath || mode === "none") return voicePath;
+    this.assertJobActive(job.id);
+    this.updateJob(job.id, {
+      status: "running",
+      progress: 3,
+      message:
+        mode === "audiosr"
+          ? "Enhancing the reference with AudioSR…"
+          : "Cleaning the reference audio for cloning…",
+    });
+    const enhancedPath = await this.withManagedAudioProcess(job.id, (onSpawn) =>
+      enhanceReferenceAudio({
+        inputPath: voicePath,
+        workingDir: job.workingDir,
+        mode,
+        audioSrModel: params.audioSrModel ?? "speech",
+        audioSrDevice: params.audioSrDevice ?? "auto",
+        audioSrDdimSteps: params.audioSrDdimSteps ?? 50,
+        audioSrGuidanceScale: params.audioSrGuidanceScale ?? 3.5,
+        audioSrSeed: params.audioSrSeed ?? 42,
+        onSpawn,
+        assertActive: () => this.assertJobActive(job.id),
+        onLog: (message) => this.log("info", message),
+      })
+    );
+    this.assertJobActive(job.id);
+    this.log(
+      "info",
+      `Speech job ${job.id} prepared its reference with ${
+        mode === "audiosr" ? "AudioSR" : "gentle FFmpeg cleanup"
+      }.`
+    );
+    return enhancedPath;
+  }
+
+  private async finalizeOutput(
+    job: InternalJob,
+    params: Parameters<SpeechService["startSynthesis"]>[0],
+    rawOutputPath: string,
+    chapterManifestPath?: string
+  ): Promise<{
+    outputPath: string;
+    format: SpeechOutputFormat;
+    mimeType: "audio/wav" | "audio/mpeg";
+    chapterCount: number;
+  }> {
+    this.assertJobActive(job.id);
+    const outputFormat = params.outputFormat ?? "wav";
+    if (outputFormat === "mp3") {
+      this.updateJob(job.id, {
+        status: "running",
+        progress: 97,
+        message: params.useChapters ? "Encoding chaptered MP3…" : "Encoding MP3…",
+      });
+    }
+    return this.withManagedAudioProcess(job.id, (onSpawn) =>
+      finalizeSpeechAudio({
+        inputWavPath: rawOutputPath,
+        workingDir: job.workingDir,
+        outputFormat,
+        chapterManifestPath: params.useChapters ? chapterManifestPath : undefined,
+        mp3Quality: params.mp3Quality ?? 2,
+        onSpawn,
+        assertActive: () => this.assertJobActive(job.id),
+        onLog: (message) => this.log("info", message),
+      })
+    );
+  }
+
   private async runLocal(
     job: InternalJob,
     config: EngineConfig,
     params: Parameters<SpeechService["startSynthesis"]>[0],
     textPath: string,
     outputPath: string,
+    chapterManifestPath: string,
     voicePath?: string
   ): Promise<void> {
     this.assertJobActive(job.id);
     const args = ["--text", textPath, "--output", outputPath];
-    if (config.engine === "qwen") args.unshift("--model-id", job.modelId!);
+    args.unshift("--model-id", job.modelId!);
     if (voicePath && !(params.engine === "moss" && params.mode === "direct")) {
       args.push("--voice", voicePath);
     }
@@ -845,6 +1074,11 @@ class SpeechService {
     }
 
     this.updateJob(job.id, { status: "running", progress: 5, message: "Running locally…" });
+    args.push(
+      "--chapter-pause-ms",
+      String(params.useChapters ? params.chapterPauseMs ?? 0 : 0)
+    );
+    if (params.useChapters) args.push("--chapter-manifest", chapterManifestPath);
     await this.runPython(
       config,
       "synthesize",
@@ -865,11 +1099,20 @@ class SpeechService {
       job.id
     );
     if (!fs.existsSync(outputPath)) throw new Error("The local worker exited without creating audio.");
+    const finalized = await this.finalizeOutput(
+      job,
+      params,
+      outputPath,
+      chapterManifestPath
+    );
     this.updateJob(job.id, {
       status: "completed",
       progress: 100,
       message: "Local synthesis complete",
-      outputFile: outputPath,
+      outputFile: finalized.outputPath,
+      outputFormat: finalized.format,
+      outputMimeType: finalized.mimeType,
+      chapterCount: finalized.chapterCount,
     });
   }
 
@@ -955,7 +1198,10 @@ class SpeechService {
       reference_audio: effectiveVoicePath ? handle_file(effectiveVoicePath) : null,
       mode_with_reference: modeMap[params.mode] || "Clone",
       duration_control_enabled: Boolean(params.durationControl),
-      duration_tokens: params.durationTokens ?? 1,
+      duration_tokens: mossHostedDurationTokens(
+        Boolean(params.durationControl),
+        params.durationTokens
+      ),
       language_tag: params.language || "Auto (omit)",
       temperature: params.temperature ?? 1.7,
       top_p: params.topP ?? 0.8,
@@ -1059,12 +1305,17 @@ class SpeechService {
       if (statusMessage && /\berror\b/i.test(statusMessage)) throw new Error(statusMessage);
       await this.downloadHostedAudio(config, resultData[0], outputPath, token, job.id);
       this.assertJobActive(job.id);
+      const finalized = await this.finalizeOutput(job, params, outputPath);
+      this.assertJobActive(job.id);
       huggingFaceUsageService.noteZeroGpuSuccess();
       this.updateJob(job.id, {
         status: "completed",
         progress: 100,
         message: statusMessage || "Hosted synthesis complete",
-        outputFile: outputPath,
+        outputFile: finalized.outputPath,
+        outputFormat: finalized.format,
+        outputMimeType: finalized.mimeType,
+        chapterCount: finalized.chapterCount,
         queuePosition: undefined,
         etaSeconds: undefined,
       });

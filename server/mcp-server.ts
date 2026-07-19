@@ -47,6 +47,9 @@ const modeSchema = z.enum([
   "continuation-clone",
 ]);
 const jobStateSchema = z.enum(["queued", "running", "completed", "failed", "cancelled"]);
+const outputFormatSchema = z.enum(["wav", "mp3"]);
+const outputMimeTypeSchema = z.enum(["audio/wav", "audio/mpeg"]);
+const referenceEnhancementSchema = z.enum(["none", "cleanup", "audiosr"]);
 
 const modelStatusOutputSchema = z.object({
   id: modelIdSchema,
@@ -101,6 +104,10 @@ const jobOutputSchema = z.object({
   error: z.string().optional(),
   created_at: z.number(),
   updated_at: z.number(),
+  output_format: outputFormatSchema,
+  output_mime_type: outputMimeTypeSchema,
+  chapter_count: z.number().int().nonnegative(),
+  reference_enhancement: referenceEnhancementSchema,
   audio_resource_uri: z.string().optional(),
   audio_url: z.string().optional(),
 });
@@ -128,6 +135,10 @@ function publicJob(job: VoiceForgeJob, publicBaseUrl: string) {
     error: job.error,
     created_at: job.createdAt,
     updated_at: job.updatedAt,
+    output_format: job.outputFormat ?? "wav",
+    output_mime_type: job.outputFormat === "mp3" ? "audio/mpeg" : "audio/wav",
+    chapter_count: job.chapterCount ?? 0,
+    reference_enhancement: job.referenceEnhancement ?? "none",
     audio_resource_uri: job.audioResourceUri,
     audio_url: job.audioPath ? `${normalizeBaseUrl(publicBaseUrl)}${job.audioPath}` : undefined,
   };
@@ -266,7 +277,7 @@ export function createVoiceForgeMcpServer(options?: {
     "voiceforge_generate_speech",
     {
       title: "Generate speech with VoiceForge",
-      description: "Start an asynchronous TTS job. Local stays on this machine. Agent sends text and any selected default voice to the official Hugging Face Space and consumes ZeroGPU quota. Explicit model choices are honored or rejected, never silently replaced.",
+      description: "Start an asynchronous TTS job. Local stays on this machine. Agent sends text and any selected default voice to the official Hugging Face Space and consumes ZeroGPU quota. Explicit model choices are honored or rejected, never silently replaced. MP3 export, exact chapters, and reference-audio enhancement are Qwen/MOSS-only; exact chapters additionally require Local, MP3 output, and [CHAPTER] markers.",
       inputSchema: {
         request_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).describe("Stable idempotency key; reuse it only when retrying the exact same request."),
         text: z.string().min(1).max(500_000),
@@ -284,6 +295,36 @@ export function createVoiceForgeMcpServer(options?: {
         style: z.string().max(500).optional(),
         guidance_scale: z.number().min(0.5).max(3).optional(),
         needs_inline_pauses: z.boolean().default(false),
+        output_format: outputFormatSchema
+          .optional()
+          .describe("Qwen/MOSS only. Final managed audio format; defaults to wav."),
+        use_chapters: z.boolean()
+          .optional()
+          .describe("Qwen/MOSS only. Exact MP3 chapters; requires Local, output_format=mp3, and [CHAPTER] markers. Defaults to false."),
+        chapter_pause_ms: z.number().int().min(0).max(10_000)
+          .optional()
+          .describe("Qwen/MOSS only. Extra silence before each later chapter's spoken audio, in milliseconds; defaults to 0."),
+        mp3_quality: z.number().int().min(0).max(9)
+          .optional()
+          .describe("Qwen/MOSS only. FFmpeg VBR quality for non-chaptered MP3 (0 best, 9 smallest); defaults to 2."),
+        reference_enhancement: referenceEnhancementSchema
+          .optional()
+          .describe("Qwen/MOSS only. Enhance the selected reference voice with none, gentle FFmpeg cleanup, or isolated AudioSR; defaults to none."),
+        audiosr_model: z.enum(["speech", "basic"])
+          .optional()
+          .describe("AudioSR model preset; defaults to speech."),
+        audiosr_device: z.string().regex(/^(?:auto|cpu|mps|cuda(?::\d{1,3})?)$/u)
+          .optional()
+          .describe("AudioSR device: auto, cpu, mps, cuda, or cuda:N (up to three digits); defaults to auto."),
+        audiosr_ddim_steps: z.number().int().min(10).max(250)
+          .optional()
+          .describe("AudioSR DDIM steps; defaults to 50."),
+        audiosr_guidance_scale: z.number().min(1).max(10)
+          .optional()
+          .describe("AudioSR classifier-free guidance scale; defaults to 3.5."),
+        audiosr_seed: z.number().int().min(-2_147_483_648).max(2_147_483_647)
+          .optional()
+          .describe("AudioSR random seed; defaults to 42."),
       },
       outputSchema: {
         job: jobOutputSchema,
@@ -314,6 +355,16 @@ export function createVoiceForgeMcpServer(options?: {
         style: input.style,
         guidanceScale: input.guidance_scale,
         needsInlinePauses: input.needs_inline_pauses,
+        outputFormat: input.output_format,
+        useChapters: input.use_chapters,
+        chapterPauseMs: input.chapter_pause_ms,
+        mp3Quality: input.mp3_quality,
+        referenceEnhancement: input.reference_enhancement,
+        audioSrModel: input.audiosr_model,
+        audioSrDevice: input.audiosr_device,
+        audioSrDdimSteps: input.audiosr_ddim_steps,
+        audioSrGuidanceScale: input.audiosr_guidance_scale,
+        audioSrSeed: input.audiosr_seed,
       });
       const job = publicJob(result.job, publicBaseUrl);
       const structuredContent = {
@@ -344,8 +395,8 @@ export function createVoiceForgeMcpServer(options?: {
         result.content.push({
           type: "resource_link" as const,
           uri: job.audio_resource_uri,
-          name: `${job.model}-${job.job_id}.wav`,
-          mimeType: "audio/wav",
+          name: `${job.model}-${job.job_id}.${job.output_format}`,
+          mimeType: job.output_mime_type,
           description: "Generated VoiceForge speech audio",
         } as never);
       }
@@ -373,12 +424,22 @@ export function createVoiceForgeMcpServer(options?: {
   server.registerResource(
     "generated-speech-audio",
     new ResourceTemplate("voiceforge://speech/jobs/{jobId}/audio", { list: undefined }),
-    { description: "Completed VoiceForge speech audio", mimeType: "audio/wav" },
+    { description: "Completed VoiceForge speech audio" },
     async (uri, variables) => {
       const jobId = String(variables.jobId || "");
+      const job = await backend.getJob(jobId);
+      if (!job || job.status !== "completed") {
+        throw new Error("Generated audio is not ready or no longer available.");
+      }
       const audio = await backend.readJobAudio(jobId);
       if (!audio) throw new Error("Generated audio is not ready or no longer available.");
-      return { contents: [{ uri: uri.href, mimeType: "audio/wav", blob: audio.toString("base64") }] };
+      return {
+        contents: [{
+          uri: uri.href,
+          mimeType: job.outputFormat === "mp3" ? "audio/mpeg" : "audio/wav",
+          blob: audio.toString("base64"),
+        }],
+      };
     }
   );
 

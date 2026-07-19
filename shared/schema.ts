@@ -405,6 +405,12 @@ export type SpeechEngine = z.infer<typeof speechEngineSchema>;
 export const speechExecutionTargetSchema = z.enum(["local", "hf-space"]);
 export type SpeechExecutionTarget = z.infer<typeof speechExecutionTargetSchema>;
 
+export const speechOutputFormatSchema = z.enum(["wav", "mp3"]);
+export type SpeechOutputFormat = z.infer<typeof speechOutputFormatSchema>;
+
+export const speechReferenceEnhancementSchema = z.enum(["none", "cleanup", "audiosr"]);
+export type SpeechReferenceEnhancement = z.infer<typeof speechReferenceEnhancementSchema>;
+
 export const speechJobStatusSchema = z.object({
   id: z.string(),
   engine: speechEngineSchema,
@@ -421,6 +427,10 @@ export const speechJobStatusSchema = z.object({
   error: z.string().optional(),
   queuePosition: z.number().int().nonnegative().optional(),
   etaSeconds: z.number().nonnegative().optional(),
+  outputFormat: speechOutputFormatSchema.optional(),
+  outputMimeType: z.enum(["audio/wav", "audio/mpeg"]).optional(),
+  chapterCount: z.number().int().nonnegative().optional(),
+  referenceEnhancement: speechReferenceEnhancementSchema.optional(),
 });
 
 export type SpeechJobStatus = z.infer<typeof speechJobStatusSchema>;
@@ -447,6 +457,10 @@ export type SpeechEngineRuntimeStatus = z.infer<typeof speechEngineRuntimeStatus
 
 export const speechStatusSchema = z.object({
   tokenConfigured: z.boolean(),
+  audioProcessing: z.object({
+    ffmpegAvailable: z.boolean(),
+    audioSrAvailable: z.boolean(),
+  }),
   engines: z.array(speechEngineRuntimeStatusSchema),
   jobs: z.array(speechJobStatusSchema),
 });

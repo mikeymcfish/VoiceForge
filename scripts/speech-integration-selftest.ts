@@ -5,6 +5,26 @@ import {
   speechStatusSchema,
 } from "../shared/schema";
 import { parseZeroGpuQuotaError } from "../server/huggingface-usage-utils";
+import {
+  MOSS_DELAY_MODEL_ID,
+  MOSS_DURATION_TOKENS_PLACEHOLDER,
+  MOSS_LOCAL_CHECKPOINTS,
+  MOSS_LOCAL_MODEL_ID,
+  mossHostedDurationTokens,
+} from "../shared/moss-tts";
+
+assert.equal(MOSS_DURATION_TOKENS_PLACEHOLDER, 1);
+assert.equal(mossHostedDurationTokens(false, 400), 1);
+assert.equal(mossHostedDurationTokens(true, 400), 400);
+assert.equal(MOSS_LOCAL_CHECKPOINTS[0]?.id, MOSS_DELAY_MODEL_ID);
+assert.equal(MOSS_LOCAL_CHECKPOINTS[1]?.id, MOSS_LOCAL_MODEL_ID);
+assert.notEqual(MOSS_DELAY_MODEL_ID, MOSS_LOCAL_MODEL_ID);
+const localCheckpointCopy = [
+  MOSS_LOCAL_CHECKPOINTS[1]?.label,
+  MOSS_LOCAL_CHECKPOINTS[1]?.description,
+].join(" ");
+assert.match(localCheckpointCopy, /lower VRAM/i);
+assert.doesNotMatch(localCheckpointCopy, /\bfaster\b/i);
 
 const parsedQuota = parseZeroGpuQuotaError(
   "You have exceeded your Pro ZeroGPU quota (180s requested vs. 42s left). Try again in 1:02:03."
@@ -26,6 +46,10 @@ assert.equal(huggingFaceTokenUpdateSchema.safeParse({ token: "" }).success, true
 
 speechStatusSchema.parse({
   tokenConfigured: true,
+  audioProcessing: {
+    ffmpegAvailable: true,
+    audioSrAvailable: false,
+  },
   engines: [
     {
       engine: "qwen",
@@ -38,6 +62,18 @@ speechStatusSchema.parse({
       hostedAvailable: true,
       localModes: ["clone"],
       hostedModes: ["clone", "design", "custom"],
+    },
+    {
+      engine: "moss",
+      setupStatus: "completed",
+      runtimeConfigured: true,
+      modelsReady: true,
+      availableModels: [MOSS_DELAY_MODEL_ID, MOSS_LOCAL_MODEL_ID],
+      modelsPath: "models",
+      spaceId: "OpenMOSS-Team/MOSS-TTS-v1.5",
+      hostedAvailable: true,
+      localModes: ["direct", "clone"],
+      hostedModes: ["direct", "clone", "continuation", "continuation-clone"],
     },
   ],
   jobs: [],

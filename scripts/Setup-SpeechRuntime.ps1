@@ -287,7 +287,11 @@ try {
   }
   Set-EnvironmentValue -Key $EngineConfig.EnvKey -Value $PythonExecutable
   Write-Step "$($EngineConfig.Label) runtime is ready."
-  Write-Step "Restart VoiceForge, open Create audio, and download the pinned model snapshot."
+  if ($Engine -eq "moss") {
+    Write-Step "Restart VoiceForge, open Create audio, choose a MOSS checkpoint, and download its pinned snapshots."
+  } else {
+    Write-Step "Restart VoiceForge, open Create audio, and download the pinned model snapshot."
+  }
   exit 0
 } catch {
   Write-Host "[VoiceForge] ERROR: $($_.Exception.Message)" -ForegroundColor Red

@@ -15,6 +15,36 @@ const stateRoot = path.join(sandbox, "state");
 const callerA = path.join(sandbox, "caller-a");
 const callerB = path.join(sandbox, "caller-b");
 await Promise.all([fakeRoot, stateRoot, callerA, callerB].map((directory) => fs.mkdir(directory, { recursive: true })));
+const audioSrExecutable = path.join(fakeRoot, "audiosr.exe");
+const ffmpegExecutable = path.join(fakeRoot, "ffmpeg.exe");
+const audioSrCache = path.join(fakeRoot, "audiosr-cache");
+const caBundle = path.join(fakeRoot, "test-ca.pem");
+const completedAudio = path.join(
+  fakeRoot,
+  "attached_assets",
+  "qwen3-tts",
+  "jobs",
+  "mp3job",
+  "output.mp3"
+);
+const legacyCompletedAudio = path.join(
+  fakeRoot,
+  "attached_assets",
+  "qwen3-tts",
+  "jobs",
+  "legacywav",
+  "output.wav"
+);
+await Promise.all([
+  fs.mkdir(path.dirname(completedAudio), { recursive: true }),
+  fs.mkdir(path.dirname(legacyCompletedAudio), { recursive: true }),
+  fs.mkdir(audioSrCache, { recursive: true }),
+]);
+await fs.writeFile(audioSrExecutable, "selftest", "utf8");
+await fs.writeFile(ffmpegExecutable, "selftest", "utf8");
+await fs.writeFile(caBundle, "selftest-ca", "utf8");
+await fs.writeFile(completedAudio, "selftest-mp3", "utf8");
+await fs.writeFile(legacyCompletedAudio, "selftest-wav", "utf8");
 await fs.writeFile(
   path.join(stateRoot, "startup.lock"),
   JSON.stringify({ pid: 2_147_483_647, ownerId: "orphaned-test-lock", createdAt: Date.now() }),
@@ -74,10 +104,35 @@ const server = http.createServer((req, res) => {
       send(res, { jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "six models" }], structuredContent: { models } } });
       return;
     }
+    if (message.method === "tools/call" && message.params.name === "voiceforge_get_job") {
+      const jobId = message.params.arguments?.job_id;
+      const legacy = jobId === "vf-qwen-legacywav";
+      send(res, { jsonrpc: "2.0", id: message.id, result: {
+        content: [{ type: "text", text: legacy ? "completed legacy WAV" : "completed MP3" }],
+        structuredContent: { job: {
+          job_id: jobId,
+          status: "completed",
+          ...(legacy ? {} : {
+            output_format: "mp3",
+            output_mime_type: "audio/mpeg"
+          })
+        } }
+      } });
+      return;
+    }
     send(res, { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "unsupported" } });
   });
 });
-server.listen(port, "127.0.0.1", () => fs.writeFileSync(path.join(root, "pid.txt"), String(process.pid)));
+server.listen(port, "127.0.0.1", () => {
+  fs.writeFileSync(path.join(root, "pid.txt"), String(process.pid));
+  fs.writeFileSync(path.join(root, "audiosr-env.txt"), process.env.VOICEFORGE_AUDIOSR_BIN || "");
+  fs.writeFileSync(path.join(root, "ffmpeg-env.txt"), process.env.VOICEFORGE_FFMPEG_BIN || "");
+  fs.writeFileSync(path.join(root, "runtime-env.json"), JSON.stringify({
+    hfHome: process.env.HF_HOME || "",
+    httpsProxy: process.env.HTTPS_PROXY || "",
+    requestsCaBundle: process.env.REQUESTS_CA_BUNDLE || ""
+  }));
+});
 `;
 await fs.writeFile(path.join(fakeRoot, "fake-server.mjs"), fakeServer, "utf8");
 await fs.writeFile(path.join(fakeRoot, "package.json"), '{"name":"voiceforge-autostart-fixture","version":"1.0.0"}\n', "utf8");
@@ -99,6 +154,11 @@ function bridgeClient(cwd: string): { client: Client; transport: StdioClientTran
       VOICEFORGE_PORT_MIN: String(port),
       VOICEFORGE_PORT_MAX: String(port),
       VOICEFORGE_STATE_DIR: stateRoot,
+      VOICEFORGE_AUDIOSR_BIN: audioSrExecutable,
+      VOICEFORGE_FFMPEG_BIN: ffmpegExecutable,
+      HF_HOME: audioSrCache,
+      HTTPS_PROXY: "http://127.0.0.1:9",
+      REQUESTS_CA_BUNDLE: caBundle,
     },
     stderr: "pipe",
   });
@@ -120,8 +180,43 @@ try {
   ]);
   assert.equal((resultA.structuredContent as any)?.models?.length, 6);
   assert.equal((resultB.structuredContent as any)?.models?.length, 6);
+  const audioPath = await a.client.callTool({
+    name: "voiceforge_get_audio_path",
+    arguments: { job_id: "vf-qwen-mp3job" },
+  });
+  assert.equal(audioPath.isError, undefined, JSON.stringify(audioPath.content));
+  assert.equal((audioPath.structuredContent as any)?.audio_path, completedAudio);
+  assert.equal((audioPath.structuredContent as any)?.output_format, "mp3");
+  assert.equal((audioPath.structuredContent as any)?.mime_type, "audio/mpeg");
+  const legacyAudioPath = await a.client.callTool({
+    name: "voiceforge_get_audio_path",
+    arguments: { job_id: "vf-qwen-legacywav" },
+  });
+  assert.equal(legacyAudioPath.isError, undefined, JSON.stringify(legacyAudioPath.content));
+  assert.equal((legacyAudioPath.structuredContent as any)?.audio_path, legacyCompletedAudio);
+  assert.equal((legacyAudioPath.structuredContent as any)?.output_format, "wav");
+  assert.equal((legacyAudioPath.structuredContent as any)?.mime_type, "audio/wav");
   const launches = (await fs.readFile(path.join(fakeRoot, "launches.txt"), "utf8")).trim().split(/\r?\n/u);
   assert.equal(launches.length, 1, "Concurrent bridges launched VoiceForge more than once.");
+  assert.equal(
+    await fs.readFile(path.join(fakeRoot, "audiosr-env.txt"), "utf8"),
+    audioSrExecutable,
+    "The bridge did not preserve VOICEFORGE_AUDIOSR_BIN for auto-start."
+  );
+  assert.equal(
+    await fs.readFile(path.join(fakeRoot, "ffmpeg-env.txt"), "utf8"),
+    ffmpegExecutable,
+    "The bridge did not preserve VOICEFORGE_FFMPEG_BIN for auto-start."
+  );
+  assert.deepEqual(
+    JSON.parse(await fs.readFile(path.join(fakeRoot, "runtime-env.json"), "utf8")),
+    {
+      hfHome: audioSrCache,
+      httpsProxy: "http://127.0.0.1:9",
+      requestsCaBundle: caBundle,
+    },
+    "The bridge did not preserve safe AudioSR cache, proxy, and CA settings."
+  );
   fakePid = Number(await fs.readFile(path.join(fakeRoot, "pid.txt"), "utf8"));
   assert.deepEqual(await fs.readdir(callerA), []);
   assert.deepEqual(await fs.readdir(callerB), []);

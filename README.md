@@ -92,6 +92,58 @@ no upstream, it preserves the tree and skips the update. It refuses to bootstrap
 into a non-empty, non-Git directory; it never resets the checkout or deletes the
 directory's existing contents.
 
+#### RunPod deployment
+
+VoiceForge is not Python-only. Node.js runs the main web application, while
+Python runs the speech workers. A RunPod PyTorch image with a CUDA-capable GPU
+is the recommended base image. From the cloned repository, run:
+
+```bash
+export HOST=0.0.0.0
+export PORT=5000
+export INSTALL_QWEN_TTS_REQUIREMENTS=yes
+export INSTALL_MOSS_TTS_REQUIREMENTS=no
+./install.sh
+```
+
+Expose port `5000` in RunPod. The installer installs Node.js 22 when needed,
+installs the locked npm dependencies, builds the production app, and starts it.
+Use `INSTALL_MOSS_TTS_REQUIREMENTS=yes` instead when MOSS-TTS is needed; MOSS
+requires a high-memory CUDA GPU and its own isolated Python environment. Qwen
+and MOSS must not share a Python environment because they require incompatible
+Transformers versions. IndexTTS is not installed automatically on Linux; prepare
+its official isolated environment separately and set `INDEX_TTS_PYTHON` and,
+when needed, `INDEX_TTS_SOURCE_DIR` before starting VoiceForge. VibeVoice also
+requires its own configured Python environment with PyTorch 2.6 or newer.
+
+The generated `.env` persists the application port but not the public bind
+address. The `HOST` export must be present in the shell that starts VoiceForge;
+when restarting the app manually, set the bind address again:
+
+```bash
+export HOST=0.0.0.0
+export PORT=5000
+npm start
+```
+
+For long-lived deployments, store the checkout, `attached_assets/`, and
+`default_voices/` on a persistent RunPod volume. Model downloads and uploaded
+voice files are otherwise lost when the pod is removed. The app has no general
+authentication layer, so do not expose it to an untrusted network without a
+trusted proxy, authentication, TLS, upload limits, and rate limits. Never place
+Hugging Face tokens in source control or share them in an image; use environment
+variables such as `HF_TOKEN` or `HUGGINGFACE_API_TOKEN` instead.
+
+The optional legacy Python/Gradio lab can also run on RunPod, but its launch
+must bind to the pod interface rather than localhost. Change its `app.launch()`
+call to:
+
+```python
+app.launch(server_name="0.0.0.0", server_port=7860)
+```
+
+Then expose port `7860` instead of `5000`.
+
 Useful environment variables:
 
 | Variable | Purpose |
@@ -107,6 +159,8 @@ Useful environment variables:
 | `QWEN_TTS_PYTHON` | Python executable for the isolated Qwen3-TTS environment. It must not share an environment with IndexTTS or MOSS. |
 | `MOSS_TTS_PYTHON` | Python executable for the isolated MOSS-TTS v1.5 environment. It must not share an environment with Qwen or IndexTTS. |
 | `MOSS_TTS_FFMPEG_BIN` | Windows-only path to an FFmpeg 4-7 shared-build `bin` directory used by MOSS/TorchCodec. The setup command discovers and writes this automatically. |
+| `VOICEFORGE_FFMPEG_BIN` | Optional full path to `ffmpeg` (or a directory containing it) for reference cleanup, MP3 export, and chapter metadata. VoiceForge otherwise checks `MOSS_TTS_FFMPEG_BIN` and `PATH`. |
+| `VOICEFORGE_AUDIOSR_BIN` | Optional full path to the isolated AudioSR CLI executable. AudioSR is deliberately not installed into the Qwen or MOSS environments. |
 | `VIBEVOICE_PYTHON` | Python executable used by VibeVoice. |
 | `VOICEFORGE_DEFAULT_VOICES_DIR` | Optional default voice-library directory; defaults to `<app>/default_voices`. |
 | `VOICEFORGE_ENABLE_REMOTE_MCP` | Explicitly enable `/mcp` when `HOST` is not loopback. |
@@ -134,6 +188,33 @@ ZeroGPU Space** target selector. The “Agents” button on a Space is API disco
 VoiceForge calls that same Gradio API when the hosted target is selected.
 Local Qwen/MOSS jobs share a serialized GPU queue so two multi-gigabyte models
 are never loaded into device memory at the same time.
+
+### Reference enhancement and MP3 chapters
+
+Qwen and MOSS voice-clone jobs can prepare their reference recording before
+synthesis. **Gentle cleanup** uses FFmpeg for conservative noise reduction,
+edge-silence trimming, loudness normalization, and limiting. **AudioSR** runs as
+an optional isolated subprocess; install its CLI in a separate environment and
+set `VOICEFORGE_AUDIOSR_BIN`. VoiceForge never adds AudioSR's pinned NumPy or
+Transformers packages to either speech backend.
+
+The output panel can keep the original WAV or encode an MP3. Local Qwen/MOSS
+jobs can also embed sample-accurate chapters by placing markers in the script:
+
+```text
+[CHAPTER] Opening
+The opening title and narration begin here.
+
+[CHAPTER] A New Direction
+This title is spoken and is also used as the MP3 chapter name.
+```
+
+When chapter embedding is enabled, the `[CHAPTER]` control tag itself is removed
+before synthesis. With chapters disabled, existing text remains unchanged.
+Chaptered MP3s use 192 kbps CBR plus ID3v2.3 metadata, and the optional chapter
+pause is added before the recorded chapter start. Exact chapters are Local-only
+because hosted Space responses do not expose the worker sample offsets needed
+for reliable timing. Plain MP3 export remains available without chapter markers.
 
 The legacy Python/Gradio lab is still available for backend experiments:
 
@@ -261,12 +342,23 @@ The integration follows the [official Qwen3-TTS repository](https://github.com/Q
 
 ### MOSS-TTS v1.5
 
-VoiceForge uses `OpenMOSS-Team/MOSS-TTS-v1.5` pinned to revision
-`cdd3b911b1585e3f2dbc7775ef10f9926f58850a`, with its audio tokenizer pinned and
-inventoried separately. MOSS is an 8B model with 31-language synthesis,
-zero-shot voice cloning, continuation modes, and inline pauses such as
-`[pause 1.5s]`. The standard PyTorch path is large; allow roughly 16 GB for the
-model download and plan on a high-memory CUDA GPU for comfortable local use.
+VoiceForge keeps `OpenMOSS-Team/MOSS-TTS-v1.5` as the production default, pinned
+to revision `cdd3b911b1585e3f2dbc7775ef10f9926f58850a`, with its audio tokenizer
+pinned and inventoried separately. This is the 8B checkpoint used by the
+official hosted Space. It supports 31-language synthesis, zero-shot voice
+cloning, continuation modes, and inline pauses such as `[pause 1.5s]`. The
+standard PyTorch path is large; allow roughly 16 GB for the model download and
+plan on a high-memory CUDA GPU for comfortable local use.
+
+Local GPU mode also offers
+`OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5`, pinned to revision
+`be7766a6735b98bd793f7c79fb720b4d0f5d13b8` with MOSS Audio Tokenizer v2 pinned
+separately. It is a smaller, lower-VRAM, streaming-oriented checkpoint. That
+does not guarantee faster end-to-end synthesis in VoiceForge: the current local
+worker returns a WAV only after generation completes, and throughput depends on
+the GPU, text, settings, and checkpoint. Treat speed as a measurement, not a
+model-name implication. The 8B checkpoint remains the default and is the only
+MOSS checkpoint available through the hosted target.
 
 On Windows:
 
@@ -285,16 +377,50 @@ winget install --id Gyan.FFmpeg.Shared --exact --version 7.1.1 --scope user
 .\VoiceForge.cmd setup-moss
 ```
 
-Restart VoiceForge, open **Create audio → MOSS-TTS v1.5**, and download the
-pinned snapshots. On Linux/RunPod, set `INSTALL_MOSS_TTS_REQUIREMENTS=yes` when
-running `install.sh`, or point `MOSS_TTS_PYTHON` at a dedicated environment.
-MOSS cannot share Qwen's environment: the official MOSS stack requires
-Transformers 5.0.0 while Qwen pins Transformers 4.57.3.
+Restart VoiceForge, open **Create audio → MOSS-TTS v1.5**, choose a local
+checkpoint, and download its pinned snapshots. Each checkpoint is verified
+against its own pinned model and tokenizer inventory before offline synthesis.
+On Linux/RunPod, set `INSTALL_MOSS_TTS_REQUIREMENTS=yes` when running
+`install.sh`, or point `MOSS_TTS_PYTHON` at a dedicated environment. MOSS cannot
+share Qwen's environment: the official MOSS stack requires Transformers 5.0.0
+while Qwen pins Transformers 4.57.3.
 
 Hosted mode calls the official
 [`OpenMOSS-Team/MOSS-TTS-v1.5`](https://huggingface.co/spaces/OpenMOSS-Team/MOSS-TTS-v1.5)
 ZeroGPU Space. VoiceForge validates the live endpoint contract before uploading
-audio or submitting text, and rejects API drift rather than guessing.
+audio or submitting text, and rejects API drift rather than guessing. The Local
+Transformer checkpoint is local-only; hosted synthesis always uses the 8B
+checkpoint.
+
+#### Long-form MOSS synthesis
+
+Local long-text jobs use bounded rolling continuation. VoiceForge generates the
+first segment normally; a cloning job begins from the selected clean reference
+recording. Each later segment is conditioned on the exact transcript and
+generated audio from the immediately preceding segment. Keeping only one prior
+segment bounds the continuation context instead of allowing it to grow with the
+entire document, while carrying the recent voice and prosody forward.
+
+#### Comparing the local MOSS checkpoints
+
+[`scripts/moss-backend-benchmark.py`](scripts/moss-backend-benchmark.py)
+compares preinstalled 8B and Local Transformer backends on the same machine. It
+forces Hugging Face and Transformers offline mode, rejects setup/download
+commands, alternates backend order, and writes WAVs, logs, JSON, and CSV results.
+Supply explicit JSON command arrays for `--delay-command-json` and
+`--local-command-json`; both checkpoints and their tokenizers must already be
+installed and verified.
+
+```powershell
+python scripts/moss-backend-benchmark.py --help
+python scripts/moss-backend-benchmark.py --self-test
+```
+
+The harness reports elapsed time, audio duration, real-time factor, hashes, and
+optional whole-GPU memory samples. It cannot currently measure VoiceForge
+time-to-first-audio because the worker is non-streaming and writes its output
+only after generation. A backend adapter that emits a real `first_audio` event
+can supply that measurement separately.
 
 ### Hugging Face usage bars
 
@@ -366,11 +492,15 @@ replacement for OAuth on a broadly published ChatGPT app.
 npm run check
 npm run test:text
 npm run test:speech
+npm run test:audio-postprocess
 npm run test:hf-contract
 npm run test:voices
 npm run test:mcp
+npm run test:mcp-auth
 npm run test:prompts
 npm run build
+npm run build:plugin
+npm run test:plugin:autostart
 npm audit --omit=dev
 python server/python/tts_workers_selftest.py
 ```
@@ -380,7 +510,9 @@ speaker-label preservation, and mojibake cleanup. The speech tests cover shared
 contracts, ZeroGPU quota parsing, pinned worker manifests, tamper detection, and
 the current public Space endpoint schemas. The contract test reads metadata only
 and does not consume ZeroGPU inference quota. The prompt test checks
-configuration-sensitive prompt construction.
+configuration-sensitive prompt construction. When FFmpeg is available, the
+audio postprocess test also executes the real cleanup and chaptered-MP3 paths,
+verifying that interior pauses survive and chapter metadata is readable.
 
 ## Project map
 

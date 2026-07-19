@@ -137,6 +137,20 @@ function candidate(
   return { model, target, mode, runnableNow: blockers.length === 0, blockers };
 }
 
+export function voiceForgeModelSupportsAudioProcessing(model: VoiceForgeModelId): boolean {
+  return model.startsWith("qwen3-tts") || model === "moss-tts-v1.5";
+}
+
+export function recommendAudioProcessingSpeechModel(
+  input: SpeechRecommendationInput,
+  statuses: readonly VoiceForgeModelStatus[]
+): SpeechRecommendation {
+  return recommendSpeechModel(
+    input,
+    statuses.filter((status) => voiceForgeModelSupportsAudioProcessing(status.id))
+  );
+}
+
 export function recommendSpeechModel(
   input: SpeechRecommendationInput,
   statuses: readonly VoiceForgeModelStatus[]

@@ -92,9 +92,12 @@ export function registerVoiceForgeMcpRoutes(app: Express): void {
     if (!job || job.status !== "completed" || !outputPath) {
       return res.status(404).json({ error: "Generated audio is not ready" });
     }
-    res.type("audio/wav");
+    res.type(job.outputMimeType);
     const disposition = req.query.download === "1" ? "attachment" : "inline";
-    res.setHeader("Content-Disposition", `${disposition}; filename="${job.model}-${job.id}.wav"`);
+    res.setHeader(
+      "Content-Disposition",
+      `${disposition}; filename="${job.model}-${job.id}.${job.outputFormat}"`
+    );
     res.sendFile(outputPath);
   });
 }

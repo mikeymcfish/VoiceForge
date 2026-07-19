@@ -11,6 +11,23 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+try:
+    from .chapter_markers import (
+        ChapterSegment,
+        build_audio_merge_timing,
+        build_chapter_manifest,
+        split_marked_text,
+        write_chapter_manifest,
+    )
+except ImportError:
+    from chapter_markers import (
+        ChapterSegment,
+        build_audio_merge_timing,
+        build_chapter_manifest,
+        split_marked_text,
+        write_chapter_manifest,
+    )
+
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 PINNED_MODEL_REVISIONS = {
@@ -479,6 +496,24 @@ def split_text(text: str, max_chars: int) -> List[str]:
     return chunks
 
 
+def split_text_with_chapters(text: str, max_chars: int) -> List[ChapterSegment]:
+    """Split marked text while preserving the original ``split_text`` API."""
+
+    return split_marked_text(text, lambda section: split_text(section, max_chars))
+
+
+def split_synthesis_text(
+    text: str,
+    max_chars: int,
+    use_chapter_markers: bool = False,
+) -> List[ChapterSegment]:
+    """Keep chapter syntax opt-in so legacy text is spoken unchanged."""
+
+    if use_chapter_markers:
+        return split_text_with_chapters(text, max_chars)
+    return [ChapterSegment(segment) for segment in split_text(text, max_chars)]
+
+
 def _load_voice_path(voice_path: str) -> str:
     voice = Path(voice_path).expanduser().resolve()
     if not voice.is_file():
@@ -496,8 +531,39 @@ def synthesize(
     output_path: str,
     max_chars: int,
     gap_ms: int,
+    chapter_pause_ms: int = 0,
+    chapter_manifest_path: Optional[str] = None,
 ) -> None:
     model_id = require_supported_model(model_id)
+    chapter_markers_enabled = bool(
+        chapter_manifest_path and chapter_manifest_path.strip()
+    )
+    segments = split_synthesis_text(
+        text,
+        max_chars=max_chars,
+        use_chapter_markers=chapter_markers_enabled,
+    )
+    if not segments:
+        raise WorkerError("INVALID_ARGUMENT", "Text input is empty.")
+    if gap_ms < 0:
+        raise WorkerError("INVALID_ARGUMENT", "gap_ms must be zero or greater.")
+    if chapter_pause_ms < 0:
+        raise WorkerError(
+            "INVALID_ARGUMENT",
+            "chapter_pause_ms must be zero or greater.",
+        )
+    output = Path(output_path).expanduser().resolve()
+    manifest_path = (
+        Path(chapter_manifest_path).expanduser().resolve()
+        if chapter_manifest_path and chapter_manifest_path.strip()
+        else None
+    )
+    if manifest_path == output:
+        raise WorkerError(
+            "INVALID_ARGUMENT",
+            "The chapter manifest path must differ from the audio output path.",
+        )
+
     ensure_dependencies()
     snapshot = load_pinned_snapshot(models_root, model_id)
     enable_offline_mode()
@@ -553,12 +619,6 @@ def synthesize(
         x_vector_only_mode=not bool(reference_text),
     )
 
-    segments = split_text(text, max_chars=max_chars)
-    if not segments:
-        raise WorkerError("INVALID_ARGUMENT", "Text input is empty.")
-    if gap_ms < 0:
-        raise WorkerError("INVALID_ARGUMENT", "gap_ms must be zero or greater.")
-
     audio_segments: List[Any] = []
     sample_rate: Optional[int] = None
     total = len(segments)
@@ -570,7 +630,7 @@ def synthesize(
         )
         try:
             wavs, rate = model.generate_voice_clone(
-                text=segment,
+                text=segment.text,
                 language=(language or "Auto").strip() or "Auto",
                 voice_clone_prompt=voice_prompt,
             )
@@ -602,21 +662,39 @@ def synthesize(
 
     if sample_rate is None:
         raise WorkerError("INVALID_MODEL_OUTPUT", "Qwen3-TTS generated no audio.")
-    if gap_ms > 0 and len(audio_segments) > 1:
-        gap_samples = int(sample_rate * gap_ms / 1000)
-        silence = np.zeros(gap_samples, dtype=audio_segments[0].dtype)
-        merged: List[Any] = []
-        for audio in audio_segments:
-            if merged:
-                merged.append(silence)
-            merged.append(audio)
-        combined = np.concatenate(merged)
-    else:
-        combined = np.concatenate(audio_segments)
+    chapter_indices = [
+        index for index, segment in enumerate(segments) if segment.starts_chapter
+    ]
+    timing = build_audio_merge_timing(
+        [int(audio.size) for audio in audio_segments],
+        sample_rate,
+        gap_ms,
+        chapter_indices,
+        chapter_pause_ms,
+    )
+    merged: List[Any] = []
+    for index, audio in enumerate(audio_segments):
+        gap_samples = timing.gap_samples_before[index]
+        if gap_samples:
+            merged.append(np.zeros(gap_samples, dtype=audio_segments[0].dtype))
+        merged.append(audio)
+    combined = np.concatenate(merged)
+    if int(combined.size) != timing.total_samples:
+        raise WorkerError(
+            "INVALID_MODEL_OUTPUT",
+            "Qwen3-TTS merged audio length does not match its timing plan.",
+        )
 
-    output = Path(output_path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(output), combined, sample_rate)
+    if manifest_path is not None:
+        manifest = build_chapter_manifest(
+            segments,
+            timing.start_samples,
+            sample_rate,
+            timing.total_samples,
+        )
+        write_chapter_manifest(manifest_path, manifest)
     emit(
         "complete",
         progress=1.0,
@@ -625,7 +703,10 @@ def synthesize(
         model_id=model_id,
         revision=PINNED_MODEL_REVISIONS[model_id],
         segments=total,
+        chapters=len(chapter_indices),
         sample_rate=sample_rate,
+        total_samples=timing.total_samples,
+        chapter_manifest_path=str(manifest_path) if manifest_path else None,
     )
 
 
@@ -670,6 +751,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--gap-ms",
         type=int,
         default=int(os.environ.get("QWEN_TTS_GAP_MS", "120")),
+    )
+    synth_parser.add_argument(
+        "--chapter-pause-ms",
+        type=int,
+        default=int(os.environ.get("QWEN_TTS_CHAPTER_PAUSE_MS", "0")),
+        help="Additional silence before chapter-start segments",
+    )
+    synth_parser.add_argument(
+        "--chapter-manifest",
+        default=None,
+        help="Optional JSON path for exact chapter start timings",
     )
     return parser
 
@@ -735,6 +827,8 @@ def run(argv: Optional[Sequence[str]] = None) -> None:
             args.output,
             args.max_chars,
             args.gap_ms,
+            args.chapter_pause_ms,
+            args.chapter_manifest,
         )
         return
     raise WorkerError("INVALID_ARGUMENT", f"Unknown command: {args.command}")

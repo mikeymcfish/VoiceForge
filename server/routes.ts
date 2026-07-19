@@ -16,6 +16,7 @@ import {
   speechExecutionTargetSchema,
 } from "@shared/schema";
 import { clampCharacterSampleSize, getCharacterSampleCeiling } from "@shared/model-utils";
+import { MOSS_DELAY_MODEL_ID, MOSS_LOCAL_MODEL_ID } from "@shared/moss-tts";
 import { chunkTextBySentences, countWords, segmentSentences } from "@shared/text-utils";
 import { indexTtsService } from "./tts-service";
 import { vibevoiceService } from "./vibevoice-service";
@@ -1165,6 +1166,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const booleanValue = (value: unknown) =>
           value === true || (typeof value === "string" && ["1", "true", "yes", "on"].includes(value.toLowerCase()));
 
+        const requestedOutputFormat =
+          req.body?.outputFormat === "mp3"
+            ? "mp3"
+            : req.body?.outputFormat === undefined || req.body?.outputFormat === "wav"
+              ? "wav"
+              : undefined;
+        if (!requestedOutputFormat) {
+          return res.status(400).json({ error: "Choose WAV or MP3 output" });
+        }
+        const useChapters = booleanValue(req.body?.useChapters);
+        const outputFormat = useChapters ? "mp3" : requestedOutputFormat;
+        const referenceEnhancement =
+          typeof req.body?.referenceEnhancement === "string"
+            ? req.body.referenceEnhancement.trim().toLowerCase()
+            : "none";
+        if (!["none", "cleanup", "audiosr"].includes(referenceEnhancement)) {
+          return res.status(400).json({ error: "Choose a supported reference-audio enhancement mode" });
+        }
+        if (referenceEnhancement !== "none" && !voiceFile) {
+          return res.status(400).json({ error: "Reference-audio enhancement requires a voice reference" });
+        }
+        if (useChapters && target !== "local") {
+          return res.status(400).json({
+            error: "Exact MP3 chapter timing is available for Local synthesis only",
+          });
+        }
+        const chapterMarkerCount = (text.match(/\[chapter\]/gi) || []).length;
+        const hasChapterContent = text
+          .split(/\[chapter\]/i)
+          .slice(1)
+          .some((section: string) => section.trim().length > 0);
+        if (useChapters && (chapterMarkerCount === 0 || !hasChapterContent)) {
+          return res.status(400).json({
+            error: "Add at least one [CHAPTER] marker followed by spoken text before enabling MP3 chapters",
+          });
+        }
+        if (useChapters && chapterMarkerCount > 500) {
+          return res.status(400).json({
+            error: "A synthesis job may contain at most 500 [CHAPTER] markers",
+          });
+        }
+        const audioProcessing = speechService.getStatus().audioProcessing;
+        if ((outputFormat === "mp3" || referenceEnhancement === "cleanup") && !audioProcessing.ffmpegAvailable) {
+          return res.status(409).json({
+            error: "FFmpeg is required for MP3 export and gentle reference cleanup",
+          });
+        }
+        if (referenceEnhancement === "audiosr" && !audioProcessing.audioSrAvailable) {
+          return res.status(409).json({
+            error:
+              "AudioSR is not available. Configure an isolated AudioSR executable with VOICEFORGE_AUDIOSR_BIN and restart VoiceForge.",
+          });
+        }
+        const audioSrModel = req.body?.audioSrModel === "basic" ? "basic" : "speech";
+        const audioSrDevice =
+          typeof req.body?.audioSrDevice === "string" && req.body.audioSrDevice.trim()
+            ? req.body.audioSrDevice.trim().toLowerCase()
+            : "auto";
+        if (!/^(?:auto|cpu|mps|cuda(?::\d{1,3})?)$/.test(audioSrDevice)) {
+          return res.status(400).json({
+            error: "AudioSR device must be auto, cpu, mps, cuda, or cuda:N (up to three digits)",
+          });
+        }
+
         const referenceText =
           typeof req.body?.referenceText === "string" && req.body.referenceText.trim()
             ? req.body.referenceText.trim().slice(0, 20_000)
@@ -1177,10 +1242,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           typeof req.body?.modelId === "string" && req.body.modelId.trim().length <= 120
             ? req.body.modelId.trim()
             : undefined;
-        const selectedModel = modelId || (engine === "qwen" ? "Qwen/Qwen3-TTS-12Hz-0.6B-Base" : "OpenMOSS-Team/MOSS-TTS-v1.5");
+        const selectedModel = modelId || (engine === "qwen" ? "Qwen/Qwen3-TTS-12Hz-0.6B-Base" : MOSS_DELAY_MODEL_ID);
+        if (engine === "moss" && target === "hf-space" && selectedModel === MOSS_LOCAL_MODEL_ID) {
+          return res.status(400).json({
+            error: "The official MOSS ZeroGPU Space serves only MOSS-TTS v1.5 8B. Choose Local to use the Local-Transformer checkpoint.",
+          });
+        }
         const allowedModels = engine === "qwen"
           ? new Set(["Qwen/Qwen3-TTS-12Hz-0.6B-Base", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"])
-          : new Set(["OpenMOSS-Team/MOSS-TTS-v1.5"]);
+          : target === "local"
+            ? new Set([MOSS_DELAY_MODEL_ID, MOSS_LOCAL_MODEL_ID])
+            : new Set([MOSS_DELAY_MODEL_ID]);
         if (!allowedModels.has(selectedModel)) {
           return res.status(400).json({ error: "Choose a supported pinned model" });
         }
@@ -1240,6 +1312,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           maxNewTokens: Math.round(finiteNumber(req.body?.maxNewTokens, 4_096, 128, 8_192)),
           maxChars: Math.round(finiteNumber(req.body?.maxChars, engine === "qwen" ? 320 : 1_800, 50, 10_000)),
           gapMs: Math.round(finiteNumber(req.body?.gapMs, 120, 0, 2_000)),
+          outputFormat,
+          useChapters,
+          chapterPauseMs: Math.round(finiteNumber(req.body?.chapterPauseMs, 0, 0, 10_000)),
+          mp3Quality: Math.round(finiteNumber(req.body?.mp3Quality, 2, 0, 9)),
+          referenceEnhancement: referenceEnhancement as "none" | "cleanup" | "audiosr",
+          audioSrModel,
+          audioSrDevice,
+          audioSrDdimSteps: Math.round(finiteNumber(req.body?.audioSrDdimSteps, 50, 10, 250)),
+          audioSrGuidanceScale: finiteNumber(req.body?.audioSrGuidanceScale, 3.5, 1, 10),
+          audioSrSeed: Math.round(
+            finiteNumber(req.body?.audioSrSeed, 42, -2_147_483_648, 2_147_483_647)
+          ),
         });
         res.status(202).json({ job });
       } catch (error) {
@@ -1272,11 +1356,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!job || !outputPath || !fs.existsSync(outputPath)) {
       return res.status(404).json({ error: "Audio not ready" });
     }
-    res.type("audio/wav");
+    const outputFormat = job.outputFormat === "mp3" ? "mp3" : "wav";
+    res.type(job.outputMimeType || (outputFormat === "mp3" ? "audio/mpeg" : "audio/wav"));
     const disposition = req.query.download === "1" ? "attachment" : "inline";
     res.setHeader(
       "Content-Disposition",
-      `${disposition}; filename="${job.engine}-${job.id}.wav"`
+      `${disposition}; filename="${job.engine}-${job.id}.${outputFormat}"`
     );
     res.sendFile(outputPath);
   });

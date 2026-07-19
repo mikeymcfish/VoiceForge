@@ -55,6 +55,33 @@ try {
       "voiceforge_recommend_model",
     ]
   );
+  const generateTool = tools.tools.find((tool) => tool.name === "voiceforge_generate_speech");
+  const generateProperties = (generateTool?.inputSchema as any)?.properties;
+  for (const property of [
+    "output_format",
+    "use_chapters",
+    "chapter_pause_ms",
+    "mp3_quality",
+    "reference_enhancement",
+    "audiosr_model",
+    "audiosr_device",
+    "audiosr_ddim_steps",
+    "audiosr_guidance_scale",
+    "audiosr_seed",
+  ]) {
+    assert.ok(generateProperties?.[property], `Bundled bridge schema is missing ${property}.`);
+  }
+  assert.equal(
+    generateProperties?.audiosr_device?.pattern,
+    "^(?:auto|cpu|mps|cuda(?::\\d{1,3})?)$"
+  );
+  const audioPathTool = tools.tools.find((tool) => tool.name === "voiceforge_get_audio_path");
+  assert.match(audioPathTool?.description || "", /WAV or MP3/u);
+  const templates = await client.listResourceTemplates();
+  const generatedAudioTemplate = templates.resourceTemplates.find(
+    (template) => template.name === "generated-speech-audio"
+  );
+  assert.equal(generatedAudioTemplate?.mimeType, undefined, "Generated audio MIME type must be resolved per job.");
 
   const listed = await client.callTool(
     { name: "voiceforge_list_models", arguments: {} },

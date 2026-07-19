@@ -85,7 +85,7 @@ export const VOICEFORGE_TOOLS = [
   {
     name: "voiceforge_generate_speech",
     title: "Generate speech with VoiceForge",
-    description: "Start asynchronous TTS. Local stays on this machine; Agent uploads text/reference audio to the official Hugging Face Space and consumes quota.",
+    description: "Start asynchronous TTS. Local stays on this machine; Agent uploads text/reference audio to the official Hugging Face Space and consumes quota. MP3 export, exact chapters, and reference-audio enhancement are Qwen/MOSS-only; exact chapters require Local, MP3, and [CHAPTER] markers.",
     inputSchema: {
       type: "object",
       properties: {
@@ -105,6 +105,60 @@ export const VOICEFORGE_TOOLS = [
         style: { type: "string", maxLength: 500 },
         guidance_scale: { type: "number", minimum: 0.5, maximum: 3 },
         needs_inline_pauses: { type: "boolean", default: false },
+        output_format: {
+          type: "string",
+          enum: ["wav", "mp3"],
+          description: "Qwen/MOSS only. Final managed audio format; defaults to wav.",
+        },
+        use_chapters: {
+          type: "boolean",
+          description: "Qwen/MOSS only. Exact MP3 chapters; requires Local, output_format=mp3, and [CHAPTER] markers. Defaults to false.",
+        },
+        chapter_pause_ms: {
+          type: "integer",
+          minimum: 0,
+          maximum: 10_000,
+          description: "Qwen/MOSS only. Extra silence before each later chapter's spoken audio in milliseconds; defaults to 0.",
+        },
+        mp3_quality: {
+          type: "integer",
+          minimum: 0,
+          maximum: 9,
+          description: "Qwen/MOSS only. FFmpeg VBR quality for non-chaptered MP3 (0 best, 9 smallest); defaults to 2.",
+        },
+        reference_enhancement: {
+          type: "string",
+          enum: ["none", "cleanup", "audiosr"],
+          description: "Qwen/MOSS only. Reference voice enhancement; defaults to none.",
+        },
+        audiosr_model: {
+          type: "string",
+          enum: ["speech", "basic"],
+          description: "AudioSR model preset; defaults to speech.",
+        },
+        audiosr_device: {
+          type: "string",
+          pattern: "^(?:auto|cpu|mps|cuda(?::\\d{1,3})?)$",
+          description: "AudioSR device: auto, cpu, mps, cuda, or cuda:N (up to three digits); defaults to auto.",
+        },
+        audiosr_ddim_steps: {
+          type: "integer",
+          minimum: 10,
+          maximum: 250,
+          description: "AudioSR DDIM steps; defaults to 50.",
+        },
+        audiosr_guidance_scale: {
+          type: "number",
+          minimum: 1,
+          maximum: 10,
+          description: "AudioSR classifier-free guidance scale; defaults to 3.5.",
+        },
+        audiosr_seed: {
+          type: "integer",
+          minimum: -2_147_483_648,
+          maximum: 2_147_483_647,
+          description: "AudioSR random seed; defaults to 42.",
+        },
       },
       required: ["request_id", "text", "target"],
       additionalProperties: false,
@@ -125,8 +179,8 @@ export const VOICEFORGE_TOOLS = [
   },
   {
     name: "voiceforge_get_audio_path",
-    title: "Get completed VoiceForge WAV path",
-    description: "Return the validated, server-controlled local WAV path for a completed job so the calling project can copy it into its own assets.",
+    title: "Get completed VoiceForge audio path",
+    description: "Return the validated, server-controlled local WAV or MP3 path for a completed job so the calling project can copy it into its own assets.",
     inputSchema: {
       type: "object",
       properties: { job_id: { type: "string", pattern: "^vf-(index|vibe|qwen|moss)-[A-Za-z0-9_-]+$" } },
@@ -154,7 +208,6 @@ export const VOICEFORGE_RESOURCE_TEMPLATES = [
     uriTemplate: "voiceforge://speech/jobs/{jobId}/audio",
     name: "generated-speech-audio",
     description: "Completed VoiceForge speech audio",
-    mimeType: "audio/wav",
   },
   {
     uriTemplate: "voiceforge://default-voices/{voiceId}/audio",
@@ -420,10 +473,14 @@ async function selectLaunchPort(): Promise<number> {
 
 function sanitizedLaunchEnvironment(token: string, port: number): NodeJS.ProcessEnv {
   const allowExact = new Set([
-    "ALLUSERSPROFILE", "APPDATA", "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "COMSPEC",
-    "HOME", "LANG", "LC_ALL", "LOCALAPPDATA", "NUMBER_OF_PROCESSORS", "OS", "PATHEXT",
-    "PROCESSOR_ARCHITECTURE", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "SYSTEMDRIVE",
-    "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "USERPROFILE", "WINDIR",
+    "ALLUSERSPROFILE", "ALL_PROXY", "APPDATA", "COMMONPROGRAMFILES",
+    "COMMONPROGRAMFILES(X86)", "COMSPEC", "CURL_CA_BUNDLE", "HF_HOME", "HF_HUB_CACHE",
+    "HOME", "HTTP_PROXY", "HTTPS_PROXY", "LANG", "LC_ALL", "LOCALAPPDATA",
+    "NODE_EXTRA_CA_CERTS", "NO_PROXY", "NUMBER_OF_PROCESSORS", "OS", "PATHEXT",
+    "PROCESSOR_ARCHITECTURE", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+    "REQUESTS_CA_BUNDLE", "SSL_CERT_DIR", "SSL_CERT_FILE", "SYSTEMDRIVE", "SYSTEMROOT",
+    "TEMP", "TMP", "TMPDIR", "TRANSFORMERS_CACHE", "USERPROFILE",
+    "VOICEFORGE_AUDIOSR_BIN", "VOICEFORGE_FFMPEG_BIN", "WINDIR", "XDG_CACHE_HOME",
   ]);
   const allowPrefixes = ["CUDA_", "HSA_", "KMP_", "MOSS_TTS_", "NVIDIA_", "OMP_", "PYTORCH_", "QWEN_TTS_", "ROCR_", "TORCH_"];
   const env: NodeJS.ProcessEnv = {};
@@ -630,7 +687,12 @@ function isWithin(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-export async function completedAudioPath(jobId: string): Promise<{ path: string; size: number }> {
+export async function completedAudioPath(jobId: string): Promise<{
+  path: string;
+  size: number;
+  format: "wav" | "mp3";
+  mimeType: "audio/wav" | "audio/mpeg";
+}> {
   const match = /^vf-(index|vibe|qwen|moss)-([A-Za-z0-9_-]+)$/u.exec(jobId);
   if (!match) throw new Error("VoiceForge job ID is invalid.");
   const status = await remoteToolCall("voiceforge_get_job", { job_id: jobId });
@@ -638,6 +700,14 @@ export async function completedAudioPath(jobId: string): Promise<{ path: string;
   if (!publicJob || publicJob.job_id !== jobId || publicJob.status !== "completed") {
     throw new Error("VoiceForge audio is not completed yet.");
   }
+  const format =
+    publicJob.output_format === undefined || publicJob.output_format === "wav"
+      ? "wav"
+      : publicJob.output_format === "mp3"
+        ? "mp3"
+        : undefined;
+  if (!format) throw new Error("VoiceForge returned an unsupported completed audio format.");
+  const mimeType = format === "mp3" ? "audio/mpeg" : "audio/wav";
   const roots: Record<string, string> = {
     index: path.join(voiceForgeRoot, "attached_assets", "index-tts", "jobs"),
     vibe: path.join(voiceForgeRoot, "attached_assets", "vibevoice", "jobs"),
@@ -645,13 +715,13 @@ export async function completedAudioPath(jobId: string): Promise<{ path: string;
     moss: path.join(voiceForgeRoot, "attached_assets", "moss-tts-v1.5", "jobs"),
   };
   const jobsRoot = fs.realpathSync.native(roots[match[1]]);
-  const output = fs.realpathSync.native(path.join(jobsRoot, match[2], "output.wav"));
+  const output = fs.realpathSync.native(path.join(jobsRoot, match[2], `output.${format}`));
   if (!isWithin(jobsRoot, output)) throw new Error("VoiceForge audio resolved outside its managed jobs directory.");
   const stat = await fsPromises.stat(output);
   if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_LOCAL_AUDIO_BYTES) {
     throw new Error("VoiceForge audio file is missing or exceeds the safety limit.");
   }
-  return { path: output, size: stat.size };
+  return { path: output, size: stat.size, format, mimeType };
 }
 
 function errorToolResult(error: unknown) {
@@ -680,8 +750,17 @@ export function createBridgeServer(): Server {
         const jobId = typeof args.job_id === "string" ? args.job_id : "";
         const audio = await completedAudioPath(jobId);
         return {
-          structuredContent: { job_id: jobId, audio_path: audio.path, size_bytes: audio.size },
-          content: [{ type: "text" as const, text: `Completed VoiceForge WAV: ${audio.path}` }],
+          structuredContent: {
+            job_id: jobId,
+            audio_path: audio.path,
+            size_bytes: audio.size,
+            output_format: audio.format,
+            mime_type: audio.mimeType,
+          },
+          content: [{
+            type: "text" as const,
+            text: `Completed VoiceForge ${audio.format.toUpperCase()}: ${audio.path}`,
+          }],
         };
       }
       if (!REQUIRED_REMOTE_TOOLS.has(name)) return errorToolResult(new Error(`Unknown VoiceForge tool: ${name}`));

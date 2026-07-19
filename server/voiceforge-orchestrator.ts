@@ -13,9 +13,15 @@ import type {
 } from "@shared/speech-recommendation";
 import {
   MODEL_REPOSITORIES,
+  recommendAudioProcessingSpeechModel,
   recommendSpeechModel,
   resolveVoiceForgeMode,
+  voiceForgeModelSupportsAudioProcessing,
 } from "@shared/speech-recommendation";
+import type {
+  SpeechOutputFormat,
+  SpeechReferenceEnhancement,
+} from "@shared/schema";
 import { indexTtsService } from "./tts-service";
 import { vibevoiceService } from "./vibevoice-service";
 import { speechService } from "./speech-service";
@@ -39,6 +45,10 @@ export type VoiceForgeJob = {
   error?: string;
   createdAt: number;
   updatedAt: number;
+  outputFormat: SpeechOutputFormat;
+  outputMimeType: "audio/wav" | "audio/mpeg";
+  chapterCount: number;
+  referenceEnhancement: SpeechReferenceEnhancement;
   audioResourceUri?: string;
   audioPath?: string;
 };
@@ -60,6 +70,16 @@ export type GenerateSpeechInput = {
   style?: string;
   guidanceScale?: number;
   needsInlinePauses?: boolean;
+  outputFormat?: SpeechOutputFormat;
+  useChapters?: boolean;
+  chapterPauseMs?: number;
+  mp3Quality?: number;
+  referenceEnhancement?: SpeechReferenceEnhancement;
+  audioSrModel?: "speech" | "basic";
+  audioSrDevice?: string;
+  audioSrDdimSteps?: number;
+  audioSrGuidanceScale?: number;
+  audioSrSeed?: number;
 };
 
 export type GenerateSpeechResult = {
@@ -128,6 +148,23 @@ function hashInput(input: GenerateSpeechInput): string {
 
 function isVibeModel(model: VoiceForgeModelId): boolean {
   return model === "vibevoice-1.5b" || model === "vibevoice-large";
+}
+
+function finiteNumberInRange(
+  label: string,
+  value: number | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+  integer = false
+): number {
+  const result = value ?? fallback;
+  if (!Number.isFinite(result) || result < minimum || result > maximum || (integer && !Number.isInteger(result))) {
+    throw new Error(
+      `${label} must be ${integer ? "an integer" : "a number"} from ${minimum.toLocaleString()} to ${maximum.toLocaleString()}.`
+    );
+  }
+  return result;
 }
 
 export class VoiceForgeOrchestrator {
@@ -307,10 +344,22 @@ export class VoiceForgeOrchestrator {
     // before any engine can start, preventing concurrent retries from creating
     // duplicate synthesis jobs.
     const operation = Promise.resolve().then(async (): Promise<GenerateSpeechResult> => {
+      const audioProcessingRequested = [
+        input.outputFormat,
+        input.useChapters,
+        input.chapterPauseMs,
+        input.mp3Quality,
+        input.referenceEnhancement,
+        input.audioSrModel,
+        input.audioSrDevice,
+        input.audioSrDdimSteps,
+        input.audioSrGuidanceScale,
+        input.audioSrSeed,
+      ].some((value) => value !== undefined);
       let model = input.model;
       let recommendation: SpeechRecommendation | undefined;
       if (model === "auto") {
-        recommendation = this.recommend({
+        const recommendationInput = {
           characterCount: text.length,
           target: input.target,
           hasVoice,
@@ -318,7 +367,13 @@ export class VoiceForgeOrchestrator {
           mode: requestedMode,
           preference: input.preference,
           needsInlinePauses: input.needsInlinePauses,
-        });
+        } satisfies SpeechRecommendationInput;
+        recommendation = audioProcessingRequested
+          ? recommendAudioProcessingSpeechModel(
+              recommendationInput,
+              this.getModelStatuses()
+            )
+          : this.recommend(recommendationInput);
         if (!recommendation.recommended) {
           throw new Error(recommendation.warnings[0] || "No compatible speech model is available.");
         }
@@ -327,6 +382,9 @@ export class VoiceForgeOrchestrator {
 
       const status = this.getModelStatuses().find((item) => item.id === model);
       if (!status) throw new Error("Choose a supported VoiceForge model.");
+      if (audioProcessingRequested && !voiceForgeModelSupportsAudioProcessing(model)) {
+        throw new Error("MP3 export, chapters, and reference-audio enhancement are available only with Qwen3-TTS or MOSS-TTS.");
+      }
       if (!status.targets.includes(input.target)) {
         throw new Error(`${status.label} does not support ${input.target === "agent" ? "Hugging Face Agent" : "Local"} inference.`);
       }
@@ -350,6 +408,61 @@ export class VoiceForgeOrchestrator {
         (model === "moss-tts-v1.5" && mode !== "direct");
       if (needsVoice && !hasVoice) throw new Error(`${status.label} ${mode} mode requires a default voice ID.`);
       if (!isVibeModel(model) && voices.length > 1) throw new Error(`${status.label} accepts one reference voice per job.`);
+
+      const outputFormat = input.outputFormat ?? "wav";
+      const useChapters = input.useChapters ?? false;
+      if (useChapters && input.target !== "local") {
+        throw new Error("Exact MP3 chapter timing is available for Local synthesis only.");
+      }
+      if (useChapters && outputFormat !== "mp3") {
+        throw new Error("Set output_format to mp3 when enabling exact MP3 chapters.");
+      }
+      const chapterMarkerCount = (text.match(/\[chapter\]/giu) || []).length;
+      const hasChapterContent = text
+        .split(/\[chapter\]/iu)
+        .slice(1)
+        .some((section) => section.trim().length > 0);
+      if (useChapters && (chapterMarkerCount === 0 || !hasChapterContent)) {
+        throw new Error(
+          "Add at least one [CHAPTER] marker followed by spoken text before enabling MP3 chapters."
+        );
+      }
+      if (useChapters && chapterMarkerCount > 500) {
+        throw new Error("A synthesis job may contain at most 500 [CHAPTER] markers.");
+      }
+      const referenceEnhancement = input.referenceEnhancement ?? "none";
+      if (referenceEnhancement !== "none" && !needsVoice) {
+        throw new Error(
+          "Reference-audio enhancement is available only in a mode that uses a reference voice."
+        );
+      }
+      if (referenceEnhancement !== "none" && !hasVoice) {
+        throw new Error("Reference-audio enhancement requires a default voice ID.");
+      }
+      const chapterPauseMs = finiteNumberInRange("chapterPauseMs", input.chapterPauseMs, 0, 0, 10_000, true);
+      const mp3Quality = finiteNumberInRange("mp3Quality", input.mp3Quality, 2, 0, 9, true);
+      const audioSrDdimSteps = finiteNumberInRange("audioSrDdimSteps", input.audioSrDdimSteps, 50, 10, 250, true);
+      const audioSrGuidanceScale = finiteNumberInRange(
+        "audioSrGuidanceScale",
+        input.audioSrGuidanceScale,
+        3.5,
+        1,
+        10
+      );
+      const audioSrSeed = finiteNumberInRange(
+        "audioSrSeed",
+        input.audioSrSeed,
+        42,
+        -2_147_483_648,
+        2_147_483_647,
+        true
+      );
+      const audioSrDevice = input.audioSrDevice?.trim().toLowerCase() || "auto";
+      if (!/^(?:auto|cpu|mps|cuda(?::\d{1,3})?)$/u.test(audioSrDevice)) {
+        throw new Error(
+          "audioSrDevice must be auto, cpu, mps, cuda, or cuda:N (up to three digits)."
+        );
+      }
 
       let rawJobId: string;
       let engine: JobEngine;
@@ -392,6 +505,16 @@ export class VoiceForgeOrchestrator {
         speaker: input.speaker,
         instruction: input.instruction?.trim().slice(0, 1_000),
         modelSize: model === "qwen3-tts-0.6b" ? "0.6B" : "1.7B",
+        outputFormat,
+        useChapters,
+        chapterPauseMs,
+        mp3Quality,
+        referenceEnhancement,
+        audioSrModel: input.audioSrModel ?? "speech",
+        audioSrDevice,
+        audioSrDdimSteps,
+        audioSrGuidanceScale,
+        audioSrSeed,
       });
       rawJobId = job.id;
       engine = model === "moss-tts-v1.5" ? "moss" : "qwen";
@@ -450,9 +573,21 @@ export class VoiceForgeOrchestrator {
     model: VoiceForgeModelId,
     target: VoiceForgeTarget,
     mode: Exclude<VoiceForgeMode, "auto">,
-    job: { status: PublicJobState; progress: number; message?: string; error?: string; createdAt: number; updatedAt: number }
+    job: {
+      status: PublicJobState;
+      progress: number;
+      message?: string;
+      error?: string;
+      createdAt: number;
+      updatedAt: number;
+      outputFormat?: SpeechOutputFormat;
+      outputMimeType?: "audio/wav" | "audio/mpeg";
+      chapterCount?: number;
+      referenceEnhancement?: SpeechReferenceEnhancement;
+    }
   ): VoiceForgeJob {
     const completed = job.status === "completed";
+    const outputFormat = job.outputFormat ?? "wav";
     return {
       id,
       model,
@@ -464,6 +599,10 @@ export class VoiceForgeOrchestrator {
       error: job.error,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
+      outputFormat,
+      outputMimeType: outputFormat === "mp3" ? "audio/mpeg" : "audio/wav",
+      chapterCount: job.chapterCount ?? 0,
+      referenceEnhancement: job.referenceEnhancement ?? "none",
       audioResourceUri: completed ? `voiceforge://speech/jobs/${id}/audio` : undefined,
       audioPath: completed ? `/api/mcp/speech/jobs/${id}/audio` : undefined,
     };

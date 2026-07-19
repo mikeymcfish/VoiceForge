@@ -22,9 +22,17 @@ import type {
   SpeechEngine,
   SpeechExecutionTarget,
   SpeechJobStatus,
+  SpeechOutputFormat,
+  SpeechReferenceEnhancement,
   SpeechStatus,
   SpeechWsMessage,
 } from "@shared/schema";
+import {
+  MOSS_DELAY_MODEL_ID,
+  MOSS_DURATION_TOKENS_PLACEHOLDER,
+  MOSS_LOCAL_CHECKPOINTS,
+  mossHostedDurationTokens,
+} from "@shared/moss-tts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,7 +52,6 @@ const QWEN_MODELS = [
   "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
   "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
 ];
-const MOSS_MODEL = "OpenMOSS-Team/MOSS-TTS-v1.5";
 const AUDIO_EXTENSIONS = new Set(["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus", "webm"]);
 const QWEN_LANGUAGES = ["Auto", "Chinese", "English", "Japanese", "Korean", "French", "German", "Spanish", "Portuguese", "Russian"];
 const QWEN_LOCAL_LANGUAGES = [...QWEN_LANGUAGES, "Italian"];
@@ -79,6 +86,22 @@ function targetLabel(target: SpeechExecutionTarget): string {
   return target === "local" ? "Local" : "HF ZeroGPU";
 }
 
+function referenceEnhancementLabel(mode: SpeechReferenceEnhancement): string {
+  return {
+    none: "Original reference",
+    cleanup: "Gentle FFmpeg cleanup",
+    audiosr: "AudioSR super-resolution",
+  }[mode];
+}
+
+function completedDownloadLabel(job: SpeechJobStatus): string {
+  const format = (job.outputFormat ?? "wav").toUpperCase();
+  const chapterCount = job.chapterCount ?? 0;
+  return chapterCount > 0
+    ? `Download ${format} (${chapterCount} ${chapterCount === 1 ? "chapter" : "chapters"})`
+    : `Download ${format}`;
+}
+
 async function fetchSpeechStatus(): Promise<SpeechStatus> {
   const response = await fetch("/api/speech/status");
   if (!response.ok) throw new Error("Failed to load speech model status");
@@ -106,7 +129,7 @@ export function NeuralSpeechPanel({
         label: "MOSS-TTS v1.5",
         description: "Long-form 31-language speech with cloning, continuation, and pause control.",
         defaultMode: "direct",
-        defaultModel: MOSS_MODEL,
+        defaultModel: MOSS_DELAY_MODEL_ID,
         remoteLimit: 5_000,
       };
 
@@ -140,12 +163,23 @@ export function NeuralSpeechPanel({
   const voiceInputRef = useRef<HTMLInputElement>(null);
   const [referenceText, setReferenceText] = useState("");
   const [xVectorOnly, setXVectorOnly] = useState(false);
+  const [referenceEnhancement, setReferenceEnhancement] =
+    useState<SpeechReferenceEnhancement>("none");
+  const [audioSrModel, setAudioSrModel] = useState<"speech" | "basic">("speech");
+  const [audioSrDevice, setAudioSrDevice] = useState("auto");
+  const [audioSrDdimSteps, setAudioSrDdimSteps] = useState(50);
+  const [audioSrGuidanceScale, setAudioSrGuidanceScale] = useState(3.5);
+  const [audioSrSeed, setAudioSrSeed] = useState(42);
+  const [outputFormat, setOutputFormat] = useState<SpeechOutputFormat>("wav");
+  const [useChapters, setUseChapters] = useState(false);
+  const [chapterPauseMs, setChapterPauseMs] = useState(0);
+  const [mp3Quality, setMp3Quality] = useState(2);
   const [language, setLanguage] = useState(engine === "qwen" ? "Auto" : "Auto (omit)");
   const [voiceDescription, setVoiceDescription] = useState("Warm, natural, expressive narration");
   const [speaker, setSpeaker] = useState("Ryan");
   const [instruction, setInstruction] = useState("");
   const [durationControl, setDurationControl] = useState(false);
-  const [durationTokens, setDurationTokens] = useState(400);
+  const [durationTokens, setDurationTokens] = useState(MOSS_DURATION_TOKENS_PLACEHOLDER);
   const [temperature, setTemperature] = useState(1.7);
   const [topP, setTopP] = useState(0.8);
   const [topK, setTopK] = useState(25);
@@ -155,6 +189,13 @@ export function NeuralSpeechPanel({
   const [settingUp, setSettingUp] = useState(false);
   const [connected, setConnected] = useState(false);
   const [cancelling, setCancelling] = useState<Set<string>>(() => new Set());
+  const ffmpegAvailable = status?.audioProcessing.ffmpegAvailable === true;
+  const audioSrAvailable = status?.audioProcessing.audioSrAvailable === true;
+  const effectiveModelId =
+    engine === "moss" && target === "hf-space" ? MOSS_DELAY_MODEL_ID : modelId;
+  const selectedMossCheckpoint = MOSS_LOCAL_CHECKPOINTS.find(
+    (checkpoint) => checkpoint.id === modelId
+  );
   const languageOptions =
     engine === "qwen"
       ? target === "local"
@@ -186,6 +227,22 @@ export function NeuralSpeechPanel({
   }, [language, languageOptions]);
 
   useEffect(() => {
+    if (!status?.audioProcessing) return;
+    if (!status.audioProcessing.ffmpegAvailable) {
+      if (outputFormat === "mp3") setOutputFormat("wav");
+      if (useChapters) setUseChapters(false);
+      if (referenceEnhancement === "cleanup") setReferenceEnhancement("none");
+    }
+    if (!status.audioProcessing.audioSrAvailable && referenceEnhancement === "audiosr") {
+      setReferenceEnhancement("none");
+    }
+  }, [outputFormat, referenceEnhancement, status?.audioProcessing, useChapters]);
+
+  useEffect(() => {
+    if (target !== "local" && useChapters) setUseChapters(false);
+  }, [target, useChapters]);
+
+  useEffect(() => {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${proto}://${window.location.host}/ws/speech`);
     socket.addEventListener("open", () => setConnected(true));
@@ -214,20 +271,48 @@ export function NeuralSpeechPanel({
   }, [queryClient]);
 
   const localReady = Boolean(
-    engineStatus?.runtimeConfigured && engineStatus.availableModels.includes(modelId)
+    engineStatus?.runtimeConfigured && engineStatus.availableModels.includes(effectiveModelId)
   );
   const hostedReady = Boolean(status?.tokenConfigured && engineStatus?.hostedAvailable);
   const requiresVoice =
     (engine === "qwen" && mode === "clone") || (engine === "moss" && mode !== "direct");
+  const effectiveReferenceEnhancement = requiresVoice ? referenceEnhancement : "none";
+  const chapterMarkerCount = (text.match(/\[chapter\]/gi) || []).length;
+  const hasChapterContent = text
+    .split(/\[chapter\]/i)
+    .slice(1)
+    .some((section) => section.trim().length > 0);
+  const audioSrDeviceValid = /^(?:auto|cpu|mps|cuda(?::\d{1,3})?)$/i.test(
+    audioSrDevice.trim()
+  );
+  const audioProcessingBlocker =
+    useChapters && chapterMarkerCount > 500
+      ? "A synthesis job can contain at most 500 [CHAPTER] markers"
+      : outputFormat === "mp3" && !ffmpegAvailable
+      ? "FFmpeg is required for MP3 export"
+      : effectiveReferenceEnhancement === "cleanup" && !ffmpegAvailable
+        ? "FFmpeg is required for gentle reference cleanup"
+        : effectiveReferenceEnhancement === "audiosr" && !audioSrAvailable
+          ? "Configure the optional isolated AudioSR tool before using AudioSR enhancement"
+          : effectiveReferenceEnhancement === "audiosr" && !audioSrDeviceValid
+            ? "Use an AudioSR device such as auto, cpu, mps, cuda, or cuda:0"
+          : useChapters && (target !== "local" || !ffmpegAvailable)
+            ? "MP3 chapters require Local synthesis with FFmpeg"
+          : useChapters && (chapterMarkerCount === 0 || !hasChapterContent)
+              ? "Add at least one [CHAPTER] marker followed by spoken text"
+            : undefined;
   const characterLimit = target === "hf-space" ? config.remoteLimit : 500_000;
   const ready =
     (target === "local" ? localReady : hostedReady) &&
     text.trim().length > 0 &&
     text.length <= characterLimit &&
-    (!requiresVoice || Boolean(voiceFile || defaultVoice));
+    (!requiresVoice || Boolean(voiceFile || defaultVoice)) &&
+    !audioProcessingBlocker;
   const readinessMessage = ready
     ? `Ready to run ${targetLabel(target)}`
-    : target === "local" && !localReady
+    : audioProcessingBlocker
+      ? audioProcessingBlocker
+      : target === "local" && !localReady
       ? "Install the runtime/model and complete required inputs"
       : target === "hf-space" && !hostedReady
         ? "Configure HF access and complete required inputs"
@@ -266,12 +351,12 @@ export function NeuralSpeechPanel({
       const response = await fetch(`/api/speech/${engine}/setup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelId }),
+        body: JSON.stringify({ modelId: effectiveModelId }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error || "Failed to start model download");
       queryClient.setQueryData(["speech-status"], payload);
-      toast({ title: "Download started", description: `The pinned ${modelId} snapshot is being prepared.` });
+      toast({ title: "Download started", description: `The pinned ${effectiveModelId} snapshot is being prepared.` });
     } catch (error) {
       toast({
         title: "Setup could not start",
@@ -292,7 +377,7 @@ export function NeuralSpeechPanel({
       const startResponse = await fetch(`/api/speech/${engine}/setup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelId }),
+        body: JSON.stringify({ modelId: effectiveModelId }),
       });
       const startPayload = await startResponse.json().catch(() => ({}));
       if (!startResponse.ok) throw new Error(startPayload?.error || "Failed to retry model download");
@@ -314,12 +399,26 @@ export function NeuralSpeechPanel({
     setSubmitting(true);
     try {
       const previewText = text.slice(0, 600).replace(/\s+\S*$/, "").trim();
+      const previewSource = previewText || text.trim();
+      const previewHasChapterContent = previewSource
+        .split(/\[chapter\]/i)
+        .slice(1)
+        .some((section) => section.trim().length > 0);
+      const requestUsesChapters = preview
+        ? useChapters && previewHasChapterContent
+        : useChapters;
+      const submittedText =
+        preview && useChapters && !requestUsesChapters
+          ? previewSource.replace(/\[chapter\][ \t]*/gi, "")
+          : preview
+            ? previewSource
+            : text;
       const form = new FormData();
       form.append("engine", engine);
       form.append("target", target);
       form.append("mode", mode);
-      form.append("text", preview ? previewText || text.trim() : text);
-      form.append("modelId", modelId);
+      form.append("text", submittedText);
+      form.append("modelId", effectiveModelId);
       form.append("modelSize", modelSize);
       form.append("language", language);
       form.append("referenceText", referenceText);
@@ -328,12 +427,25 @@ export function NeuralSpeechPanel({
       form.append("speaker", speaker);
       form.append("instruction", instruction);
       form.append("durationControl", String(durationControl));
-      form.append("durationTokens", String(durationTokens));
+      form.append(
+        "durationTokens",
+        String(mossHostedDurationTokens(durationControl, durationTokens))
+      );
       form.append("temperature", String(temperature));
       form.append("topP", String(topP));
       form.append("topK", String(topK));
       form.append("repetitionPenalty", String(repetitionPenalty));
       form.append("maxNewTokens", String(maxNewTokens));
+      form.append("outputFormat", requestUsesChapters ? "mp3" : outputFormat);
+      form.append("useChapters", String(requestUsesChapters));
+      form.append("chapterPauseMs", String(chapterPauseMs));
+      form.append("mp3Quality", String(mp3Quality));
+      form.append("referenceEnhancement", effectiveReferenceEnhancement);
+      form.append("audioSrModel", audioSrModel);
+      form.append("audioSrDevice", audioSrDevice);
+      form.append("audioSrDdimSteps", String(audioSrDdimSteps));
+      form.append("audioSrGuidanceScale", String(audioSrGuidanceScale));
+      form.append("audioSrSeed", String(audioSrSeed));
       if (voiceFile) form.append("voice", voiceFile);
       else if (defaultVoice) form.append("voiceId", defaultVoice.id);
 
@@ -380,7 +492,7 @@ export function NeuralSpeechPanel({
   };
 
   const availableModes = target === "local" ? engineStatus?.localModes ?? [] : engineStatus?.hostedModes ?? [];
-  const modelInstalled = engineStatus?.availableModels.includes(modelId);
+  const modelInstalled = engineStatus?.availableModels.includes(effectiveModelId);
   const handleModeChange = (nextMode: string) => {
     setMode(nextMode);
     if (engine === "qwen" && target === "hf-space" && nextMode === "design") {
@@ -442,6 +554,26 @@ export function NeuralSpeechPanel({
             </div>
             {engine === "qwen" && (
               <div className="space-y-2"><Label>Base checkpoint</Label><Select value={modelId} onValueChange={(value) => { setModelId(value); setModelSize(value.includes("0.6B") ? "0.6B" : "1.7B"); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{QWEN_MODELS.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></div>
+            )}
+            {engine === "moss" && (
+              <div className="space-y-2">
+                <Label>Local checkpoint</Label>
+                <Select value={modelId} onValueChange={setModelId}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {MOSS_LOCAL_CHECKPOINTS.map((checkpoint) => (
+                      <SelectItem key={checkpoint.id} value={checkpoint.id}>
+                        {checkpoint.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedMossCheckpoint && (
+                  <p className="text-xs text-muted-foreground">
+                    {selectedMossCheckpoint.description}
+                  </p>
+                )}
+              </div>
             )}
             {!engineStatus?.runtimeConfigured && (
               <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
@@ -521,9 +653,133 @@ export function NeuralSpeechPanel({
                 onChange={handleDefaultVoice}
               />
               <div className="space-y-2">
-              <Label htmlFor={`${engine}-voice`} className="flex items-center gap-2"><Headphones className="h-4 w-4" />Custom voice reference</Label>
-              <Input ref={voiceInputRef} id={`${engine}-voice`} type="file" disabled={Boolean(defaultVoice)} accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,.opus,.webm" onChange={handleVoice} />
-              {voiceFile && <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs"><span className="break-all">{voiceFile.name}</span><Button type="button" variant="ghost" size="sm" onClick={() => { setVoiceFile(null); if (voiceInputRef.current) voiceInputRef.current.value = ""; }}>Clear</Button></div>}
+                <Label htmlFor={`${engine}-voice`} className="flex items-center gap-2"><Headphones className="h-4 w-4" />Custom voice reference</Label>
+                <Input ref={voiceInputRef} id={`${engine}-voice`} type="file" disabled={Boolean(defaultVoice)} accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,.opus,.webm" onChange={handleVoice} />
+                {voiceFile && <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs"><span className="break-all">{voiceFile.name}</span><Button type="button" variant="ghost" size="sm" onClick={() => { setVoiceFile(null); if (voiceInputRef.current) voiceInputRef.current.value = ""; }}>Clear</Button></div>}
+              </div>
+
+              <div className="space-y-3 rounded-xl border p-4">
+                <div>
+                  <Label>Reference audio enhancement</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Optionally prepare the selected reference before it is sent to {config.label}.
+                  </p>
+                </div>
+                <Select
+                  value={referenceEnhancement}
+                  onValueChange={(value) =>
+                    setReferenceEnhancement(value as SpeechReferenceEnhancement)
+                  }
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None - use the original reference</SelectItem>
+                    <SelectItem value="cleanup" disabled={!ffmpegAvailable}>
+                      Gentle FFmpeg clone prep{ffmpegAvailable ? "" : " (unavailable)"}
+                    </SelectItem>
+                    <SelectItem value="audiosr" disabled={!audioSrAvailable}>
+                      AudioSR super-resolution{audioSrAvailable ? "" : " (unavailable)"}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant={ffmpegAvailable ? "default" : "secondary"}>
+                    FFmpeg {status ? (ffmpegAvailable ? "available" : "unavailable") : "checking"}
+                  </Badge>
+                  <Badge variant={audioSrAvailable ? "default" : "secondary"}>
+                    AudioSR {status ? (audioSrAvailable ? "available" : "unavailable") : "checking"}
+                  </Badge>
+                </div>
+
+                {referenceEnhancement === "none" && (
+                  <p className="text-xs text-muted-foreground">
+                    The selected clip is passed through unchanged.
+                  </p>
+                )}
+                {referenceEnhancement === "cleanup" && (
+                  <p className="text-xs text-muted-foreground">
+                    Gentle clone preparation uses FFmpeg to make a mono 24 kHz WAV with a
+                    high-pass filter, light denoise, silence cleanup, loudness normalization,
+                    and a final limiter.
+                  </p>
+                )}
+                {referenceEnhancement === "audiosr" && (
+                  <div className="space-y-3">
+                    <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-muted-foreground">
+                      AudioSR is optional isolated tooling. It works best on short reference
+                      clips; use a clean clip of roughly 5-10 seconds and preview the result
+                      before a long render.
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                      <div className="space-y-1">
+                        <Label className="text-xs">AudioSR model</Label>
+                        <Select
+                          value={audioSrModel}
+                          onValueChange={(value) => setAudioSrModel(value as "speech" | "basic")}
+                        >
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="speech">Speech</SelectItem>
+                            <SelectItem value="basic">Basic</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Device</Label>
+                        <Input
+                          value={audioSrDevice}
+                          onChange={(event) => setAudioSrDevice(event.target.value)}
+                          placeholder="auto, cpu, cuda:0, or mps"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">DDIM steps</Label>
+                        <Input
+                          type="number"
+                          min={10}
+                          max={250}
+                          step={1}
+                          value={audioSrDdimSteps}
+                          onChange={(event) => setAudioSrDdimSteps(Number(event.target.value))}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Guidance</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={10}
+                          step={0.1}
+                          value={audioSrGuidanceScale}
+                          onChange={(event) => setAudioSrGuidanceScale(Number(event.target.value))}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Seed</Label>
+                        <Input
+                          type="number"
+                          step={1}
+                          value={audioSrSeed}
+                          onChange={(event) => setAudioSrSeed(Number(event.target.value))}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {!ffmpegAvailable && status && (
+                  <p className="text-xs text-muted-foreground">
+                    Install FFmpeg and restart VoiceForge to enable gentle cleanup and MP3 export.
+                  </p>
+                )}
+                {!audioSrAvailable && status && (
+                  <p className="text-xs text-muted-foreground">
+                    AudioSR stays outside the Qwen/MOSS runtimes. Configure
+                    <code className="mx-1">VOICEFORGE_AUDIOSR_BIN</code>
+                    and restart VoiceForge to enable it.
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -552,6 +808,96 @@ export function NeuralSpeechPanel({
             <Label className="flex items-center gap-2"><FileText className="h-4 w-4" />Text to synthesize</Label>
             <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder={engine === "moss" ? "Paste narration; [pause 1.5s] is supported…" : "Paste the text to speak…"} className="min-h-36" />
             <p className={`text-xs ${text.length > characterLimit ? "text-destructive" : "text-muted-foreground"}`}>{text.length.toLocaleString()} / {characterLimit.toLocaleString()} characters for this target{target === "hf-space" ? " · choose Local for long-form work" : ""}</p>
+          </div>
+
+          <div className="space-y-4 rounded-xl border p-4">
+            <div>
+              <p className="flex items-center gap-2 text-sm font-semibold">
+                <Settings2 className="h-4 w-4" />Output audio
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                WAV is lossless. MP3 export and embedded chapter metadata require FFmpeg.
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Output format</Label>
+                <Select
+                  value={outputFormat}
+                  onValueChange={(value) => {
+                    const nextFormat = value as SpeechOutputFormat;
+                    setOutputFormat(nextFormat);
+                    if (nextFormat === "wav") setUseChapters(false);
+                  }}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="wav">WAV (lossless)</SelectItem>
+                    <SelectItem value="mp3" disabled={!ffmpegAvailable}>
+                      MP3{ffmpegAvailable ? "" : " (FFmpeg unavailable)"}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {outputFormat === "mp3" && !useChapters && (
+                <div className="space-y-2">
+                  <Label>MP3 quality (0 best, 9 smallest)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={9}
+                    step={1}
+                    value={mp3Quality}
+                    onChange={(event) => setMp3Quality(Number(event.target.value))}
+                  />
+                </div>
+              )}
+            </div>
+
+            {target === "local" && ffmpegAvailable ? (
+              <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+                <Label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={useChapters}
+                    onCheckedChange={(value) => {
+                      const checked = value === true;
+                      setUseChapters(checked);
+                      if (checked) setOutputFormat("mp3");
+                    }}
+                  />
+                  Embed MP3 chapters
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Put <code>[CHAPTER] Title</code> before each section. The marker starts a
+                  chapter at the following rendered audio and <code>Title</code> becomes its
+                  MP3 metadata name. {chapterMarkerCount} marker{chapterMarkerCount === 1 ? "" : "s"} detected.
+                </p>
+                {useChapters && (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Extra chapter pause (ms)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={10_000}
+                        step={50}
+                        value={chapterPauseMs}
+                        onChange={(event) => setChapterPauseMs(Number(event.target.value))}
+                      />
+                    </div>
+                    <p className="self-end text-xs text-muted-foreground">
+                      Chaptered MP3 uses chapter-safe encoding for reliable player seeking;
+                      the nonchaptered MP3 quality setting is not used.
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Embedded MP3 chapters are available only for Local synthesis with FFmpeg.
+              </p>
+            )}
           </div>
 
           {engine === "moss" && (
@@ -591,7 +937,21 @@ export function NeuralSpeechPanel({
               <Progress value={job.progress} />
               <p className="text-xs text-muted-foreground">{job.message || "Waiting…"}{job.queuePosition !== undefined ? ` · queue ${job.queuePosition}` : ""}{job.etaSeconds !== undefined ? ` · ETA ${Math.ceil(job.etaSeconds)}s` : ""}</p>
               {(job.status === "queued" || job.status === "running") && <Button variant="destructive" size="sm" className="w-full" disabled={cancelling.has(job.id)} onClick={() => void cancelJob(job)}>{cancelling.has(job.id) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Square className="mr-2 h-4 w-4" />}{cancelling.has(job.id) ? "Cancelling…" : "Cancel job"}</Button>}
-              {job.status === "completed" && <div className="space-y-2"><audio controls preload="none" className="w-full" src={`/api/speech/jobs/${job.id}/audio`} /><Button variant="outline" size="sm" className="w-full" asChild><a href={`/api/speech/jobs/${job.id}/audio?download=1`} download>Download audio</a></Button></div>}
+              {job.status === "completed" && (
+                <div className="space-y-2">
+                  <audio controls preload="none" className="w-full" src={`/api/speech/jobs/${job.id}/audio`} />
+                  {job.referenceEnhancement && job.referenceEnhancement !== "none" && (
+                    <p className="text-xs text-muted-foreground">
+                      Reference enhancement: {referenceEnhancementLabel(job.referenceEnhancement)}
+                    </p>
+                  )}
+                  <Button variant="outline" size="sm" className="w-full" asChild>
+                    <a href={`/api/speech/jobs/${job.id}/audio?download=1`} download>
+                      {completedDownloadLabel(job)}
+                    </a>
+                  </Button>
+                </div>
+              )}
               {job.status === "failed" && job.error && <p className="text-xs text-destructive">{job.error}</p>}
             </div>
           ))}
