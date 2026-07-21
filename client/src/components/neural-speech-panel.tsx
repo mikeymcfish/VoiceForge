@@ -516,7 +516,8 @@ export function NeuralSpeechPanel({
           : useChapters && (chapterMarkerCount === 0 || !hasChapterContent)
               ? "Add at least one [CHAPTER] marker followed by spoken text"
             : undefined;
-  const characterLimit = target === "hf-space" ? config.remoteLimit : 500_000;
+  // Local runtimes do not have an application-level character cap.
+  const characterLimit = target === "hf-space" ? config.remoteLimit : Number.POSITIVE_INFINITY;
   const ready =
     (target === "local" ? localReady : hostedReady) &&
     text.trim().length > 0 &&
@@ -1144,7 +1145,11 @@ export function NeuralSpeechPanel({
               placeholder={engine === "moss" ? "Paste narration; [pause 1.5s] is supported…" : "Paste the text to speak…"}
               className="min-h-36"
             />
-            <p className={`text-xs ${text.length > characterLimit ? "text-destructive" : "text-muted-foreground"}`}>{text.length.toLocaleString()} / {characterLimit.toLocaleString()} characters for this target{target === "hf-space" ? " · choose Local for long-form work" : ""}</p>
+            <p className={`text-xs ${text.length > characterLimit ? "text-destructive" : "text-muted-foreground"}`}>
+              {target === "local"
+                ? `${text.length.toLocaleString()} characters for this local target (no application-level cap)`
+                : `${text.length.toLocaleString()} / ${characterLimit.toLocaleString()} characters for this target · choose Local for long-form work`}
+            </p>
           </div>
 
           <div className="space-y-4 rounded-xl border p-4">

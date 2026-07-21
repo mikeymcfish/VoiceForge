@@ -27,7 +27,8 @@ export type VoiceForgeModelStatus = {
   targets: VoiceForgeTarget[];
   localModes: VoiceForgeMode[];
   agentModes: VoiceForgeMode[];
-  localCharacterLimit: number;
+  // Undefined means this local runtime has no application-level character cap.
+  localCharacterLimit?: number;
   agentCharacterLimit?: number;
   localReady: boolean;
   agentReady: boolean;
@@ -54,7 +55,7 @@ export type SpeechRecommendationCandidate = {
 
 export type SpeechRecommendation = {
   characterCount: number;
-  lengthBand: "empty" | "short" | "medium" | "long" | "too-long";
+  lengthBand: "empty" | "short" | "medium" | "long";
   requestedTarget: VoiceForgeTargetPreference;
   recommended?: SpeechRecommendationCandidate;
   alternatives: SpeechRecommendationCandidate[];
@@ -71,7 +72,6 @@ export const MODEL_REPOSITORIES: Record<VoiceForgeModelId, string> = {
   "moss-tts-v1.5": "OpenMOSS-Team/MOSS-TTS-v1.5",
 };
 
-const MAX_LOCAL_CHARACTERS = 500_000;
 const QWEN_AGENT_LIMIT = 1_200;
 const MOSS_AGENT_LIMIT = 5_000;
 
@@ -79,8 +79,7 @@ function lengthBand(characterCount: number): SpeechRecommendation["lengthBand"] 
   if (characterCount <= 0) return "empty";
   if (characterCount <= QWEN_AGENT_LIMIT) return "short";
   if (characterCount <= MOSS_AGENT_LIMIT) return "medium";
-  if (characterCount <= MAX_LOCAL_CHARACTERS) return "long";
-  return "too-long";
+  return "long";
 }
 
 function statusFor(
@@ -117,7 +116,8 @@ function candidate(
   if (!status || !status.targets.includes(target)) return undefined;
   const modes = target === "local" ? status.localModes : status.agentModes;
   if (!modes.includes(mode)) return undefined;
-  if (characterCount > (target === "local" ? status.localCharacterLimit : status.agentCharacterLimit ?? 0)) {
+  const characterLimit = target === "local" ? status.localCharacterLimit : status.agentCharacterLimit;
+  if (characterLimit !== undefined && characterCount > characterLimit) {
     return undefined;
   }
 
@@ -173,16 +173,6 @@ export function recommendSpeechModel(
       alternatives: [],
       reasons: [],
       warnings: ["Text is required before a speech model can be recommended."],
-    };
-  }
-  if (band === "too-long") {
-    return {
-      characterCount,
-      lengthBand: band,
-      requestedTarget: target,
-      alternatives: [],
-      reasons: [],
-      warnings: ["VoiceForge accepts at most 500,000 characters per local job; split the text first."],
     };
   }
   if (speakerCount > 4) {

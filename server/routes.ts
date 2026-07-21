@@ -48,7 +48,8 @@ const ttsUpload = multer({
   limits: {
     fileSize: 32 * 1024 * 1024,
     files: 2,
-    fieldSize: 2 * 1024 * 1024,
+    // A transport safety ceiling, not a synthesis character limit.
+    fieldSize: 64 * 1024 * 1024,
     fields: 8,
   },
 });
@@ -58,7 +59,8 @@ const vibevoiceUpload = multer({
   limits: {
     fileSize: 24 * 1024 * 1024,
     files: 5,
-    fieldSize: 2 * 1024 * 1024,
+    // A transport safety ceiling, not a synthesis character limit.
+    fieldSize: 64 * 1024 * 1024,
     fields: 12,
   },
 });
@@ -76,7 +78,8 @@ const speechUpload = multer({
   limits: {
     fileSize: 32 * 1024 * 1024,
     files: 2,
-    fieldSize: 2 * 1024 * 1024,
+    // A transport safety ceiling, not a synthesis character limit.
+    fieldSize: 64 * 1024 * 1024,
     fields: 32,
   },
 });
@@ -86,7 +89,6 @@ const MAX_EPUB_ENTRY_BYTES = 10 * 1024 * 1024;
 const MAX_EPUB_EXPANDED_BYTES = 50 * 1024 * 1024;
 const MAX_EXTRACTED_TEXT_CHARS = 5_000_000;
 const MAX_EXTRACTED_TEXT_BYTES = 5 * 1024 * 1024;
-const MAX_SYNTHESIS_TEXT_CHARS = 500_000;
 const ALLOWED_AUDIO_EXTENSIONS = new Set([
   ".wav",
   ".mp3",
@@ -152,12 +154,6 @@ async function resolveVoiceInput(
     originalname: `${voice.metadata.name}.${voice.metadata.format}`,
     transcript: voice.metadata.transcript ?? undefined,
   };
-}
-
-function assertSynthesisTextSize(text: string): void {
-  if (text.length > MAX_SYNTHESIS_TEXT_CHARS) {
-    throw new RequestInputError("Synthesis text exceeds the 500,000 character limit; split it into smaller jobs");
-  }
 }
 
 function createRequestAbortContext(req: Request, res: Response) {
@@ -874,8 +870,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!textContent || textContent.trim().length === 0) {
           return res.status(400).json({ error: "Text input is required" });
         }
-        assertSynthesisTextSize(textContent);
-
         const job = await indexTtsService.startSynthesis({
           voiceBuffer: voiceFile.buffer,
           voiceFileName: voiceFile.originalname,
@@ -983,8 +977,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!textContent || textContent.trim().length === 0) {
           return res.status(400).json({ error: "Text input is required" });
         }
-        assertSynthesisTextSize(textContent);
-
         const rawGuidanceScale = req.body?.guidanceScale;
         const parsedGuidanceScale =
           typeof rawGuidanceScale === "string" && rawGuidanceScale.trim().length > 0
@@ -1134,13 +1126,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!text) return res.status(400).json({ error: "Text input is required" });
 
         const remoteLimit = engine === "qwen" ? 1_200 : 5_000;
-        const limit = target === "hf-space" ? remoteLimit : MAX_SYNTHESIS_TEXT_CHARS;
-        if (text.length > limit) {
+        if (target === "hf-space" && text.length > remoteLimit) {
           return res.status(400).json({
-            error:
-              target === "hf-space"
-                ? `The official ${engine === "qwen" ? "Qwen" : "MOSS"} Space is limited to ${limit.toLocaleString()} characters per VoiceForge request. Use Local for long-form synthesis.`
-                : `Text input exceeds the ${limit.toLocaleString()} character limit`,
+            error: `The official ${engine === "qwen" ? "Qwen" : "MOSS"} Space is limited to ${remoteLimit.toLocaleString()} characters per VoiceForge request. Use Local for long-form synthesis.`,
           });
         }
 

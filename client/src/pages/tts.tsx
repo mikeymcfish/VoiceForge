@@ -24,6 +24,12 @@ import { NeuralSpeechPanel } from "@/components/neural-speech-panel";
 import { DefaultVoicePicker } from "@/components/default-voice-picker";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  clearTtsWorkspace,
+  consumeTtsHandoff,
+  loadTtsWorkspace,
+  saveTtsWorkspace,
+} from "@/lib/workspace-draft";
 import { formatDistanceToNow } from "date-fns";
 import {
   BookOpen,
@@ -223,38 +229,77 @@ export default function TtsPage() {
   const [isVibeWsConnected, setIsVibeWsConnected] = useState(false);
   const [vibeLogs, setVibeLogs] = useState<TtsLogEntry[]>([]);
   const [importedDraft, setImportedDraft] = useState(false);
+  const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
 
   useEffect(() => {
-    const draft = sessionStorage.getItem("vf_tts_draft");
-    if (draft?.trim()) {
-      setScriptText(draft);
-      setVibeScriptText(draft);
-      setImportedDraft(true);
-      sessionStorage.removeItem("vf_tts_draft");
-      return;
-    }
-    try {
-      const saved = JSON.parse(localStorage.getItem("vf_tts_workspace_v1") || "null");
-      if (typeof saved?.indexText === "string") setScriptText(saved.indexText);
-      if (typeof saved?.vibeText === "string") setVibeScriptText(saved.vibeText);
-    } catch {}
+    let mounted = true;
+    const restoreWorkspace = async () => {
+      try {
+        const sessionDraft = sessionStorage.getItem("vf_tts_draft");
+        const handoff = sessionDraft?.trim() || await consumeTtsHandoff();
+        if (sessionDraft) {
+          sessionStorage.removeItem("vf_tts_draft");
+          void consumeTtsHandoff().catch(() => undefined);
+        }
+        if (handoff?.trim()) {
+          if (mounted) {
+            setScriptText(handoff);
+            setVibeScriptText(handoff);
+            setImportedDraft(true);
+          }
+          return;
+        }
+
+        const saved = await loadTtsWorkspace();
+        if (saved) {
+          if (mounted) {
+            setScriptText(saved.indexText);
+            setVibeScriptText(saved.vibeText);
+          }
+          return;
+        }
+
+        const legacy = JSON.parse(localStorage.getItem("vf_tts_workspace_v1") || "null");
+        if (mounted) {
+          if (typeof legacy?.indexText === "string") setScriptText(legacy.indexText);
+          if (typeof legacy?.vibeText === "string") setVibeScriptText(legacy.vibeText);
+        }
+      } catch {
+        // Keep the legacy localStorage draft as the fallback when IndexedDB is unavailable.
+        try {
+          const legacy = JSON.parse(localStorage.getItem("vf_tts_workspace_v1") || "null");
+          if (mounted) {
+            if (typeof legacy?.indexText === "string") setScriptText(legacy.indexText);
+            if (typeof legacy?.vibeText === "string") setVibeScriptText(legacy.vibeText);
+          }
+        } catch {}
+      } finally {
+        if (mounted) setWorkspaceHydrated(true);
+      }
+    };
+    void restoreWorkspace();
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
+    if (!workspaceHydrated) return;
     if (!scriptText.trim() && !vibeScriptText.trim()) {
+      void clearTtsWorkspace().catch(() => undefined);
       try {
         localStorage.removeItem("vf_tts_workspace_v1");
       } catch {}
       return;
     }
-    if (scriptText.length > 750_000 || vibeScriptText.length > 750_000) return;
+    void saveTtsWorkspace({ indexText: scriptText, vibeText: vibeScriptText, updatedAt: Date.now() }).catch(() => undefined);
     try {
-      localStorage.setItem(
-        "vf_tts_workspace_v1",
-        JSON.stringify({ indexText: scriptText, vibeText: vibeScriptText, updatedAt: Date.now() })
-      );
+      if (scriptText.length <= 750_000 && vibeScriptText.length <= 750_000) {
+        localStorage.setItem(
+          "vf_tts_workspace_v1",
+          JSON.stringify({ indexText: scriptText, vibeText: vibeScriptText, updatedAt: Date.now() })
+        );
+      }
     } catch {}
-  }, [scriptText, vibeScriptText]);
+  }, [scriptText, vibeScriptText, workspaceHydrated]);
 
   const sortedJobs = useMemo(() => {
     if (!status?.jobs) return [];
@@ -469,23 +514,13 @@ export default function TtsPage() {
   const handleScriptFile = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      if (!acceptFileWithinLimit(file, 2, "Script")) {
+      if (!acceptFileWithinLimit(file, 32, "Script")) {
         event.target.value = "";
         return;
       }
       const reader = new FileReader();
       reader.onload = () => {
-        if (typeof reader.result === "string") {
-          if (reader.result.length > 500_000) {
-            toast({
-              title: "Script is too long",
-              description: "Split scripts longer than 500,000 characters into separate render jobs.",
-              variant: "destructive",
-            });
-          } else {
-            setScriptText(reader.result);
-          }
-        }
+        if (typeof reader.result === "string") setScriptText(reader.result);
       };
       reader.readAsText(file);
     }
@@ -563,7 +598,7 @@ export default function TtsPage() {
     .map((requirement) => requirement.label);
   const indexInputsReady = missingIndexRequirements.length === 0;
   const canStart = indexInputsReady && !isSubmitting;
-  const canRenderFull = canStart && scriptText.length <= 500_000;
+  const canRenderFull = canStart;
   const indexUnavailableReason = isSubmitting
     ? "A render is already being submitted"
     : `Waiting for: ${missingIndexRequirements.join(", ")}`;
@@ -613,23 +648,13 @@ export default function TtsPage() {
   const handleVibeScriptFile = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      if (!acceptFileWithinLimit(file, 2, "Script")) {
+      if (!acceptFileWithinLimit(file, 32, "Script")) {
         event.target.value = "";
         return;
       }
       const reader = new FileReader();
       reader.onload = () => {
-        if (typeof reader.result === "string") {
-          if (reader.result.length > 500_000) {
-            toast({
-              title: "Script is too long",
-              description: "Split scripts longer than 500,000 characters into separate render jobs.",
-              variant: "destructive",
-            });
-          } else {
-            setVibeScriptText(reader.result);
-          }
-        }
+        if (typeof reader.result === "string") setVibeScriptText(reader.result);
       };
       reader.readAsText(file);
     }
@@ -747,7 +772,7 @@ export default function TtsPage() {
     !isVibeSubmitting &&
     Boolean(vibeStatus?.ready) &&
     hasContiguousVibeVoices;
-  const canRenderFullVibe = canStartVibe && vibeScriptText.length <= 500_000;
+  const canRenderFullVibe = canStartVibe;
 
   const handleCancelJob = useCallback(async (engine: "tts" | "vibevoice", jobId: string) => {
     const key = `${engine}:${jobId}`;
@@ -1034,8 +1059,8 @@ export default function TtsPage() {
                       onChange={(event) => setScriptText(event.target.value)}
                       className="min-h-[120px]"
                     />
-                    <p className={`text-xs ${scriptText.length > 500_000 ? "text-destructive" : "text-muted-foreground"}`}>
-                      {scriptText.length.toLocaleString()} / 500,000 characters for a full render
+                    <p className="text-xs text-muted-foreground">
+                      {scriptText.length.toLocaleString()} characters for the local full render
                     </p>
                   </div>
 
@@ -1091,11 +1116,7 @@ export default function TtsPage() {
                       disabled={!canRenderFull}
                       aria-describedby="index-render-readiness"
                       title={
-                        canRenderFull
-                          ? "Render the full script"
-                          : scriptText.length > 500_000
-                            ? "Full renders are limited to 500,000 characters"
-                            : indexUnavailableReason
+                        canRenderFull ? "Render the full script" : indexUnavailableReason
                       }
                       className="flex items-center justify-center gap-2"
                     >
@@ -1388,8 +1409,8 @@ export default function TtsPage() {
                       onChange={(event) => setVibeScriptText(event.target.value)}
                       className="min-h-[140px]"
                     />
-                    <p className={`text-xs ${vibeScriptText.length > 500_000 ? "text-destructive" : "text-muted-foreground"}`}>
-                      {vibeScriptText.length.toLocaleString()} / 500,000 characters for a full render
+                    <p className="text-xs text-muted-foreground">
+                      {vibeScriptText.length.toLocaleString()} characters for the local full render
                     </p>
                   </div>
 

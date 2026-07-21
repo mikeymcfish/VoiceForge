@@ -30,6 +30,12 @@ import {
   Wand2,
 } from "lucide-react";
 import { countWords, segmentSentences } from "@shared/text-utils";
+import {
+  clearPrepareWorkspace,
+  loadPrepareWorkspace,
+  savePrepareWorkspace,
+  saveTtsHandoff,
+} from "@/lib/workspace-draft";
 import type {
   CleaningOptions,
   SpeakerConfig,
@@ -144,6 +150,7 @@ export default function Home() {
   const [totalCost, setTotalCost] = useState<number | undefined>(undefined);
   const [estimatedTotalCost, setEstimatedTotalCost] = useState<number | undefined>(undefined);
   const [processedText, setProcessedText] = useState("");
+  const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isTesting, setIsTesting] = useState(false);
   const [testPreview, setTestPreview] = useState<TestChunkPreview | null>(null);
@@ -227,37 +234,60 @@ export default function Home() {
 
   // Recover the current workspace after a refresh, or accept a handoff from OCR.
   useEffect(() => {
-    try {
-      const incoming = sessionStorage.getItem("vf_prepare_draft");
-      const saved = localStorage.getItem("vf_project_draft_v2");
-      const draft = incoming ? { source: incoming, output: "" } : saved ? JSON.parse(saved) : null;
-      if (draft && typeof draft.source === "string" && draft.source.trim()) {
-        setOriginalText(draft.source);
-        setProcessedText(typeof draft.output === "string" ? draft.output : "");
-        setFileStats({ wordCount: countWords(draft.source), charCount: draft.source.length });
+    let mounted = true;
+    const applyDraft = (draft: { source?: unknown; output?: unknown } | null) => {
+      if (!mounted || !draft || typeof draft.source !== "string" || !draft.source.trim()) return false;
+      setOriginalText(draft.source);
+      setProcessedText(typeof draft.output === "string" ? draft.output : "");
+      setFileStats({ wordCount: countWords(draft.source), charCount: draft.source.length });
+      return true;
+    };
+    const restoreWorkspace = async () => {
+      try {
+        const incoming = sessionStorage.getItem("vf_prepare_draft");
+        if (incoming?.trim()) {
+          applyDraft({ source: incoming, output: "" });
+          sessionStorage.removeItem("vf_prepare_draft");
+          return;
+        }
+        if (applyDraft(await loadPrepareWorkspace())) return;
+        applyDraft(JSON.parse(localStorage.getItem("vf_project_draft_v2") || "null"));
+      } catch {
+        // IndexedDB can be unavailable in private browsing; retain the legacy fallback.
+        try {
+          applyDraft(JSON.parse(localStorage.getItem("vf_project_draft_v2") || "null"));
+        } catch {}
+      } finally {
+        if (mounted) setWorkspaceHydrated(true);
       }
-      if (incoming) sessionStorage.removeItem("vf_prepare_draft");
-    } catch {
-      // A malformed or oversized browser draft should never block the editor.
-    }
+    };
+    void restoreWorkspace();
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
-    if (!originalText.trim() || originalText.length > 750_000) {
+    if (!workspaceHydrated) return;
+    if (!originalText.trim()) {
+      void clearPrepareWorkspace().catch(() => undefined);
       try {
         localStorage.removeItem("vf_project_draft_v2");
       } catch {}
       return;
     }
+    void savePrepareWorkspace({ source: originalText, output: processedText, updatedAt: Date.now() }).catch(() => undefined);
     try {
-      localStorage.setItem(
-        "vf_project_draft_v2",
-        JSON.stringify({ source: originalText, output: processedText, updatedAt: Date.now() })
-      );
+      if (originalText.length <= 750_000 && processedText.length <= 750_000) {
+        localStorage.setItem(
+          "vf_project_draft_v2",
+          JSON.stringify({ source: originalText, output: processedText, updatedAt: Date.now() })
+        );
+      } else {
+        localStorage.removeItem("vf_project_draft_v2");
+      }
     } catch {
-      // Storage can be unavailable in private browsing or full for long books.
+      // IndexedDB remains the primary store for long drafts.
     }
-  }, [originalText, processedText]);
+  }, [originalText, processedText, workspaceHydrated]);
 
   // When switching to Ollama, attempt to select the first installed model
   useEffect(() => {
@@ -392,10 +422,15 @@ export default function Home() {
     toast({ title: "Recipe applied", description: `${preset === "ocr" ? "OCR repair" : preset === "dialogue" ? "Dialogue cast" : "Clean narration"} settings are ready.` });
   };
 
-  const sendToVoiceStudio = () => {
+  const sendToVoiceStudio = async () => {
     const draft = processedText.trim() || originalText.trim();
     if (!draft) return;
-    sessionStorage.setItem("vf_tts_draft", draft);
+    try {
+      await saveTtsHandoff(draft);
+    } catch {
+      // Keep the existing session-only handoff as a fallback for browsers without IndexedDB.
+      sessionStorage.setItem("vf_tts_draft", draft);
+    }
     navigate("/tts");
   };
 
@@ -819,7 +854,7 @@ export default function Home() {
             </span>
             <span className="inline-flex items-center gap-1.5 rounded-full border bg-card px-3 py-1.5 shadow-sm">
               <FilePenLine className="h-3.5 w-3.5 text-primary" />
-              {originalText.length > 750_000 ? "Large draft — export to save" : "Local draft autosave"}
+              Workspace autosaved locally
             </span>
           </div>
         </header>

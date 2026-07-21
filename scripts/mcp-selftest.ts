@@ -14,33 +14,33 @@ const statuses: VoiceForgeModelStatus[] = [
   {
     id: "index-tts-2", label: "IndexTTS2", repositoryId: "IndexTeam/IndexTTS-2",
     targets: ["local"], localModes: ["clone"], agentModes: [],
-    localCharacterLimit: 500_000, localReady: true, agentReady: false,
+    localReady: true, agentReady: false,
   },
   {
     id: "vibevoice-1.5b", label: "VibeVoice 1.5B", repositoryId: "microsoft/VibeVoice-1.5B",
     targets: ["local"], localModes: ["clone"], agentModes: [],
-    localCharacterLimit: 500_000, localReady: true, agentReady: false,
+    localReady: true, agentReady: false,
   },
   {
     id: "vibevoice-large", label: "VibeVoice Large", repositoryId: "aoi-ot/VibeVoice-Large",
     targets: ["local"], localModes: ["clone"], agentModes: [],
-    localCharacterLimit: 500_000, localReady: true, agentReady: false,
+    localReady: true, agentReady: false,
   },
   {
     id: "qwen3-tts-0.6b", label: "Qwen 0.6B", repositoryId: "Qwen/0.6B",
     targets: ["local", "agent"], localModes: ["clone"], agentModes: ["clone", "preset"],
-    localCharacterLimit: 500_000, agentCharacterLimit: 1_200, localReady: true, agentReady: true,
+    agentCharacterLimit: 1_200, localReady: true, agentReady: true,
   },
   {
     id: "qwen3-tts-1.7b", label: "Qwen 1.7B", repositoryId: "Qwen/1.7B",
     targets: ["local", "agent"], localModes: ["clone"], agentModes: ["clone", "design", "preset"],
-    localCharacterLimit: 500_000, agentCharacterLimit: 1_200, localReady: true, agentReady: true,
+    agentCharacterLimit: 1_200, localReady: true, agentReady: true,
   },
   {
     id: "moss-tts-v1.5", label: "MOSS", repositoryId: "OpenMOSS/MOSS",
     targets: ["local", "agent"], localModes: ["direct", "clone"],
     agentModes: ["direct", "clone", "continuation", "continuation-clone"],
-    localCharacterLimit: 500_000, agentCharacterLimit: 5_000, localReady: true, agentReady: true,
+    agentCharacterLimit: 5_000, localReady: true, agentReady: true,
   },
 ];
 
@@ -61,7 +61,7 @@ assert.equal(recommendSpeechModel({ characterCount: 400, target: "local", hasVoi
 assert.equal(recommendSpeechModel({ characterCount: 400, target: "auto", hasVoice: false }, statuses).recommended?.target, "local");
 assert.equal(recommendSpeechModel({ characterCount: 400, target: "agent", hasVoice: false, mode: "design", preference: "speed" }, statuses).recommended?.model, "qwen3-tts-1.7b");
 assert.equal(recommendSpeechModel({ characterCount: 400, target: "agent", hasVoice: false, mode: "preset", preference: "speed" }, statuses).recommended?.model, "qwen3-tts-0.6b");
-assert.equal(recommendSpeechModel({ characterCount: 500_001, target: "local", hasVoice: true }, statuses).recommended, undefined);
+assert.equal(recommendSpeechModel({ characterCount: 500_001, target: "local", hasVoice: true }, statuses).recommended?.model, "vibevoice-large");
 assert.equal(resolveVoiceForgeMode("qwen3-tts-0.6b", "agent", "auto", false), "preset");
 assert.equal(resolveVoiceForgeMode("qwen3-tts-1.7b", "agent", "auto", false), "design");
 

@@ -68,8 +68,8 @@ export const VOICEFORGE_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        text: { type: "string", maxLength: 500_000 },
-        character_count: { type: "integer", minimum: 0, maximum: 500_001 },
+        text: { type: "string" },
+        character_count: { type: "integer", minimum: 0 },
         target: { type: "string", enum: ["auto", "local", "agent"], default: "auto" },
         has_voice: { type: "boolean", default: false },
         speaker_count: { type: "integer", minimum: 1, maximum: 5, default: 1 },
@@ -90,7 +90,7 @@ export const VOICEFORGE_TOOLS = [
       type: "object",
       properties: {
         request_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
-        text: { type: "string", minLength: 1, maxLength: 500_000 },
+        text: { type: "string", minLength: 1 },
         model: { type: "string", enum: ["auto", ...MODEL_IDS], default: "auto" },
         target: { type: "string", enum: ["local", "agent"] },
         mode: { type: "string", enum: [...MODES], default: "auto" },

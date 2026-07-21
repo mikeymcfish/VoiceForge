@@ -58,7 +58,7 @@ const modelStatusOutputSchema = z.object({
   targets: z.array(targetSchema),
   local_modes: z.array(modeSchema),
   agent_modes: z.array(modeSchema),
-  local_character_limit: z.number().int(),
+  local_character_limit: z.number().int().optional(),
   agent_character_limit: z.number().int().optional(),
   local_ready: z.boolean(),
   agent_ready: z.boolean(),
@@ -85,7 +85,7 @@ const candidateOutputSchema = z.object({
 
 const recommendationOutputSchema = z.object({
   character_count: z.number().int(),
-  length_band: z.enum(["empty", "short", "medium", "long", "too-long"]),
+  length_band: z.enum(["empty", "short", "medium", "long"]),
   requested_target: targetPreferenceSchema,
   recommended: candidateOutputSchema.optional(),
   alternatives: z.array(candidateOutputSchema),
@@ -240,8 +240,8 @@ export function createVoiceForgeMcpServer(options?: {
       description: "Recommend a deterministic TTS model from text length, Local/Agent preference, voice availability, speaker count, mode, and speed/quality preference. This does not start inference.",
       inputSchema: z
         .object({
-          text: z.string().max(500_000).optional().describe("Text that will be synthesized. Used only for its character count."),
-          character_count: z.number().int().min(0).max(500_001).optional(),
+          text: z.string().optional().describe("Text that will be synthesized. Used only for its character count."),
+          character_count: z.number().int().min(0).optional(),
           target: targetPreferenceSchema.default("auto"),
           has_voice: z.boolean().default(false),
           speaker_count: z.number().int().min(1).max(5).default(1),
@@ -282,7 +282,7 @@ export function createVoiceForgeMcpServer(options?: {
       description: "Start an asynchronous TTS job. Local stays on this machine. Agent sends text and any selected default voice to the official Hugging Face Space and consumes ZeroGPU quota. Explicit model choices are honored or rejected, never silently replaced. Level normalization, MP3 export, exact chapters, and reference-audio enhancement are Qwen/MOSS-only; exact chapters additionally require Local, MP3 output, and [CHAPTER] markers.",
       inputSchema: {
         request_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).describe("Stable idempotency key; reuse it only when retrying the exact same request."),
-        text: z.string().min(1).max(500_000),
+        text: z.string().min(1),
         model: modelChoiceSchema.default("auto"),
         target: targetSchema.describe("Required privacy/compute choice: local or Hugging Face Agent."),
         mode: modeSchema.default("auto"),

@@ -105,7 +105,6 @@ type InFlightEntry = {
   promise: Promise<GenerateSpeechResult>;
 };
 
-const MAX_TEXT_CHARACTERS = 500_000;
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000;
 const MODEL_LABELS: Record<VoiceForgeModelId, string> = {
   "index-tts-2": "IndexTTS2",
@@ -197,7 +196,6 @@ export class VoiceForgeOrchestrator {
       targets,
       localModes,
       agentModes,
-      localCharacterLimit: MAX_TEXT_CHARACTERS,
       agentCharacterLimit,
       localReady,
       agentReady,
@@ -305,9 +303,6 @@ export class VoiceForgeOrchestrator {
   public async generate(input: GenerateSpeechInput): Promise<GenerateSpeechResult> {
     const text = input.text.trim();
     if (!text) throw new Error("Text is required.");
-    if (text.length > MAX_TEXT_CHARACTERS) {
-      throw new Error("VoiceForge accepts at most 500,000 characters per local job.");
-    }
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId)) {
       throw new Error("requestId must be 8-128 URL-safe characters so retries remain idempotent.");
     }
@@ -391,8 +386,8 @@ export class VoiceForgeOrchestrator {
       if (!status.targets.includes(input.target)) {
         throw new Error(`${status.label} does not support ${input.target === "agent" ? "Hugging Face Agent" : "Local"} inference.`);
       }
-      const limit = input.target === "local" ? status.localCharacterLimit : status.agentCharacterLimit ?? 0;
-      if (text.length > limit) {
+      const limit = input.target === "local" ? status.localCharacterLimit : status.agentCharacterLimit;
+      if (limit !== undefined && text.length > limit) {
         throw new Error(
           input.target === "agent"
             ? `${status.label} Agent requests are limited to ${limit.toLocaleString()} characters; choose Local.`
