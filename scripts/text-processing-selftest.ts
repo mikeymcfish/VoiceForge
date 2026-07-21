@@ -7,6 +7,7 @@ import {
   segmentSentences,
 } from "@shared/text-utils";
 import { applyDeterministicCleaning } from "../server/text-cleaner";
+import { buildOllamaOptions, isThinkingOllamaModel } from "../shared/model-utils";
 
 const allLocalOptions: CleaningOptions = {
   replaceSmartQuotes: true,
@@ -15,6 +16,7 @@ const allLocalOptions: CleaningOptions = {
   removeUrls: true,
   removeFootnotes: true,
   addPunctuation: false,
+  insertChapterBreaks: false,
   fixHyphenation: true,
 };
 
@@ -27,6 +29,24 @@ assert.ok(cleaned.applied.includes("replaceSmartQuotes"));
 assert.ok(cleaned.applied.includes("removeUrls"));
 assert.ok(cleaned.applied.includes("removeFootnotes"));
 assert.ok(cleaned.applied.includes("fixHyphenation"));
+
+const ttsPunctuation = applyDeterministicCleaning(
+  "Part 1\n\nThe journey begins.\n\nCHAPTER ONE\nThe next section starts here.",
+  { ...allLocalOptions, addPunctuation: true },
+  "post"
+);
+assert.equal(
+  ttsPunctuation.text,
+  "Part 1:\n\nThe journey begins.\n\nCHAPTER ONE:\nThe next section starts here."
+);
+assert.ok(ttsPunctuation.applied.includes("addPunctuation"));
+
+assert.equal(isThinkingOllamaModel("qwen3:8b"), true);
+assert.equal(isThinkingOllamaModel("llama3.1:8b"), false);
+assert.equal(
+  buildOllamaOptions({ temperature: 0.3, num_predict: 2_000 }, "ollama", "qwen3:8b").num_predict,
+  4_096
+);
 
 const mojibake = applyDeterministicCleaning("\u00e2\u20ac\u0153Quoted\u00e2\u20ac\u009d", allLocalOptions);
 assert.equal(mojibake.text, '"Quoted"');

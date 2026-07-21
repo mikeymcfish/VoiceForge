@@ -111,6 +111,108 @@ class DurationOutlier(NamedTuple):
     rate_ratio: float
 
 
+class StreamingWaveWriter:
+    """Append MOSS waveforms to a temporary WAV without retaining prior audio.
+
+    Long-form synthesis previously held every segment and then allocated a
+    second, combined NumPy array at the end.  Keeping only the current segment
+    makes the final assembly scale with disk space instead of RAM.  The caller
+    must call :meth:`finalize` only after all validation has succeeded; failures
+    leave the destination untouched.
+    """
+
+    def __init__(self, output_path: Path, sample_rate: int) -> None:
+        self.output_path = output_path
+        self.sample_rate = sample_rate
+        self._temporary_path: Optional[Path] = None
+        self._writer: Any = None
+        self.channels: Optional[int] = None
+        self.total_samples = 0
+
+    def write(self, audio: Any, gap_samples: int = 0) -> None:
+        """Write one channel-first waveform and any silence before it."""
+
+        if gap_samples < 0:
+            raise WorkerError("INVALID_ARGUMENT", "Audio gap samples cannot be negative.")
+        channels = int(audio.shape[0])
+        if channels not in {1, 2}:
+            raise WorkerError(
+                "INVALID_MODEL_OUTPUT",
+                "MOSS-TTS returned an unsupported channel count.",
+            )
+        if self.channels is None:
+            import soundfile as sf  # type: ignore
+
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{self.output_path.name}.",
+                suffix=".wav",
+                dir=self.output_path.parent,
+                delete=False,
+            ) as handle:
+                self._temporary_path = Path(handle.name)
+            try:
+                self._writer = sf.SoundFile(
+                    str(self._temporary_path),
+                    mode="w",
+                    samplerate=self.sample_rate,
+                    channels=channels,
+                    format="WAV",
+                    # Match soundfile.write(..., format="WAV") used by the
+                    # previous in-memory merge, preserving the final file's
+                    # PCM-16 encoding and size.
+                    subtype="PCM_16",
+                )
+            except Exception:
+                self.discard()
+                raise
+            self.channels = channels
+        elif channels != self.channels:
+            raise WorkerError(
+                "INVALID_MODEL_OUTPUT",
+                "MOSS-TTS changed channel count between generated segments.",
+            )
+
+        if self._writer is None:
+            raise WorkerError("INVALID_MODEL_OUTPUT", "MOSS-TTS output writer did not initialize.")
+        if gap_samples:
+            import numpy as np  # type: ignore
+
+            self._writer.write(
+                np.zeros((gap_samples, self.channels), dtype=np.float32)
+            )
+        self._writer.write(soundfile_waveform(audio))
+        self.total_samples += gap_samples + int(audio.shape[1])
+
+    def finalize(self) -> None:
+        """Close and atomically publish the completed WAV."""
+
+        if self._writer is None or self._temporary_path is None:
+            raise WorkerError("INVALID_MODEL_OUTPUT", "MOSS-TTS returned no audio segments.")
+        self._writer.close()
+        self._writer = None
+        temporary_path = self._temporary_path
+        try:
+            temporary_path.replace(self.output_path)
+        except Exception:
+            # Keep the path tracked so the caller's discard path can clean up
+            # a closed but unpublished temporary file.
+            raise
+        self._temporary_path = None
+
+    def discard(self) -> None:
+        """Close and remove an incomplete temporary WAV, if present."""
+
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            finally:
+                self._writer = None
+        if self._temporary_path is not None:
+            self._temporary_path.unlink(missing_ok=True)
+            self._temporary_path = None
+
+
 def configure_utf8_streams() -> None:
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -1537,7 +1639,8 @@ def synthesize(
     import torch  # type: ignore
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    audio_segments: List[Any] = []
+    streamed_output = StreamingWaveWriter(output, sample_rate)
+    segment_sample_counts: List[int] = []
     total = len(segments)
     rolling_prefix: Optional[RollingPrefix] = None
     speaking_rate_history: List[float] = []
@@ -1548,180 +1651,195 @@ def synthesize(
     if review_path is not None:
         review_audio_dir = review_path.parent / "segments"
         review_audio_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".voiceforge-moss-prefix-",
-        dir=str(output.parent),
-    ) as prefix_dir:
-        rolling_audio_path = Path(prefix_dir) / "rolling-prefix.wav"
-        for index, segment in enumerate(segments, start=1):
-            emit(
-                "progress",
-                progress=0.12 + (0.82 * index / total),
-                message=f"Synthesizing MOSS segment {index}/{total}",
-            )
-            try:
-                def generate_audio_candidate() -> Any:
-                    return generate_segment_audio(
-                        model,
-                        processor,
-                        device,
-                        torch,
-                        np,
-                        segment.text,
-                        reference_audio,
-                        language,
-                        rolling_prefix,
-                        max_new_tokens,
-                        temperature,
-                        top_p,
-                        top_k,
-                        repetition_penalty,
-                        index,
-                        total,
-                    )
-
-                audio_np = generate_audio_candidate()
-            except Exception as exc:
-                raise WorkerError(
-                    "SYNTHESIS_FAILED",
-                    f"MOSS-TTS synthesis failed on segment {index}/{total}: {exc}",
-                    details={"segment": index, "segment_count": total},
-                ) from exc
-
-            selected_rate = segment_speaking_rate(
-                segment.text,
-                audio_np,
-                sample_rate,
-            )
-            outlier = duration_outlier_analysis(
-                selected_rate,
-                speaking_rate_history,
-                duration_outlier_ratio,
-            )
-            if outlier is not None and duration_outlier_retries > 0:
-                duration_retried_segments.append(index)
-                pace_label = "faster" if outlier.rate_ratio > 1.0 else "slower"
-                pace_deviation = max(
-                    outlier.rate_ratio,
-                    1.0 / outlier.rate_ratio,
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".voiceforge-moss-prefix-",
+            dir=str(output.parent),
+        ) as prefix_dir:
+            rolling_audio_path = Path(prefix_dir) / "rolling-prefix.wav"
+            for index, segment in enumerate(segments, start=1):
+                emit(
+                    "progress",
+                    progress=0.12 + (0.82 * index / total),
+                    message=f"Synthesizing MOSS segment {index}/{total}",
                 )
-                for retry_number in range(1, duration_outlier_retries + 1):
-                    duration_retries_attempted += 1
-                    emit(
-                        "progress",
-                        progress=0.12 + (0.82 * index / total),
-                        message=(
-                            f"MOSS segment {index}/{total} was a "
-                            f"{pace_deviation:.2f}x pace outlier "
-                            f"({pace_label}); retrying "
-                            f"({retry_number}/{duration_outlier_retries})"
-                        ),
+                try:
+                    def generate_audio_candidate() -> Any:
+                        return generate_segment_audio(
+                            model,
+                            processor,
+                            device,
+                            torch,
+                            np,
+                            segment.text,
+                            reference_audio,
+                            language,
+                            rolling_prefix,
+                            max_new_tokens,
+                            temperature,
+                            top_p,
+                            top_k,
+                            repetition_penalty,
+                            index,
+                            total,
+                        )
+
+                    audio_np = generate_audio_candidate()
+                except Exception as exc:
+                    raise WorkerError(
+                        "SYNTHESIS_FAILED",
+                        f"MOSS-TTS synthesis failed on segment {index}/{total}: {exc}",
+                        details={"segment": index, "segment_count": total},
+                    ) from exc
+
+                selected_rate = segment_speaking_rate(
+                    segment.text,
+                    audio_np,
+                    sample_rate,
+                )
+                outlier = duration_outlier_analysis(
+                    selected_rate,
+                    speaking_rate_history,
+                    duration_outlier_ratio,
+                )
+                if outlier is not None and duration_outlier_retries > 0:
+                    duration_retried_segments.append(index)
+                    pace_label = "faster" if outlier.rate_ratio > 1.0 else "slower"
+                    pace_deviation = max(
+                        outlier.rate_ratio,
+                        1.0 / outlier.rate_ratio,
                     )
-                    try:
-                        retry_audio = generate_audio_candidate()
-                    except Exception as exc:
+                    for retry_number in range(1, duration_outlier_retries + 1):
+                        duration_retries_attempted += 1
                         emit(
-                            "log",
-                            level="warn",
+                            "progress",
+                            progress=0.12 + (0.82 * index / total),
                             message=(
-                                f"MOSS pace retry failed for segment {index}; "
-                                f"keeping the best completed attempt: {exc}"
+                                f"MOSS segment {index}/{total} was a "
+                                f"{pace_deviation:.2f}x pace outlier "
+                                f"({pace_label}); retrying "
+                                f"({retry_number}/{duration_outlier_retries})"
                             ),
                         )
-                        break
-                    retry_rate = segment_speaking_rate(
-                        segment.text,
-                        retry_audio,
+                        try:
+                            retry_audio = generate_audio_candidate()
+                        except Exception as exc:
+                            emit(
+                                "log",
+                                level="warn",
+                                message=(
+                                    f"MOSS pace retry failed for segment {index}; "
+                                    f"keeping the best completed attempt: {exc}"
+                                ),
+                            )
+                            break
+                        retry_rate = segment_speaking_rate(
+                            segment.text,
+                            retry_audio,
+                            sample_rate,
+                        )
+                        if duration_candidate_is_closer(
+                            retry_rate,
+                            selected_rate,
+                            outlier.baseline_rate,
+                        ):
+                            audio_np = retry_audio
+                            selected_rate = retry_rate
+                        outlier = duration_outlier_analysis(
+                            selected_rate,
+                            speaking_rate_history,
+                            duration_outlier_ratio,
+                        )
+                        if outlier is None:
+                            break
+
+                remaining_outlier = duration_outlier_analysis(
+                    selected_rate,
+                    speaking_rate_history,
+                    duration_outlier_ratio,
+                )
+                pace_ratio, pace_status = pace_metadata(
+                    selected_rate,
+                    speaking_rate_history,
+                    duration_outlier_ratio,
+                )
+                if selected_rate is not None and remaining_outlier is None:
+                    speaking_rate_history.append(selected_rate)
+                gap_samples = 0
+                if index > 1:
+                    gap_samples = int(sample_rate * gap_ms / 1000)
+                    if segment.starts_chapter:
+                        gap_samples += int(sample_rate * chapter_pause_ms / 1000)
+                streamed_output.write(audio_np, gap_samples)
+                segment_sample_counts.append(int(audio_np.shape[1]))
+                if review_path is not None and review_audio_dir is not None:
+                    segment_audio_path = review_audio_dir / f"segment-{index:04d}.wav"
+                    sf.write(
+                        str(segment_audio_path),
+                        soundfile_waveform(audio_np),
                         sample_rate,
+                        subtype="FLOAT",
                     )
-                    if duration_candidate_is_closer(
-                        retry_rate,
-                        selected_rate,
-                        outlier.baseline_rate,
-                    ):
-                        audio_np = retry_audio
-                        selected_rate = retry_rate
-                    outlier = duration_outlier_analysis(
-                        selected_rate,
-                        speaking_rate_history,
-                        duration_outlier_ratio,
+                    review_segments.append({
+                        "index": index - 1,
+                        "text": segment.text,
+                        "audio_file": segment_audio_path.relative_to(
+                            review_path.parent
+                        ).as_posix(),
+                        "sample_count": int(audio_np.shape[1]),
+                        "duration_seconds": int(audio_np.shape[1]) / float(sample_rate),
+                        "attempt": 1,
+                        "starts_chapter": bool(segment.starts_chapter),
+                        "chapter_title": segment.chapter_title,
+                        "speaking_rate": selected_rate,
+                        "pace_ratio": pace_ratio,
+                        "pace_status": pace_status,
+                        "updated_at": int(time.time() * 1000),
+                    })
+
+                if index < total:
+                    # Reuse one file and replace one state object: only the most
+                    # recent segment is ever retained as continuation context.
+                    sf.write(
+                        str(rolling_audio_path),
+                        soundfile_waveform(audio_np),
+                        sample_rate,
+                        subtype="FLOAT",
                     )
-                    if outlier is None:
-                        break
+                    rolling_prefix = RollingPrefix(segment.text, str(rolling_audio_path))
 
-            remaining_outlier = duration_outlier_analysis(
-                selected_rate,
-                speaking_rate_history,
-                duration_outlier_ratio,
+        if review_path is not None:
+            write_review_manifest(
+                review_path,
+                {
+                    "version": REVIEW_MANIFEST_VERSION,
+                    "sample_rate": sample_rate,
+                    "gap_ms": gap_ms,
+                    "chapter_pause_ms": chapter_pause_ms,
+                    "segments": review_segments,
+                },
             )
-            pace_ratio, pace_status = pace_metadata(
-                selected_rate,
-                speaking_rate_history,
-                duration_outlier_ratio,
-            )
-            if selected_rate is not None and remaining_outlier is None:
-                speaking_rate_history.append(selected_rate)
-            audio_segments.append(audio_np)
-            if review_path is not None and review_audio_dir is not None:
-                segment_audio_path = review_audio_dir / f"segment-{index:04d}.wav"
-                sf.write(
-                    str(segment_audio_path),
-                    soundfile_waveform(audio_np),
-                    sample_rate,
-                    subtype="FLOAT",
-                )
-                review_segments.append({
-                    "index": index - 1,
-                    "text": segment.text,
-                    "audio_file": segment_audio_path.relative_to(
-                        review_path.parent
-                    ).as_posix(),
-                    "sample_count": int(audio_np.shape[1]),
-                    "duration_seconds": int(audio_np.shape[1]) / float(sample_rate),
-                    "attempt": 1,
-                    "starts_chapter": bool(segment.starts_chapter),
-                    "chapter_title": segment.chapter_title,
-                    "speaking_rate": selected_rate,
-                    "pace_ratio": pace_ratio,
-                    "pace_status": pace_status,
-                    "updated_at": int(time.time() * 1000),
-                })
 
-            if index < total:
-                # Reuse one file and replace one state object: only the most
-                # recent segment is ever retained as continuation context.
-                sf.write(
-                    str(rolling_audio_path),
-                    soundfile_waveform(audio_np),
-                    sample_rate,
-                    subtype="FLOAT",
-                )
-                rolling_prefix = RollingPrefix(segment.text, str(rolling_audio_path))
-
-    if review_path is not None:
-        write_review_manifest(
-            review_path,
-            {
-                "version": REVIEW_MANIFEST_VERSION,
-                "sample_rate": sample_rate,
-                "gap_ms": gap_ms,
-                "chapter_pause_ms": chapter_pause_ms,
-                "segments": review_segments,
-            },
+        chapter_indices = [
+            index for index, segment in enumerate(segments) if segment.starts_chapter
+        ]
+        timing = build_audio_merge_timing(
+            segment_sample_counts,
+            sample_rate,
+            gap_ms,
+            chapter_indices,
+            chapter_pause_ms,
         )
+        if streamed_output.total_samples != timing.total_samples:
+            raise WorkerError(
+                "INVALID_MODEL_OUTPUT",
+                "MOSS-TTS streamed audio length does not match its timing plan.",
+            )
+        streamed_output.finalize()
+    except Exception:
+        streamed_output.discard()
+        raise
 
-    chapter_indices = [
-        index for index, segment in enumerate(segments) if segment.starts_chapter
-    ]
-    combined, timing = combine_audio_segments_with_timing(
-        audio_segments,
-        sample_rate,
-        gap_ms,
-        chapter_indices,
-        chapter_pause_ms,
-    )
-
-    sf.write(str(output), soundfile_waveform(combined), sample_rate)
     if manifest_path is not None:
         manifest = build_chapter_manifest(
             segments,
@@ -1747,7 +1865,7 @@ def synthesize(
         duration_outlier_ratio=duration_outlier_ratio,
         sample_rate=sample_rate,
         total_samples=timing.total_samples,
-        channels=int(combined.shape[0]),
+        channels=streamed_output.channels,
         used_voice_reference=bool(reference_audio),
         language=normalize_language(language) or "auto",
         chapter_manifest_path=str(manifest_path) if manifest_path else None,
@@ -1931,57 +2049,75 @@ def compile_review(
     import soundfile as sf  # type: ignore
 
     sample_rate = int(manifest["sample_rate"])
-    audio_segments: List[Any] = []
+    streamed_output = StreamingWaveWriter(output, sample_rate)
+    segment_sample_counts: List[int] = []
     chapter_segments: List[ChapterSegment] = []
-    for index, segment in enumerate(manifest["segments"]):
-        emit(
-            "progress",
-            progress=0.05 + (0.75 * (index + 1) / len(manifest["segments"])),
-            message=(
-                f"Reading reviewed MOSS segment "
-                f"{index + 1}/{len(manifest['segments'])}"
-            ),
-        )
-        audio_path = _review_audio_path(manifest_path, segment["audio_file"])
-        samples, actual_rate = sf.read(
-            str(audio_path),
-            dtype="float32",
-            always_2d=True,
-        )
-        if int(actual_rate) != sample_rate:
-            raise WorkerError(
-                "INVALID_MODEL_OUTPUT",
-                f"MOSS review segment {index + 1} has an inconsistent sample rate.",
+    try:
+        for index, segment in enumerate(manifest["segments"]):
+            emit(
+                "progress",
+                progress=0.05 + (0.75 * (index + 1) / len(manifest["segments"])),
+                message=(
+                    f"Reading reviewed MOSS segment "
+                    f"{index + 1}/{len(manifest['segments'])}"
+                ),
             )
-        audio = normalize_audio_channels(samples.T)
-        if int(audio.shape[1]) != int(segment["sample_count"]):
-            raise WorkerError(
-                "INVALID_MODEL_OUTPUT",
-                f"MOSS review segment {index + 1} does not match its manifest.",
+            audio_path = _review_audio_path(manifest_path, segment["audio_file"])
+            samples, actual_rate = sf.read(
+                str(audio_path),
+                dtype="float32",
+                always_2d=True,
             )
-        audio_segments.append(audio)
-        chapter_segments.append(
-            ChapterSegment(
-                segment["text"],
-                bool(segment["starts_chapter"]),
-                segment["chapter_title"],
+            if int(actual_rate) != sample_rate:
+                raise WorkerError(
+                    "INVALID_MODEL_OUTPUT",
+                    f"MOSS review segment {index + 1} has an inconsistent sample rate.",
+                )
+            audio = normalize_audio_channels(samples.T)
+            if int(audio.shape[1]) != int(segment["sample_count"]):
+                raise WorkerError(
+                    "INVALID_MODEL_OUTPUT",
+                    f"MOSS review segment {index + 1} does not match its manifest.",
+                )
+            gap_samples = 0
+            if index > 0:
+                gap_samples = int(sample_rate * int(manifest["gap_ms"]) / 1000)
+                if bool(segment["starts_chapter"]):
+                    gap_samples += int(
+                        sample_rate * int(manifest["chapter_pause_ms"]) / 1000
+                    )
+            streamed_output.write(audio, gap_samples)
+            segment_sample_counts.append(int(audio.shape[1]))
+            chapter_segments.append(
+                ChapterSegment(
+                    segment["text"],
+                    bool(segment["starts_chapter"]),
+                    segment["chapter_title"],
+                )
             )
-        )
 
-    chapter_indices = [
-        index
-        for index, segment in enumerate(chapter_segments)
-        if segment.starts_chapter
-    ]
-    combined, timing = combine_audio_segments_with_timing(
-        audio_segments,
-        sample_rate,
-        int(manifest["gap_ms"]),
-        chapter_indices,
-        int(manifest["chapter_pause_ms"]),
-    )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(output), soundfile_waveform(combined), sample_rate)
+        chapter_indices = [
+            index
+            for index, segment in enumerate(chapter_segments)
+            if segment.starts_chapter
+        ]
+        timing = build_audio_merge_timing(
+            segment_sample_counts,
+            sample_rate,
+            int(manifest["gap_ms"]),
+            chapter_indices,
+            int(manifest["chapter_pause_ms"]),
+        )
+        if streamed_output.total_samples != timing.total_samples:
+            raise WorkerError(
+                "INVALID_MODEL_OUTPUT",
+                "MOSS-TTS streamed review audio length does not match its timing plan.",
+            )
+        streamed_output.finalize()
+    except Exception:
+        streamed_output.discard()
+        raise
+
     if chapter_path is not None:
         write_chapter_manifest(
             chapter_path,
@@ -1997,11 +2133,11 @@ def compile_review(
         progress=1.0,
         message="Reviewed MOSS segments compiled",
         output_path=str(output),
-        segments=len(audio_segments),
+        segments=len(segment_sample_counts),
         chapters=len(chapter_indices),
         sample_rate=sample_rate,
         total_samples=timing.total_samples,
-        channels=int(combined.shape[0]),
+        channels=streamed_output.channels,
         chapter_manifest_path=str(chapter_path) if chapter_path else None,
     )
 

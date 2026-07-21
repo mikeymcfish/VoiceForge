@@ -40,6 +40,7 @@ import type {
 
 const ensureFixHyphenation = (options: CleaningOptions): CleaningOptions => ({
   ...options,
+  insertChapterBreaks: options.insertChapterBreaks ?? false,
   fixHyphenation: options.fixHyphenation ?? false,
 });
 
@@ -79,6 +80,7 @@ export default function Home() {
       removeUrls: true,
       removeFootnotes: true,
       addPunctuation: true,
+      insertChapterBreaks: false,
       fixHyphenation: false,
     })
   );
@@ -373,6 +375,7 @@ export default function Home() {
         removeUrls: true,
         removeFootnotes: true,
         addPunctuation: false,
+        insertChapterBreaks: false,
         fixHyphenation: true,
       });
       setSinglePass(false);

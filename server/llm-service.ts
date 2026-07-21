@@ -413,7 +413,8 @@ export class LLMService {
     if (options.correctSpelling) tasks.push(`* Correct common spelling mistakes and typos.`);
     if (options.removeUrls) tasks.push(`* Remove all URLs, web links, and email addresses.`);
     if (options.removeFootnotes) tasks.push(`* Remove footnote markers (e.g., numbers, asterisks) and any other extraneous metadata.`);
-    if (options.addPunctuation) tasks.push(`* Ensure appropriate punctuation (like a period) follows any headers or loose numbers for better TTS prosody.`);
+    if (options.addPunctuation) tasks.push(`* Add terminal punctuation to standalone structural headings that lack it so TTS pauses naturally. Use a colon when the heading introduces following content: "Part 1" -> "Part 1:" and "CHAPTER ONE" -> "CHAPTER ONE:". Do not alter normal sentences, dialogue, list fragments, or identifiers.`);
+    if (options.insertChapterBreaks) tasks.push(`* Insert exactly one [CHAPTER] marker before an unambiguous standalone chapter, part, section, book, or appendix heading. Preserve the heading text and do not invent divisions or place markers inside prose, dialogue, or lists. Example: "Part 1:" -> "[CHAPTER] Part 1:".`);
 
     let prompt = `You are a TTS preprocessing assistant. Clean and repair the text using ONLY the listed transformations.
 
@@ -621,6 +622,7 @@ Rules:
           model,
           prompt,
           stream: false,
+          think: isThinking,
           keep_alive: isThinking ? '15m' : '5m',
           options: ollamaOptions,
         }),
@@ -649,11 +651,12 @@ Rules:
             headers: { 'Content-Type': 'application/json' },
             signal: options.signal,
             body: JSON.stringify({
-              model,
-              messages: [ { role: 'user', content: prompt } ],
-              stream: false,
-              keep_alive: isThinking ? '15m' : '5m',
-              options: ollamaOptions,
+                model,
+                messages: [ { role: 'user', content: prompt } ],
+                stream: false,
+                think: isThinking,
+                keep_alive: isThinking ? '15m' : '5m',
+                options: ollamaOptions,
             }),
           };
           logRequest("Ollama.chat", chatUrl, chatInit);
@@ -817,7 +820,8 @@ Rules:
       if (cleaning.correctSpelling) parts.push('- Correct common spelling mistakes and typos.');
       if (cleaning.removeUrls) parts.push('- Remove URLs, links, and email addresses.');
       if (cleaning.removeFootnotes) parts.push('- Remove footnote markers and extraneous metadata.');
-      if (cleaning.addPunctuation) parts.push('- Add needed punctuation after headers or loose numbers for TTS prosody.');
+      if (cleaning.addPunctuation) parts.push('- Add terminal punctuation to standalone structural headings for TTS prosody. Use a colon when a heading introduces following content: "Part 1" -> "Part 1:". Do not alter normal sentences, dialogue, list fragments, or identifiers.');
+      if (cleaning.insertChapterBreaks) parts.push('- Insert exactly one [CHAPTER] marker before each unambiguous standalone chapter, part, section, book, or appendix heading. Preserve the heading text and never invent a division or insert markers inside prose, dialogue, or lists.');
       preprocessing = parts.length > 0
         ? ['Enabled preprocessing transformations:', ...parts].join('\n')
         : 'Enabled preprocessing transformations:\n- None. Do not clean or rewrite the source text.';
@@ -1093,7 +1097,7 @@ JSON only:`;
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: options.signal,
-        body: JSON.stringify({ model, prompt, stream: false, keep_alive: isThinking ? '15m' : '5m', options: ollamaOptions, format: 'json' }),
+        body: JSON.stringify({ model, prompt, stream: false, think: isThinking, keep_alive: isThinking ? '15m' : '5m', options: ollamaOptions, format: 'json' }),
       };
       logRequest("Ollama.generate", url, init);
       const res = await fetch(url, init);

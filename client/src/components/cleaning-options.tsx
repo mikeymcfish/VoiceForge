@@ -42,7 +42,13 @@ const cleaningOptionsList = [
   {
     key: "addPunctuation" as keyof CleaningOptions,
     label: "Add punctuation",
-    description: "AI-assisted during full processing; improves headers and loose numbers for TTS prosody",
+    description: "Adds natural pauses to clear headings and loose section numbers during full processing",
+    aiOnly: true,
+  },
+  {
+    key: "insertChapterBreaks" as keyof CleaningOptions,
+    label: "Insert chapter breaks",
+    description: "AI-assisted during full processing; adds [CHAPTER] only before unambiguous structural headings",
     aiOnly: true,
   },
   {

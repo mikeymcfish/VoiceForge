@@ -3,6 +3,7 @@ import { ModelSource } from "./schema";
 const THINKING_PATTERNS = [
   /thinking/, // generic flag
   /think\b/,
+  /qwen3(?:[.:_-]|$)/,
   /deepseek-?r1/,
   /reason/,
   /ponder/,

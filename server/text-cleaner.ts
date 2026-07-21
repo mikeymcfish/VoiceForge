@@ -50,6 +50,10 @@ const BRACKET_REFERENCE_RE = /\[\s*(?:[0-9]+|[ivxlcdmIVXLCDM]+)(?:[\s,.;:-]*(?:[
 const PAREN_FOOTNOTE_RE = /\(\s*(?:[0-9]+|[ivxlcdmIVXLCDM]+)(?:[\s,.;:-]*(?:[0-9]+|[ivxlcdmIVXLCDM]+))*\s*\)/g;
 const CAMEL_CASE_SPLIT_RE = /([a-z])([A-Z][a-z]+)/g;
 const MERGED_WORD_RE = /\b[a-zA-Z]{6,}\b/g;
+const TERMINAL_TTS_PUNCTUATION_RE = /[.!?:;…]+(?:["'”’\])}]*)$/u;
+const CHAPTER_MARKER_PREFIX_RE = /^\[chapter\]\s*/iu;
+const STRUCTURAL_HEADING_RE = /^(?:(?:chapter|part|section|book|volume|act|scene|appendix)\s+(?:(?:\d+|[ivxlcdm]+|[a-z]+)(?:\s*[-–—:]\s*[\p{L}\p{N}][\p{L}\p{N}\s,'’&-]{0,80})?)|prologue|epilogue|preface|introduction|afterword|interlude)$/iu;
+const BARE_SECTION_NUMBER_RE = /^(?:\d+|[ivxlcdm]+)$/iu;
 
 const FALLBACK_WORDS: ReadonlyArray<string> = [
   "a", "able", "about", "above", "after", "again", "against", "air", "all", "along", "also",
@@ -126,11 +130,48 @@ function removeReferences(text: string): string {
   return text.replace(BRACKET_REFERENCE_RE, " ").replace(PAREN_FOOTNOTE_RE, " ");
 }
 
+function isLikelyHeadingLine(line: string): boolean {
+  const heading = line.trim().replace(CHAPTER_MARKER_PREFIX_RE, "").trim();
+  if (!heading || TERMINAL_TTS_PUNCTUATION_RE.test(heading)) return false;
+  if (STRUCTURAL_HEADING_RE.test(heading) || BARE_SECTION_NUMBER_RE.test(heading)) {
+    return true;
+  }
+  const words = heading.split(/\s+/).filter(Boolean);
+  return (
+    words.length >= 2 &&
+    words.length <= 12 &&
+    heading.length <= 80 &&
+    /^[A-Z0-9][A-Z0-9\s,'’&-]*$/u.test(heading)
+  );
+}
+
 function fixHyphenationArtifacts(text: string): string {
-  let result = text;
-  result = result.replace(/(?<=[A-Za-z])-\s*\n\s*(?=[A-Za-z])/g, "");
-  result = result.replace(/(?<=[A-Za-z])\n(?=[A-Za-z])/g, " ");
-  return result;
+  const withoutHyphenatedBreaks = text.replace(
+    /(?<=[A-Za-z])-\s*\n\s*(?=[A-Za-z])/g,
+    ""
+  );
+  const lines = withoutHyphenatedBreaks.split("\n");
+  const mergedLines: string[] = [];
+
+  for (let index = 0; index < lines.length; index++) {
+    let current = lines[index];
+    while (index + 1 < lines.length) {
+      const next = lines[index + 1];
+      const nextTrimmed = next.trimStart();
+      const isWrappedText = /[A-Za-z]$/u.test(current) && /^[A-Za-z]/u.test(nextTrimmed);
+      if (
+        !isWrappedText ||
+        isLikelyHeadingLine(current) ||
+        isLikelyHeadingLine(next)
+      ) {
+        break;
+      }
+      current += ` ${nextTrimmed}`;
+      index++;
+    }
+    mergedLines.push(current);
+  }
+  return mergedLines.join("\n");
 }
 
 function splitCamelCase(text: string): string {
@@ -176,6 +217,27 @@ function normalizeSpacing(text: string): string {
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function addTtsHeadingPunctuation(text: string): string {
+  const lines = text.split("\n");
+  return lines
+    .map((line, index) => {
+      const match = /^(\s*)(.*?)(\s*)$/u.exec(line);
+      if (!match) return line;
+      const [, leading, content, trailing] = match;
+      if (!content || TERMINAL_TTS_PUNCTUATION_RE.test(content)) return line;
+
+      const heading = content.replace(CHAPTER_MARKER_PREFIX_RE, "").trim();
+      const isolated =
+        (index === 0 || !lines[index - 1]?.trim()) &&
+        (index === lines.length - 1 || !lines[index + 1]?.trim());
+      const isStructuralHeading = STRUCTURAL_HEADING_RE.test(heading);
+      const isLooseSectionNumber = isolated && BARE_SECTION_NUMBER_RE.test(heading);
+      if (!isStructuralHeading && !isLooseSectionNumber) return line;
+      return `${leading}${content}:${trailing}`;
+    })
+    .join("\n");
 }
 
 export interface DeterministicCleaningResult {
@@ -234,6 +296,17 @@ export function applyDeterministicCleaning(
     if (mergedSplit !== text) {
       applied.push("splitMergedWords");
       text = mergedSplit;
+    }
+  }
+
+  // This is a reliable final safeguard for the explicitly enabled TTS option.
+  // The LLM still handles contextual punctuation; this covers clear structural
+  // headings if the model leaves one unchanged.
+  if (options.addPunctuation && phase === "post") {
+    const punctuated = addTtsHeadingPunctuation(text);
+    if (punctuated !== text) {
+      applied.push("addPunctuation");
+      text = punctuated;
     }
   }
 

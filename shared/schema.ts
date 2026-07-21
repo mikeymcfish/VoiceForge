@@ -25,6 +25,7 @@ export const cleaningOptionsSchema = z.object({
   removeUrls: z.boolean().default(true),
   removeFootnotes: z.boolean().default(true),
   addPunctuation: z.boolean().default(true),
+  insertChapterBreaks: z.boolean().default(false),
   fixHyphenation: z.boolean().default(false),
 });
 

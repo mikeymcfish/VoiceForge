@@ -569,6 +569,36 @@ class WorkerHelpersTest(unittest.TestCase):
         self.assertEqual(timing.start_samples, (0, 32))
         self.assertTrue((combined[:, 2:32] == 0).all())
 
+    def test_moss_streaming_writer_preserves_samples_and_gaps(self) -> None:
+        import numpy as np
+        import soundfile as sf
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "streamed.wav"
+            writer = moss.StreamingWaveWriter(output, 1_000)
+            writer.write(moss.normalize_audio_channels([0.1, 0.2]))
+            writer.write(moss.normalize_audio_channels([0.5]), gap_samples=10)
+            self.assertEqual(writer.total_samples, 13)
+            writer.finalize()
+
+            samples, sample_rate = sf.read(output, dtype="float32")
+            self.assertEqual(sample_rate, 1_000)
+            self.assertEqual(samples.shape, (13,))
+            self.assertTrue(np.allclose(samples[:2], [0.1, 0.2], atol=1e-4))
+            self.assertTrue(np.allclose(samples[2:12], 0.0, atol=1e-4))
+            self.assertTrue(np.allclose(samples[12:], [0.5], atol=1e-4))
+
+    def test_moss_streaming_writer_discards_incompatible_partial_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "streamed.wav"
+            writer = moss.StreamingWaveWriter(output, 1_000)
+            writer.write(moss.normalize_audio_channels([0.1, 0.2]))
+            with self.assertRaises(moss.WorkerError):
+                writer.write(moss.normalize_audio_channels([[0.1], [0.2]]))
+            writer.discard()
+            self.assertFalse(output.exists())
+            self.assertEqual(list(Path(temporary).glob("*.wav")), [])
+
     def test_moss_review_manifest_compiles_current_segment_takes(self) -> None:
         import numpy as np
         import soundfile as sf

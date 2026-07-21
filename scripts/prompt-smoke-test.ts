@@ -64,6 +64,7 @@ function buildCleaning(): CleaningOptions {
     removeUrls: true,
     removeFootnotes: true,
     addPunctuation: true,
+    insertChapterBreaks: false,
     fixHyphenation: false,
   } as any;
 }

@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Cloud, HardDrive, CircleHelp } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ModelSource } from "@shared/schema";
+import { isThinkingOllamaModel } from "@shared/model-utils";
 import { HuggingFaceTokenSettings } from "./huggingface-token-settings";
 
 interface ModelSourceSelectorProps {
@@ -36,6 +37,7 @@ export function ModelSourceSelector({
   disabled,
 }: ModelSourceSelectorProps) {
   const [installedModels, setInstalledModels] = useState<string[] | null>(null);
+  const thinkingEnabled = modelSource === "ollama" && isThinkingOllamaModel(ollamaModelName);
 
   // Load installed Ollama models when switching to Ollama
   useEffect(() => {
@@ -169,6 +171,11 @@ export function ModelSourceSelector({
             ) : (
               <p className="text-[11px] leading-4 text-muted-foreground">
                 {installedModels === null ? "Checking the local Ollama service…" : "No installed models were detected. Start Ollama, then enter an installed model name."}
+              </p>
+            )}
+            {thinkingEnabled && (
+              <p className="text-[11px] leading-4 text-muted-foreground" data-testid="ollama-thinking-status">
+                Thinking mode is enabled for this model. Its reasoning stays separate from the edited text.
               </p>
             )}
             <div className="space-y-1.5 pt-2">

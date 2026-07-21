@@ -74,6 +74,7 @@ class CleaningOptions:
     removeUrls: bool = True
     removeFootnotes: bool = True
     addPunctuation: bool = True
+    insertChapterBreaks: bool = False
     fixHyphenation: bool = False
 
 
@@ -109,7 +110,15 @@ def build_cleaning_prompt(text: str, opt: CleaningOptions) -> str:
     if opt.removeFootnotes:
         tasks.append("* Remove footnote markers (e.g., numbers, asterisks) and any other extraneous metadata.")
     if opt.addPunctuation:
-        tasks.append("* Ensure appropriate punctuation (like a period) follows any headers or loose numbers for better TTS prosody.")
+        tasks.append(
+            '* Add terminal punctuation to standalone structural headings that lack it so TTS pauses naturally. '
+            'Use a colon when the heading introduces following content: "Part 1" -> "Part 1:".'
+        )
+    if opt.insertChapterBreaks:
+        tasks.append(
+            '* Insert exactly one [CHAPTER] marker before an unambiguous standalone chapter, part, section, '
+            'book, or appendix heading. Preserve the heading text and do not invent divisions.'
+        )
 
     prompt = (
         "You are a TTS preprocessing assistant. Clean and repair the text using ONLY the listed transformations.\n\n"
