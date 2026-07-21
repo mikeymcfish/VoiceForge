@@ -119,9 +119,12 @@ export default function Home() {
   );
 
   const [batchSize, setBatchSize] = useState(10);
+  const [ollamaContextWindow, setOllamaContextWindow] = useState(8_192);
+  const [ollamaMaxOutputTokens, setOllamaMaxOutputTokens] = useState(2_000);
   const [modelSource, setModelSource] = useState<"api" | "ollama">("api");
   const [modelName, setModelName] = useState("meta-llama/Llama-3.1-8B-Instruct");
   const [ollamaModelName, setOllamaModelName] = useState<string>();
+  const [ollamaThinkingEnabled, setOllamaThinkingEnabled] = useState(false);
   const [temperature, setTemperature] = useState<number>(0.3);
   const [llmCleaningDisabled, setLlmCleaningDisabled] = useState<boolean>(false);
   const [customInstructions, setCustomInstructions] = useState("");
@@ -157,11 +160,14 @@ export default function Home() {
       if (raw) {
         const cfg = JSON.parse(raw);
         if (typeof cfg.batchSize === 'number') setBatchSize(cfg.batchSize);
+        if (typeof cfg.ollamaContextWindow === 'number') setOllamaContextWindow(cfg.ollamaContextWindow);
+        if (typeof cfg.ollamaMaxOutputTokens === 'number') setOllamaMaxOutputTokens(cfg.ollamaMaxOutputTokens);
         if (cfg.cleaningOptions) setCleaningOptions(ensureFixHyphenation(cfg.cleaningOptions));
         if (cfg.speakerConfig) setSpeakerConfig(ensureNarratorDefaults(cfg.speakerConfig));
         if (cfg.modelSource === 'api' || cfg.modelSource === 'ollama') setModelSource(cfg.modelSource);
         if (typeof cfg.modelName === 'string') setModelName(cfg.modelName);
         if (typeof cfg.ollamaModelName === 'string') setOllamaModelName(cfg.ollamaModelName);
+        if (typeof cfg.ollamaThinkingEnabled === 'boolean') setOllamaThinkingEnabled(cfg.ollamaThinkingEnabled);
         if (typeof cfg.customInstructions === 'string') setCustomInstructions(cfg.customInstructions);
         if (typeof cfg.singlePass === 'boolean') setSinglePass(cfg.singlePass);
         if (typeof cfg.extendedExamples === 'boolean') setExtendedExamples(cfg.extendedExamples);
@@ -201,11 +207,14 @@ export default function Home() {
     try {
       const cfg = {
         batchSize,
+        ollamaContextWindow,
+        ollamaMaxOutputTokens,
         cleaningOptions,
         speakerConfig,
         modelSource,
         modelName,
         ollamaModelName,
+        ollamaThinkingEnabled,
         customInstructions,
         singlePass,
         extendedExamples,
@@ -214,7 +223,7 @@ export default function Home() {
       };
       localStorage.setItem('vf_settings_v2', JSON.stringify(cfg));
     } catch {}
-  }, [batchSize, cleaningOptions, speakerConfig, modelSource, modelName, ollamaModelName, customInstructions, singlePass, extendedExamples, temperature, llmCleaningDisabled]);
+  }, [batchSize, ollamaContextWindow, ollamaMaxOutputTokens, cleaningOptions, speakerConfig, modelSource, modelName, ollamaModelName, ollamaThinkingEnabled, customInstructions, singlePass, extendedExamples, temperature, llmCleaningDisabled]);
 
   // Recover the current workspace after a refresh, or accept a handoff from OCR.
   useEffect(() => {
@@ -432,11 +441,14 @@ export default function Home() {
           text: originalText,
           config: {
             batchSize,
+            ollamaContextWindow,
+            ollamaMaxOutputTokens,
             cleaningOptions,
             speakerConfig,
             modelSource,
             modelName,
             ollamaModelName,
+            ollamaThinkingEnabled,
             temperature,
             llmCleaningDisabled,
             customInstructions: customInstructions || undefined,
@@ -684,11 +696,14 @@ export default function Home() {
           text: originalText,
           config: {
             batchSize,
+            ollamaContextWindow,
+            ollamaMaxOutputTokens,
             cleaningOptions,
             speakerConfig,
             modelSource,
             modelName,
             ollamaModelName,
+            ollamaThinkingEnabled,
             temperature,
             llmCleaningDisabled,
             customInstructions: customInstructions || undefined,
@@ -891,6 +906,7 @@ export default function Home() {
                 modelSource={modelSource}
                 modelName={modelName}
                 ollamaModelName={ollamaModelName}
+                ollamaThinkingEnabled={ollamaThinkingEnabled}
                 characterMapping={speakerConfig.characterMapping}
                 sampleSize={speakerConfig.sampleSize}
                 includeNarrator={speakerConfig.includeNarrator}
@@ -924,6 +940,8 @@ export default function Home() {
                   ollamaModelName={ollamaModelName}
                   onModelSourceChange={setModelSource}
                   onOllamaModelChange={setOllamaModelName}
+                  ollamaThinkingEnabled={ollamaThinkingEnabled}
+                  onOllamaThinkingEnabledChange={setOllamaThinkingEnabled}
                   temperature={temperature}
                   onTemperatureChange={setTemperature}
                   disabled={isProcessing || isCleaning}
@@ -945,6 +963,10 @@ export default function Home() {
             <ProcessingControls
               batchSize={batchSize}
               onBatchSizeChange={setBatchSize}
+              ollamaContextWindow={ollamaContextWindow}
+              onOllamaContextWindowChange={setOllamaContextWindow}
+              ollamaMaxOutputTokens={ollamaMaxOutputTokens}
+              onOllamaMaxOutputTokensChange={setOllamaMaxOutputTokens}
               modelName={modelName}
               onModelNameChange={setModelName}
               llmCleaningDisabled={llmCleaningDisabled}

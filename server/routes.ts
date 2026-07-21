@@ -569,6 +569,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         modelSource: config.modelSource,
         modelName: config.modelName,
         ollamaModelName: (config as any).ollamaModelName,
+        ollamaThinkingEnabled: config.ollamaThinkingEnabled,
+        ollamaContextWindow: config.ollamaContextWindow,
+        ollamaMaxOutputTokens: config.ollamaMaxOutputTokens,
         temperature: (config as any).temperature,
         llmCleaningDisabled: (config as any).llmCleaningDisabled === true,
         customInstructions: config.customInstructions,
@@ -600,13 +603,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/extract-characters", async (req, res) => {
     const requestAbort = createRequestAbortContext(req, res);
     try {
-      const { text, sampleSize, includeNarrator, modelSource, modelName, ollamaModelName, temperature } = req.body as {
+      const { text, sampleSize, includeNarrator, modelSource, modelName, ollamaModelName, ollamaThinkingEnabled, temperature } = req.body as {
         text: string;
         sampleSize: number;
         includeNarrator: boolean;
         modelSource?: string;
         modelName: string;
         ollamaModelName?: string;
+        ollamaThinkingEnabled?: boolean;
         temperature?: number;
       };
 
@@ -629,6 +633,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         modelSource: resolvedSource,
         modelName: modelName || "meta-llama/Meta-Llama-3.1-8B-Instruct",
         ollamaModelName,
+        ollamaThinkingEnabled: ollamaThinkingEnabled === true,
         temperature: (typeof temperature === 'number' && Number.isFinite(temperature)) ? temperature : undefined,
         signal: requestAbort.signal,
       });

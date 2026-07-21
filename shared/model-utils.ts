@@ -55,9 +55,10 @@ export function buildOllamaOptions(
   base: OllamaGenerationOptions,
   modelSource: ModelSource | undefined,
   ollamaModelName?: string | null,
-  overrides?: Partial<OllamaGenerationOptions>
+  overrides?: Partial<OllamaGenerationOptions>,
+  thinkingEnabled?: boolean
 ): OllamaGenerationOptions {
-  const isThinking = modelSource === "ollama" && isThinkingOllamaModel(ollamaModelName);
+  const isThinking = modelSource === "ollama" && (thinkingEnabled ?? isThinkingOllamaModel(ollamaModelName));
   const thinkingTuned: OllamaGenerationOptions = isThinking
     ? {
         temperature: 0.2,

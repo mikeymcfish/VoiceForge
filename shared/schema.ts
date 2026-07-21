@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_BATCH_SIZE } from "./batch-profiles";
 
 // Processing Job Schema
 export const processingJobSchema = z.object({
@@ -62,13 +63,16 @@ export type ModelSource = z.infer<typeof modelSourceSchema>;
 
 // Processing Configuration
 export const processingConfigSchema = z.object({
-  batchSize: z.number().min(1).max(50).default(10),
+  batchSize: z.number().int().min(1).max(MAX_BATCH_SIZE).default(10),
   cleaningOptions: cleaningOptionsSchema,
   speakerConfig: speakerConfigSchema.optional(),
   modelSource: modelSourceSchema.default("api"),
   modelName: z.string().default("meta-llama/Meta-Llama-3.1-8B-Instruct"),
   localModelName: z.string().optional(),
   ollamaModelName: z.string().optional(),
+  ollamaThinkingEnabled: z.boolean().default(false),
+  ollamaContextWindow: z.number().int().min(2_048).max(65_536).default(8_192).optional(),
+  ollamaMaxOutputTokens: z.number().int().min(256).max(16_384).default(2_000).optional(),
   temperature: z.number().min(0).max(2).default(0.3).optional(),
   llmCleaningDisabled: z.boolean().default(false).optional(),
   customInstructions: z.string().optional(),

@@ -1,6 +1,6 @@
 import { HfInference } from "@huggingface/inference";
 import type { CleaningOptions, SpeakerConfig, ModelSource, ProcessingConfig } from "@shared/schema";
-import { buildOllamaOptions, isThinkingOllamaModel } from "@shared/model-utils";
+import { buildOllamaOptions } from "@shared/model-utils";
 import fs from "fs";
 import path from "path";
 import { applyDeterministicCleaning } from "./text-cleaner";
@@ -338,6 +338,9 @@ export interface ProcessChunkOptions {
   modelName: string; // API model name
   localModelName?: string; // Local model name
   ollamaModelName?: string; // Ollama model name
+  ollamaThinkingEnabled?: boolean;
+  ollamaContextWindow?: number;
+  ollamaMaxOutputTokens?: number;
   temperature?: number;
   customInstructions?: string;
   singlePass?: boolean;
@@ -582,7 +585,16 @@ Rules:
   }
 
   private async runInference(prompt: string, options: ProcessChunkOptions): Promise<{ text: string; usage: InferenceUsage }> {
-    const { modelSource = 'api', modelName, localModelName, ollamaModelName, temperature } = options;
+    const {
+      modelSource = 'api',
+      modelName,
+      localModelName,
+      ollamaModelName,
+      ollamaThinkingEnabled,
+      ollamaContextWindow,
+      ollamaMaxOutputTokens,
+      temperature,
+    } = options;
     const resolvedModelName = normalizeHuggingFaceModelId(modelName);
     const pricing = modelSource === 'api' ? (lookupPricing(resolvedModelName) || undefined) : undefined;
     const inputTokens = estimateTokens(prompt);
@@ -602,17 +614,24 @@ Rules:
     if (modelSource === 'ollama') {
       const model = ollamaModelName || "llama3.1:8b";
       const url = `${OLLAMA_BASE_URL}/api/generate`;
-      const isThinking = isThinkingOllamaModel(model);
+      const isThinking = ollamaThinkingEnabled === true;
+      const contextWindow = typeof ollamaContextWindow === 'number' && Number.isInteger(ollamaContextWindow)
+        ? Math.max(2_048, Math.min(65_536, ollamaContextWindow))
+        : 8_192;
+      const maxOutputTokens = typeof ollamaMaxOutputTokens === 'number' && Number.isInteger(ollamaMaxOutputTokens)
+        ? Math.max(256, Math.min(16_384, ollamaMaxOutputTokens))
+        : 2_000;
       const ollamaOptions = buildOllamaOptions(
         {
           temperature: 0.3,
-          num_predict: 2000,
-          num_ctx: 8192,
+          num_predict: maxOutputTokens,
+          num_ctx: contextWindow,
         },
         modelSource,
         model,
         // User-set temperature should override thinking tuning
-        (typeof temperature === 'number' ? { temperature: tempGen } : undefined)
+        (typeof temperature === 'number' ? { temperature: tempGen } : undefined),
+        isThinking
       );
       const init: RequestInit = {
         method: 'POST',
@@ -641,6 +660,9 @@ Rules:
       }
       const json: any = await res.json();
       output = json.response || json.final_response || json?.message?.content || '';
+      let thinkingOutput = typeof json.thinking === 'string'
+        ? json.thinking
+        : (typeof json?.message?.thinking === 'string' ? json.message.thinking : '');
       if (!output || !String(output).trim()) {
         // Some chat-centric models behave better with /api/chat; retry once
         try {
@@ -670,12 +692,21 @@ Rules:
           if (chatRes.ok) {
             const chatJson: any = await chatRes.json();
             output = chatJson?.message?.content || '';
+            thinkingOutput = typeof chatJson?.message?.thinking === 'string'
+              ? chatJson.message.thinking
+              : thinkingOutput;
           }
         } catch (error) {
           if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
             throw error;
           }
         }
+      }
+      if (!output || !String(output).trim()) {
+        if (thinkingOutput.trim()) {
+          throw new Error('Ollama returned reasoning but no final text. Disable Enable reasoning and try again.');
+        }
+        throw new Error('Ollama returned no final text.');
       }
     } else {
       // Check if API token is available
@@ -1043,11 +1074,21 @@ Rules:
     modelName: string;
     localModelName?: string;
     ollamaModelName?: string;
+    ollamaThinkingEnabled?: boolean;
     temperature?: number;
     signal?: AbortSignal;
   }): Promise<{ characters: Array<{ name: string; speakerNumber: number }>; narratorCharacterName?: string }> {
     options.signal?.throwIfAborted();
-    const { text, includeNarrator, modelSource = 'api', modelName, localModelName, ollamaModelName, temperature } = options;
+    const {
+      text,
+      includeNarrator,
+      modelSource = 'api',
+      modelName,
+      localModelName,
+      ollamaModelName,
+      ollamaThinkingEnabled,
+      temperature,
+    } = options;
     const resolvedModelName = normalizeHuggingFaceModelId(modelName);
 
     const prompt = `You are a character extraction assistant for multi-speaker TTS systems. Analyze the following text sample and extract character/speaker names and narrator identity.
@@ -1082,6 +1123,7 @@ JSON only:`;
     if (modelSource === 'ollama') {
       const model = ollamaModelName || "llama3.1:8b";
       const url = `${OLLAMA_BASE_URL}/api/generate`;
+      const isThinking = ollamaThinkingEnabled === true;
       const ollamaOptions = buildOllamaOptions(
         {
           temperature: 0.2,
@@ -1090,9 +1132,9 @@ JSON only:`;
         },
         modelSource,
         model,
-        (typeof temperature === 'number' ? { temperature: tempExtract } : undefined)
+        (typeof temperature === 'number' ? { temperature: tempExtract } : undefined),
+        isThinking
       );
-      const isThinking = isThinkingOllamaModel(model);
       const init: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1114,14 +1156,13 @@ JSON only:`;
       const json: any = await res.json();
       content = json.response || json.final_response || json?.message?.content || "";
       if (!content || !String(content).trim()) {
-        const think = typeof json.thinking === 'string' ? json.thinking : undefined;
-        if (think && think.trim()) {
-          writeDebugLine('OLLAMA EMPTY RESPONSE; USING THINKING FALLBACK', { bytes: think.length });
-          content = sanitizeModelOutput(think);
+        const thinking = typeof json.thinking === 'string'
+          ? json.thinking
+          : (typeof json?.message?.thinking === 'string' ? json.message.thinking : '');
+        if (thinking.trim()) {
+          throw new Error('Ollama returned reasoning but no final character-extraction JSON. Disable Enable reasoning and try again.');
         }
-      }
-      if (!content || !String(content).trim()) {
-        content = "[]";
+        throw new Error('Ollama returned no character-extraction JSON.');
       }
     } else {
       // Check if API token is available

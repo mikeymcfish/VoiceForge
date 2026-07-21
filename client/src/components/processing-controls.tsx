@@ -7,11 +7,16 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { BATCH_PROFILES, getBatchProfileId, MAX_BATCH_SIZE } from "@shared/batch-profiles";
 import { useEffect, useState } from "react";
 
 interface ProcessingControlsProps {
   batchSize: number;
   onBatchSizeChange: (size: number) => void;
+  ollamaContextWindow: number;
+  onOllamaContextWindowChange: (tokens: number) => void;
+  ollamaMaxOutputTokens: number;
+  onOllamaMaxOutputTokensChange: (tokens: number) => void;
   modelName: string;
   onModelNameChange: (name: string) => void;  llmCleaningDisabled?: boolean;
   onLlmCleaningDisabledChange?: (val: boolean) => void;
@@ -31,6 +36,10 @@ interface ProcessingControlsProps {
 export function ProcessingControls({
   batchSize,
   onBatchSizeChange,
+  ollamaContextWindow,
+  onOllamaContextWindowChange,
+  ollamaMaxOutputTokens,
+  onOllamaMaxOutputTokensChange,
   modelName,
   onModelNameChange,  llmCleaningDisabled = false,
   onLlmCleaningDisabledChange,
@@ -79,6 +88,15 @@ export function ProcessingControls({
     }
     return value;
   };
+  const batchProfileId = getBatchProfileId(batchSize, ollamaContextWindow, ollamaMaxOutputTokens);
+
+  const applyBatchProfile = (profileId: string) => {
+    const profile = BATCH_PROFILES.find((candidate) => candidate.id === profileId);
+    if (!profile) return;
+    onBatchSizeChange(profile.batchSize);
+    onOllamaContextWindowChange(profile.ollamaContextWindow);
+    onOllamaMaxOutputTokensChange(profile.ollamaMaxOutputTokens);
+  };
 
   return (
     <Card className="rounded-2xl border-primary/20 bg-gradient-to-b from-card to-primary/[0.035] p-4 shadow-sm sm:p-5">
@@ -86,6 +104,33 @@ export function ProcessingControls({
         <div>
           <h3 className="text-sm font-bold">4. Preview or process</h3>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">Test the exact workflow on one chunk before running the full script.</p>
+        </div>
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <Label htmlFor="batch-profile" className="text-sm font-medium">Batch profile</Label>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <CircleHelp className="h-4 w-4 text-muted-foreground cursor-help" />
+              </TooltipTrigger>
+              <TooltipContent>Sets sentences per request plus Ollama context and response limits.</TooltipContent>
+            </Tooltip>
+          </div>
+          <Select value={batchProfileId} onValueChange={applyBatchProfile} disabled={isProcessing}>
+            <SelectTrigger id="batch-profile" className="h-9" data-testid="select-batch-profile">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {BATCH_PROFILES.map((profile) => (
+                <SelectItem key={profile.id} value={profile.id}>
+                  {profile.label} — {profile.description}
+                </SelectItem>
+              ))}
+              <SelectItem value="custom">Custom</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs leading-5 text-muted-foreground">
+            Large is the RTX PRO 6000 profile. Context and response limits apply to Ollama only.
+          </p>
         </div>
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">
@@ -97,7 +142,20 @@ export function ProcessingControls({
               <TooltipContent>Number of sentences to process in each LLM request</TooltipContent>
             </Tooltip>
           </div>
-          <Input id="batch-size" type="number" min={1} max={50} value={batchSize} onChange={(e) => onBatchSizeChange(parseInt(e.target.value) || 10)} disabled={isProcessing} data-testid="input-batch-size" className="h-9" />
+          <Input
+            id="batch-size"
+            type="number"
+            min={1}
+            max={MAX_BATCH_SIZE}
+            value={batchSize}
+            onChange={(event) => {
+              const value = Number.parseInt(event.target.value, 10);
+              if (Number.isFinite(value)) onBatchSizeChange(Math.max(1, Math.min(MAX_BATCH_SIZE, value)));
+            }}
+            disabled={isProcessing}
+            data-testid="input-batch-size"
+            className="h-9"
+          />
         </div>
 
         <div className="flex items-center justify-between py-1">

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Cloud, HardDrive, CircleHelp } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ModelSource } from "@shared/schema";
@@ -22,6 +23,8 @@ interface ModelSourceSelectorProps {
   ollamaModelName?: string;
   onModelSourceChange: (source: ModelSource) => void;
   onOllamaModelChange: (modelId: string) => void;
+  ollamaThinkingEnabled?: boolean;
+  onOllamaThinkingEnabledChange?: (enabled: boolean) => void;
   temperature?: number;
   onTemperatureChange?: (t: number) => void;
   disabled?: boolean;
@@ -32,12 +35,14 @@ export function ModelSourceSelector({
   ollamaModelName,
   onModelSourceChange,
   onOllamaModelChange,
+  ollamaThinkingEnabled = false,
+  onOllamaThinkingEnabledChange,
   temperature,
   onTemperatureChange,
   disabled,
 }: ModelSourceSelectorProps) {
   const [installedModels, setInstalledModels] = useState<string[] | null>(null);
-  const thinkingEnabled = modelSource === "ollama" && isThinkingOllamaModel(ollamaModelName);
+  const supportsThinking = modelSource === "ollama" && isThinkingOllamaModel(ollamaModelName);
 
   // Load installed Ollama models when switching to Ollama
   useEffect(() => {
@@ -173,10 +178,29 @@ export function ModelSourceSelector({
                 {installedModels === null ? "Checking the local Ollama service…" : "No installed models were detected. Start Ollama, then enter an installed model name."}
               </p>
             )}
-            {thinkingEnabled && (
-              <p className="text-[11px] leading-4 text-muted-foreground" data-testid="ollama-thinking-status">
-                Thinking mode is enabled for this model. Its reasoning stays separate from the edited text.
-              </p>
+            {supportsThinking && (
+              <div className="rounded-lg border border-border/70 bg-muted/30 p-2.5" data-testid="ollama-thinking-control">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="ollama-thinking" className="text-xs font-medium">Enable reasoning</Label>
+                    <p className="text-[11px] leading-4 text-muted-foreground">
+                      Keep this off for repair and formatting. Enable it only for ambiguous character extraction.
+                    </p>
+                  </div>
+                  <Switch
+                    id="ollama-thinking"
+                    checked={ollamaThinkingEnabled}
+                    onCheckedChange={(value) => onOllamaThinkingEnabledChange?.(value === true)}
+                    disabled={disabled}
+                    data-testid="switch-ollama-thinking"
+                  />
+                </div>
+                <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground" data-testid="ollama-thinking-status">
+                  {ollamaThinkingEnabled
+                    ? "Reasoning is enabled. VoiceForge uses only the final answer, not the reasoning trace."
+                    : "Reasoning is off. The model returns only the edited text."}
+                </p>
+              </div>
             )}
             <div className="space-y-1.5 pt-2">
               <div className="flex items-center gap-2">

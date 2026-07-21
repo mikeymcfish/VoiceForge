@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { CleaningOptions } from "@shared/schema";
+import { processingConfigSchema, type CleaningOptions } from "@shared/schema";
 import {
   chunkTextBySentences,
   chunkTextPreservingStructure,
@@ -8,6 +8,7 @@ import {
 } from "@shared/text-utils";
 import { applyDeterministicCleaning } from "../server/text-cleaner";
 import { buildOllamaOptions, isThinkingOllamaModel } from "../shared/model-utils";
+import { BATCH_PROFILES, getBatchProfileId, MAX_BATCH_SIZE } from "../shared/batch-profiles";
 
 const allLocalOptions: CleaningOptions = {
   replaceSmartQuotes: true,
@@ -46,6 +47,35 @@ assert.equal(isThinkingOllamaModel("llama3.1:8b"), false);
 assert.equal(
   buildOllamaOptions({ temperature: 0.3, num_predict: 2_000 }, "ollama", "qwen3:8b").num_predict,
   4_096
+);
+assert.equal(
+  buildOllamaOptions({ temperature: 0.3, num_predict: 2_000 }, "ollama", "qwen3:8b", undefined, false).num_predict,
+  2_000
+);
+const largeBatchProfile = BATCH_PROFILES.find((profile) => profile.id === "large");
+assert.ok(largeBatchProfile);
+assert.equal(largeBatchProfile.batchSize, 120);
+assert.equal(largeBatchProfile.ollamaContextWindow, 32_768);
+assert.equal(largeBatchProfile.ollamaMaxOutputTokens, 8_192);
+assert.equal(MAX_BATCH_SIZE, 150);
+assert.equal(
+  getBatchProfileId(
+    largeBatchProfile.batchSize,
+    largeBatchProfile.ollamaContextWindow,
+    largeBatchProfile.ollamaMaxOutputTokens
+  ),
+  "large"
+);
+const largeConfig = processingConfigSchema.parse({
+  batchSize: largeBatchProfile.batchSize,
+  ollamaContextWindow: largeBatchProfile.ollamaContextWindow,
+  ollamaMaxOutputTokens: largeBatchProfile.ollamaMaxOutputTokens,
+  cleaningOptions: allLocalOptions,
+});
+assert.equal(largeConfig.ollamaThinkingEnabled, false);
+assert.equal(
+  processingConfigSchema.safeParse({ batchSize: MAX_BATCH_SIZE + 1, cleaningOptions: allLocalOptions }).success,
+  false
 );
 
 const mojibake = applyDeterministicCleaning("\u00e2\u20ac\u0153Quoted\u00e2\u20ac\u009d", allLocalOptions);

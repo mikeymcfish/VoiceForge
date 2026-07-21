@@ -21,6 +21,7 @@ interface CharacterExtractionProps {
   modelSource?: "api" | "ollama";
   modelName: string;
   ollamaModelName?: string;
+  ollamaThinkingEnabled?: boolean;
   characterMapping?: CharacterMapping[];
   sampleSize: number;
   includeNarrator: boolean;
@@ -36,6 +37,7 @@ export function CharacterExtraction({
   modelSource = "api",
   modelName,
   ollamaModelName,
+  ollamaThinkingEnabled = false,
   characterMapping = [],
   sampleSize,
   includeNarrator,
@@ -51,7 +53,8 @@ export function CharacterExtraction({
   const [sampleInput, setSampleInput] = useState(String(sampleSize));
   const extractionAbortRef = useRef<AbortController | null>(null);
   const maxSampleSize = getCharacterSampleCeiling(modelSource, ollamaModelName);
-  const isThinking = modelSource === "ollama" && isThinkingOllamaModel(ollamaModelName);
+  const supportsThinking = modelSource === "ollama" && isThinkingOllamaModel(ollamaModelName);
+  const isThinking = supportsThinking && ollamaThinkingEnabled;
 
   useEffect(() => {
     if (sampleSize > maxSampleSize) {
@@ -99,6 +102,7 @@ export function CharacterExtraction({
         modelSource,
         modelName,
         ollamaModelName,
+        ollamaThinkingEnabled,
       }, controller.signal);
 
       const response = await res.json() as {
@@ -192,7 +196,9 @@ export function CharacterExtraction({
           <p className="text-xs text-muted-foreground">
             {isThinking
               ? `Thinking Ollama models can scan up to ${maxSampleSize} sentences at once.`
-              : `Maximum sample size: ${maxSampleSize} sentences.`}
+              : supportsThinking
+                ? `Reasoning is off. Maximum sample size: ${maxSampleSize} sentences.`
+                : `Maximum sample size: ${maxSampleSize} sentences.`}
           </p>
         </div>
 
