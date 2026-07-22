@@ -111,11 +111,13 @@ type MossReviewManifestSegment = {
   speaking_rate: number | null;
   pace_ratio: number | null;
   pace_status: "typical" | "unusually-fast" | "unusually-slow" | "not-compared";
+  reference_closeness?: number | null;
+  reference_drift_status?: "typical" | "drift-warning" | "not-compared";
   updated_at: number;
 };
 
 type MossReviewManifest = {
-  version: 1;
+  version: 1 | 2;
   sample_rate: number;
   gap_ms: number;
   chapter_pause_ms: number;
@@ -142,6 +144,10 @@ type WorkerMessage = {
   output_path?: string;
   error?: string;
   model_id?: string;
+  segment_index?: number;
+  reference_closeness?: number;
+  reference_drift_status?: "typical" | "drift-warning" | "not-compared";
+  reference_baseline?: number | null;
 };
 
 type RemoteSubmission = {
@@ -1126,7 +1132,7 @@ class SpeechService {
     }
     const manifest = value as Partial<MossReviewManifest>;
     if (
-      manifest.version !== 1 ||
+      (manifest.version !== 1 && manifest.version !== 2) ||
       !Number.isInteger(manifest.sample_rate) ||
       Number(manifest.sample_rate) <= 0 ||
       !Number.isInteger(manifest.gap_ms) ||
@@ -1142,6 +1148,11 @@ class SpeechService {
       "typical",
       "unusually-fast",
       "unusually-slow",
+      "not-compared",
+    ]);
+    const referenceDriftStatuses = new Set([
+      "typical",
+      "drift-warning",
       "not-compared",
     ]);
     manifest.segments.forEach((segment, expectedIndex) => {
@@ -1164,6 +1175,14 @@ class SpeechService {
         (segment.pace_ratio !== null &&
           (!Number.isFinite(segment.pace_ratio) || segment.pace_ratio <= 0)) ||
         !paceStatuses.has(segment.pace_status) ||
+        (manifest.version === 2 &&
+          (segment.reference_closeness === undefined ||
+            segment.reference_drift_status === undefined ||
+            (segment.reference_closeness !== null &&
+              (!Number.isFinite(segment.reference_closeness) ||
+                segment.reference_closeness < 0 ||
+                segment.reference_closeness > 100)) ||
+            !referenceDriftStatuses.has(segment.reference_drift_status))) ||
         !Number.isInteger(segment.updated_at) ||
         segment.updated_at <= 0
       ) {
@@ -1174,6 +1193,35 @@ class SpeechService {
       this.resolveReviewSegmentPath(job, reviewManifestPath, segment.audio_file);
     });
     return manifest as MossReviewManifest;
+  }
+
+  private recordMossReferenceCloseness(
+    job: InternalJob,
+    message: WorkerMessage
+  ): void {
+    const score = message.reference_closeness;
+    if (score === undefined || !Number.isFinite(score) || score < 0 || score > 100) {
+      return;
+    }
+    const warning = message.reference_drift_status === "drift-warning";
+    const segmentLabel =
+      Number.isInteger(message.segment_index) && Number(message.segment_index) >= 0
+        ? `segment ${Number(message.segment_index) + 1}`
+        : "segment";
+    const summary = message.message ||
+      `MOSS ${segmentLabel}: reference acoustic closeness ${score.toFixed(0)}/100`;
+    const prefix = `[VoiceForge ${job.id}] ${summary}`;
+    if (warning) console.warn(prefix);
+    else console.info(prefix);
+    this.log(warning ? "warn" : "info", summary);
+    const current = this.jobs.get(job.id) ?? job;
+    this.updateJob(job.id, {
+      message: summary,
+      referenceCloseness: score,
+      referenceClosenessMin: Math.min(current.referenceClosenessMin ?? score, score),
+      referenceDriftWarnings:
+        (current.referenceDriftWarnings ?? 0) + (warning ? 1 : 0),
+    });
   }
 
   private resolveReviewSegmentPath(
@@ -1239,6 +1287,15 @@ class SpeechService {
       String(params.useChapters ? params.chapterPauseMs ?? 0 : 0)
     );
     if (params.useChapters) args.push("--chapter-manifest", chapterManifestPath);
+    if (
+      params.engine === "moss" &&
+      params.mode !== "direct" &&
+      /\[chapter\]/i.test(params.text)
+    ) {
+      // Clone jobs use markers as non-spoken re-anchor boundaries even when the
+      // caller does not need MP3 chapter metadata.
+      args.push("--chapter-markers");
+    }
     await this.runPython(
       config,
       "synthesize",
@@ -1250,6 +1307,8 @@ class SpeechService {
             progress: raw <= 1 ? Math.max(5, raw * 90) : Math.min(95, raw),
             message: message.message,
           });
+        } else if (message.event === "reference-closeness") {
+          this.recordMossReferenceCloseness(job, message);
         } else if (message.event === "log") {
           this.log(message.level || "info", message.message || "");
         } else if (message.event === "error") {
@@ -1599,6 +1658,8 @@ class SpeechService {
       chapterTitle: segment.chapter_title || undefined,
       paceRatio: segment.pace_ratio ?? undefined,
       paceStatus: segment.pace_status,
+      referenceCloseness: segment.reference_closeness ?? undefined,
+      referenceDriftStatus: segment.reference_drift_status,
       updatedAt: segment.updated_at,
     }));
   }
@@ -1682,6 +1743,8 @@ class SpeechService {
               progress: raw <= 1 ? Math.max(8, raw * 90) : Math.min(92, raw),
               message: message.message,
             });
+          } else if (message.event === "reference-closeness") {
+            this.recordMossReferenceCloseness(job, message);
           } else if (message.event === "log") {
             this.log(message.level || "info", message.message || "");
           } else if (message.event === "error") {

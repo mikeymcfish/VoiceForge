@@ -458,6 +458,39 @@ class WorkerHelpersTest(unittest.TestCase):
         with self.assertRaises(moss.WorkerError):
             moss.validate_duration_outlier_controls(1, 1.0)
 
+    def test_moss_reanchors_clone_continuations_at_chapters_and_periodically(self) -> None:
+        self.assertFalse(moss.should_reanchor_to_reference(0, False, True))
+        self.assertFalse(moss.should_reanchor_to_reference(5, False, True))
+        self.assertTrue(moss.should_reanchor_to_reference(6, False, True))
+        self.assertTrue(moss.should_reanchor_to_reference(2, True, True))
+        self.assertFalse(moss.should_reanchor_to_reference(6, False, False))
+
+    def test_moss_reference_closeness_flags_an_acoustic_shift(self) -> None:
+        import numpy as np
+
+        sample_rate = 24_000
+        seconds = 3
+        time_axis = np.arange(sample_rate * seconds, dtype=np.float32) / sample_rate
+        reference = (
+            0.65 * np.sin(2 * np.pi * 140 * time_axis)
+            + 0.25 * np.sin(2 * np.pi * 900 * time_axis)
+            + 0.10 * np.sin(2 * np.pi * 2_400 * time_axis)
+        )
+        matching = reference + 0.01 * np.sin(2 * np.pi * 170 * time_axis)
+        shifted = (
+            0.70 * np.sin(2 * np.pi * 290 * time_axis)
+            + 0.20 * np.sin(2 * np.pi * 3_100 * time_axis)
+        )
+        profile = moss.reference_acoustic_profile(reference, sample_rate, np)
+        self.assertIsNotNone(profile)
+        matching_score = moss.reference_closeness(profile, matching, sample_rate, [95.0, 96.0], np)
+        shifted_score = moss.reference_closeness(profile, shifted, sample_rate, [95.0, 96.0], np)
+        self.assertIsNotNone(matching_score)
+        self.assertIsNotNone(shifted_score)
+        self.assertGreater(matching_score.score, shifted_score.score)
+        self.assertEqual(matching_score.status, "typical")
+        self.assertEqual(shifted_score.status, "drift-warning")
+
     def test_moss_parser_uses_consistency_defaults(self) -> None:
         parsed = moss.build_parser().parse_args(
             ["synthesize", "--text", "input.txt", "--output", "output.wav"]
@@ -466,6 +499,7 @@ class WorkerHelpersTest(unittest.TestCase):
         self.assertEqual(parsed.top_p, 0.75)
         self.assertEqual(parsed.duration_outlier_retries, 0)
         self.assertEqual(parsed.duration_outlier_ratio, 1.35)
+        self.assertFalse(parsed.chapter_markers)
 
     def test_moss_review_parser_commands(self) -> None:
         rerun = moss.build_parser().parse_args([
@@ -638,6 +672,8 @@ class WorkerHelpersTest(unittest.TestCase):
                         "speaking_rate": None,
                         "pace_ratio": None,
                         "pace_status": "not-compared",
+                        "reference_closeness": 98.5,
+                        "reference_drift_status": "typical",
                         "updated_at": 1,
                     },
                     {
@@ -652,6 +688,8 @@ class WorkerHelpersTest(unittest.TestCase):
                         "speaking_rate": None,
                         "pace_ratio": None,
                         "pace_status": "not-compared",
+                        "reference_closeness": None,
+                        "reference_drift_status": "not-compared",
                         "updated_at": 2,
                     },
                 ],

@@ -56,6 +56,8 @@ speechReviewSegmentSchema.parse({
   attempt: 2,
   paceRatio: 1.42,
   paceStatus: "unusually-fast",
+  referenceCloseness: 72.5,
+  referenceDriftStatus: "drift-warning",
   updatedAt: Date.now(),
 });
 
@@ -103,6 +105,9 @@ speechStatusSchema.parse({
       updatedAt: Date.now(),
       reviewSegmentCount: 3,
       reviewRevision: 1,
+      referenceCloseness: 72.5,
+      referenceClosenessMin: 58.2,
+      referenceDriftWarnings: 1,
     },
   ],
 });

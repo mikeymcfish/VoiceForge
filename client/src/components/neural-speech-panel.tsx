@@ -224,6 +224,10 @@ function SegmentReview({ job }: { job: SpeechJobStatus }) {
               : segment.paceStatus === "typical"
                 ? "pace looks typical"
                 : undefined;
+        const referenceLabel =
+          segment.referenceCloseness === undefined
+            ? undefined
+            : `reference ${segment.referenceCloseness.toFixed(0)}/100`;
         return (
           <div
             key={segment.index}
@@ -247,6 +251,20 @@ function SegmentReview({ job }: { job: SpeechJobStatus }) {
                     {paceLabel}
                     {segment.paceRatio
                       ? ` (${segment.paceRatio.toFixed(2)}×)`
+                      : ""}
+                  </Badge>
+                )}
+                {referenceLabel && (
+                  <Badge
+                    variant={
+                      segment.referenceDriftStatus === "drift-warning"
+                        ? "secondary"
+                        : "outline"
+                    }
+                  >
+                    {referenceLabel}
+                    {segment.referenceDriftStatus === "drift-warning"
+                      ? " — possible drift"
                       : ""}
                   </Badge>
                 )}
@@ -1404,6 +1422,12 @@ export function NeuralSpeechPanel({
           {engine === "moss" && (
             <div className="rounded-xl border p-4">
               <p className="mb-3 flex items-center gap-2 text-sm font-semibold"><Settings2 className="h-4 w-4" />MOSS generation controls</p>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Long cloned scripts keep one prior take for continuity, then re-anchor
+                to the clean reference at each <code>[CHAPTER]</code> marker and after
+                every six continuation segments. Each take also receives a reference
+                acoustic-closeness score; a warning means audition that take for drift.
+              </p>
               {target === "hf-space" && (
                 <div className="mb-4 flex flex-wrap items-center gap-3"><Label className="flex items-center gap-2"><Checkbox checked={durationControl} onCheckedChange={(value) => setDurationControl(value === true)} />Expected-token duration control</Label><Input type="number" className="w-28" min={1} max={4096} value={durationTokens} disabled={!durationControl} onChange={(event) => setDurationTokens(Number(event.target.value))} /></div>
               )}
@@ -1454,8 +1478,28 @@ export function NeuralSpeechPanel({
           {jobs.map((job) => (
             <div key={job.id} className="space-y-2 rounded-md border p-3">
               <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-medium">Job {job.id}</p><p className="text-xs text-muted-foreground">{targetLabel(job.target)} · {modeLabel(engine, job.mode)} · updated {formatDistanceToNow(job.updatedAt, { addSuffix: true })}</p></div><Badge variant={statusVariant(job.status)}>{job.status}</Badge></div>
-              <Progress value={job.progress} />
-              {job.reviewSegmentCount && job.status !== "completed" && (
+               <Progress value={job.progress} />
+               {job.referenceCloseness !== undefined && (
+                 <p
+                   className={`text-xs ${
+                     (job.referenceDriftWarnings ?? 0) > 0
+                       ? "text-amber-700 dark:text-amber-400"
+                       : "text-muted-foreground"
+                   }`}
+                 >
+                   Reference acoustic closeness: {job.referenceCloseness.toFixed(0)}/100
+                   {job.referenceClosenessMin !== undefined &&
+                   job.referenceClosenessMin < job.referenceCloseness
+                     ? ` · lowest ${job.referenceClosenessMin.toFixed(0)}/100`
+                     : ""}
+                   {(job.referenceDriftWarnings ?? 0) > 0
+                     ? ` · ${job.referenceDriftWarnings} drift warning${
+                         job.referenceDriftWarnings === 1 ? "" : "s"
+                       } during synthesis`
+                     : ""}
+                 </p>
+               )}
+               {job.reviewSegmentCount && job.status !== "completed" && (
                 <SegmentReview job={job} />
               )}
               <p className="text-xs text-muted-foreground">{job.message || "Waiting…"}{job.queuePosition !== undefined ? ` · queue ${job.queuePosition}` : ""}{job.etaSeconds !== undefined ? ` · ETA ${Math.ceil(job.etaSeconds)}s` : ""}</p>

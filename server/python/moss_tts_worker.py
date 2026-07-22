@@ -94,11 +94,19 @@ DEFAULT_TOP_K = 25
 DEFAULT_REPETITION_PENALTY = 1.0
 DEFAULT_DURATION_OUTLIER_RETRIES = 0
 DEFAULT_DURATION_OUTLIER_RATIO = 1.35
-REVIEW_MANIFEST_VERSION = 1
+REVIEW_MANIFEST_VERSION = 2
 DURATION_RATE_HISTORY_SIZE = 5
 MIN_DURATION_RATE_HISTORY = 2
 MIN_DURATION_RATE_SPEECH_UNITS = 80
 MIN_DURATION_RATE_SECONDS = 2.0
+DEFAULT_REANCHOR_EVERY_SEGMENTS = 6
+REFERENCE_PROFILE_MAX_SECONDS = 90
+REFERENCE_PROFILE_MAX_FRAMES = 180
+REFERENCE_PROFILE_FRAME_MS = 60
+REFERENCE_PROFILE_BAND_COUNT = 24
+REFERENCE_CLOSENESS_WARNING_SCORE = 60.0
+REFERENCE_CLOSENESS_WARNING_DROP = 12.0
+REFERENCE_CLOSENESS_HISTORY_SIZE = 8
 
 
 class RollingPrefix(NamedTuple):
@@ -109,6 +117,12 @@ class RollingPrefix(NamedTuple):
 class DurationOutlier(NamedTuple):
     baseline_rate: float
     rate_ratio: float
+
+
+class ReferenceCloseness(NamedTuple):
+    score: float
+    status: str
+    baseline: Optional[float]
 
 
 class StreamingWaveWriter:
@@ -913,6 +927,176 @@ def validate_duration_outlier_controls(retries: int, maximum_ratio: float) -> No
         )
 
 
+def should_reanchor_to_reference(
+    segment_index: int,
+    starts_chapter: bool,
+    has_reference_audio: bool,
+) -> bool:
+    """Whether this segment starts fresh from the supplied voice reference.
+
+    A rolling MOSS continuation keeps prosody smooth, but repeatedly conditioning
+    on generated audio can amplify artifacts over a long run.  Clone jobs retain
+    that continuity within a block and re-anchor on every marked chapter plus
+    after six continuation segments.  Direct-generation jobs have no clean
+    reference to return to, so their legacy continuation behavior is preserved.
+    """
+
+    if not has_reference_audio or segment_index <= 0:
+        return False
+    return starts_chapter or segment_index % DEFAULT_REANCHOR_EVERY_SEGMENTS == 0
+
+
+def _median(values: Sequence[float]) -> Optional[float]:
+    if not values:
+        return None
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
+
+
+def reference_acoustic_profile(
+    audio: Any,
+    sample_rate: int,
+    np: Any,
+) -> Optional[Any]:
+    """Build a compact, text-independent-ish acoustic profile for drift hints.
+
+    This intentionally does *not* claim biometric speaker verification.  It
+    compares broad timbre and pitch-distribution features from the clean reference
+    against generated speech, which makes it useful for flagging a changing voice
+    without an additional speaker-recognition model or a network dependency.
+    """
+
+    if sample_rate <= 0:
+        return None
+    waveform = normalize_audio_channels(audio)
+    mono = np.asarray(waveform, dtype=np.float32).mean(axis=0)
+    if mono.size < max(512, sample_rate // 4):
+        return None
+    mono = mono[np.isfinite(mono)]
+    if mono.size < max(512, sample_rate // 4):
+        return None
+    mono = mono - float(np.mean(mono))
+    peak = float(np.max(np.abs(mono)))
+    if peak < 1e-5:
+        return None
+    mono /= peak
+
+    frame_size = max(512, int(sample_rate * REFERENCE_PROFILE_FRAME_MS / 1000))
+    if mono.size < frame_size:
+        return None
+    start_limit = mono.size - frame_size
+    frame_count = min(
+        REFERENCE_PROFILE_MAX_FRAMES,
+        max(1, int(mono.size / max(frame_size // 2, 1))),
+    )
+    starts = np.linspace(0, start_limit, num=frame_count, dtype=np.int64)
+    frames = np.stack([mono[start : start + frame_size] for start in starts])
+    rms = np.sqrt(np.mean(np.square(frames), axis=1))
+    active_floor = max(1e-4, float(np.median(rms)) * 0.35)
+    active_frames = frames[rms >= active_floor]
+    if active_frames.shape[0] < 4:
+        active_frames = frames
+    if active_frames.shape[0] < 2:
+        return None
+
+    window = np.hanning(frame_size).astype(np.float32)
+    spectrum = np.abs(np.fft.rfft(active_frames * window, axis=1)) + 1e-7
+    frequencies = np.fft.rfftfreq(frame_size, d=1.0 / sample_rate)
+    highest_frequency = min(8_000.0, float(sample_rate) * 0.45)
+    if highest_frequency <= 100.0:
+        return None
+    band_edges = np.geomspace(80.0, highest_frequency, REFERENCE_PROFILE_BAND_COUNT + 1)
+    log_band_energy: List[Any] = []
+    for lower, upper in zip(band_edges[:-1], band_edges[1:]):
+        band = spectrum[:, (frequencies >= lower) & (frequencies < upper)]
+        if band.shape[1] == 0:
+            log_band_energy.append(np.zeros(active_frames.shape[0], dtype=np.float32))
+        else:
+            log_band_energy.append(np.log(np.mean(np.square(band), axis=1) + 1e-8))
+    bands = np.stack(log_band_energy, axis=1)
+    mean_bands = np.mean(bands, axis=0)
+    std_bands = np.std(bands, axis=0)
+    mean_bands = mean_bands - float(np.mean(mean_bands))
+    std_bands = std_bands - float(np.mean(std_bands))
+
+    voiced = spectrum[:, (frequencies >= 70.0) & (frequencies <= 350.0)]
+    voiced_frequencies = frequencies[(frequencies >= 70.0) & (frequencies <= 350.0)]
+    if voiced.shape[1]:
+        pitch = voiced_frequencies[np.argmax(voiced, axis=1)]
+        log_pitch = np.log(np.maximum(pitch, 1.0))
+        pitch_features = np.asarray(
+            [float(np.median(log_pitch)), float(np.std(log_pitch))], dtype=np.float32
+        )
+    else:
+        pitch_features = np.zeros(2, dtype=np.float32)
+
+    # Pitch has less weight than the broad spectral envelope: different prose
+    # naturally changes intonation, while a changing timbre is the useful signal.
+    features = np.concatenate(
+        [
+            mean_bands.astype(np.float32),
+            std_bands.astype(np.float32),
+            pitch_features * 0.35,
+        ]
+    )
+    magnitude = float(np.linalg.norm(features))
+    if magnitude <= 1e-8:
+        return None
+    return features / magnitude
+
+
+def load_reference_acoustic_profile(
+    reference_audio: str,
+    sf: Any,
+    np: Any,
+) -> Optional[Any]:
+    """Read at most a short clean-reference window for bounded diagnostics."""
+
+    try:
+        with sf.SoundFile(reference_audio) as handle:
+            maximum_frames = max(1, int(handle.samplerate * REFERENCE_PROFILE_MAX_SECONDS))
+            audio = handle.read(
+                frames=min(len(handle), maximum_frames),
+                dtype="float32",
+                always_2d=True,
+            )
+            return reference_acoustic_profile(audio, int(handle.samplerate), np)
+    except Exception:
+        # MOSS itself may support a reference format that SoundFile cannot read.
+        # Diagnostics must never make an otherwise valid clone job fail.
+        return None
+
+
+def reference_closeness(
+    reference_profile: Optional[Any],
+    audio: Any,
+    sample_rate: int,
+    history: Sequence[float],
+    np: Any,
+) -> Optional[ReferenceCloseness]:
+    """Score broad acoustic similarity to the clean reference on a 0-100 scale."""
+
+    if reference_profile is None:
+        return None
+    generated_profile = reference_acoustic_profile(audio, sample_rate, np)
+    if generated_profile is None or generated_profile.shape != reference_profile.shape:
+        return None
+    cosine = float(np.dot(reference_profile, generated_profile))
+    score = max(0.0, min(100.0, (cosine + 1.0) * 50.0))
+    baseline = _median(history[-REFERENCE_CLOSENESS_HISTORY_SIZE:])
+    drifted = score < REFERENCE_CLOSENESS_WARNING_SCORE or (
+        baseline is not None and score < baseline - REFERENCE_CLOSENESS_WARNING_DROP
+    )
+    return ReferenceCloseness(
+        score=score,
+        status="drift-warning" if drifted else "typical",
+        baseline=baseline,
+    )
+
+
 def _review_audio_path(manifest_path: Path, audio_file: object) -> Path:
     if not isinstance(audio_file, str) or not audio_file.strip():
         raise WorkerError(
@@ -961,7 +1145,8 @@ def validate_review_manifest(
             "INVALID_REVIEW_MANIFEST",
             "The MOSS review manifest has unexpected fields.",
         )
-    if manifest.get("version") != REVIEW_MANIFEST_VERSION:
+    version = manifest.get("version")
+    if version not in {1, REVIEW_MANIFEST_VERSION}:
         raise WorkerError(
             "INVALID_REVIEW_MANIFEST",
             "The MOSS review manifest version is unsupported.",
@@ -1004,6 +1189,11 @@ def validate_review_manifest(
         "pace_status",
         "updated_at",
     }
+    if version == REVIEW_MANIFEST_VERSION:
+        required_segment_fields.update({
+            "reference_closeness",
+            "reference_drift_status",
+        })
     for expected_index, segment in enumerate(segments):
         if not isinstance(segment, dict) or set(segment) != required_segment_fields:
             raise WorkerError(
@@ -1067,6 +1257,26 @@ def validate_review_manifest(
                 "INVALID_REVIEW_MANIFEST",
                 "A MOSS review segment has an invalid pace status.",
             )
+        if version == REVIEW_MANIFEST_VERSION:
+            closeness = segment.get("reference_closeness")
+            if closeness is not None and (
+                isinstance(closeness, bool)
+                or not isinstance(closeness, (int, float))
+                or not 0.0 <= float(closeness) <= 100.0
+            ):
+                raise WorkerError(
+                    "INVALID_REVIEW_MANIFEST",
+                    "A MOSS review segment has an invalid reference closeness score.",
+                )
+            if segment.get("reference_drift_status") not in {
+                "typical",
+                "drift-warning",
+                "not-compared",
+            }:
+                raise WorkerError(
+                    "INVALID_REVIEW_MANIFEST",
+                    "A MOSS review segment has an invalid reference drift status.",
+                )
         audio_path = _review_audio_path(path, segment.get("audio_file"))
         if require_audio and not audio_path.is_file():
             raise WorkerError(
@@ -1121,6 +1331,17 @@ def write_review_manifest(
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
         raise
+
+
+def upgrade_review_manifest(manifest: Dict[str, Any]) -> None:
+    """Keep existing review jobs usable after adding reference diagnostics."""
+
+    if manifest.get("version") != 1:
+        return
+    manifest["version"] = REVIEW_MANIFEST_VERSION
+    for segment in manifest["segments"]:
+        segment["reference_closeness"] = None
+        segment["reference_drift_status"] = "not-compared"
 
 
 def pace_metadata(
@@ -1570,6 +1791,7 @@ def synthesize(
     duration_outlier_retries: int = DEFAULT_DURATION_OUTLIER_RETRIES,
     duration_outlier_ratio: float = DEFAULT_DURATION_OUTLIER_RATIO,
     review_manifest_path: Optional[str] = None,
+    enable_chapter_markers: bool = False,
 ) -> None:
     spec = _model_spec(model_id)
     validate_sampling(
@@ -1592,7 +1814,7 @@ def synthesize(
         )
     chapter_markers_enabled = bool(
         chapter_manifest_path and chapter_manifest_path.strip()
-    )
+    ) or enable_chapter_markers
     segments = split_synthesis_text(
         text,
         max_chars,
@@ -1638,12 +1860,28 @@ def synthesize(
     import soundfile as sf  # type: ignore
     import torch  # type: ignore
 
+    reference_profile = (
+        load_reference_acoustic_profile(reference_audio, sf, np)
+        if reference_audio
+        else None
+    )
+    if reference_audio and reference_profile is None:
+        emit(
+            "log",
+            level="warn",
+            message=(
+                "MOSS reference-closeness checks are unavailable for this "
+                "reference format; synthesis will continue normally."
+            ),
+        )
+
     output.parent.mkdir(parents=True, exist_ok=True)
     streamed_output = StreamingWaveWriter(output, sample_rate)
     segment_sample_counts: List[int] = []
     total = len(segments)
     rolling_prefix: Optional[RollingPrefix] = None
     speaking_rate_history: List[float] = []
+    reference_closeness_history: List[float] = []
     duration_retries_attempted = 0
     duration_retried_segments: List[int] = []
     review_segments: List[Dict[str, Any]] = []
@@ -1663,6 +1901,27 @@ def synthesize(
                     progress=0.12 + (0.82 * index / total),
                     message=f"Synthesizing MOSS segment {index}/{total}",
                 )
+                use_rolling_prefix = rolling_prefix
+                reanchored = should_reanchor_to_reference(
+                    index - 1,
+                    bool(segment.starts_chapter),
+                    reference_audio is not None,
+                )
+                if reanchored:
+                    use_rolling_prefix = None
+                    reanchor_reason = (
+                        "chapter boundary"
+                        if segment.starts_chapter
+                        else f"every {DEFAULT_REANCHOR_EVERY_SEGMENTS} continuation segments"
+                    )
+                    emit(
+                        "log",
+                        level="info",
+                        message=(
+                            f"MOSS segment {index}/{total}: re-anchoring to the "
+                            f"original reference ({reanchor_reason})."
+                        ),
+                    )
                 try:
                     def generate_audio_candidate() -> Any:
                         return generate_segment_audio(
@@ -1674,7 +1933,7 @@ def synthesize(
                             segment.text,
                             reference_audio,
                             language,
-                            rolling_prefix,
+                            use_rolling_prefix,
                             max_new_tokens,
                             temperature,
                             top_p,
@@ -1763,6 +2022,39 @@ def synthesize(
                     speaking_rate_history,
                     duration_outlier_ratio,
                 )
+                closeness = reference_closeness(
+                    reference_profile,
+                    audio_np,
+                    sample_rate,
+                    reference_closeness_history,
+                    np,
+                )
+                reference_score: Optional[float] = None
+                reference_drift_status = "not-compared"
+                if closeness is not None:
+                    reference_score = closeness.score
+                    reference_drift_status = closeness.status
+                    reference_closeness_history.append(closeness.score)
+                    baseline_text = (
+                        f" (recent baseline {closeness.baseline:.0f}/100)"
+                        if closeness.baseline is not None
+                        else ""
+                    )
+                    message = (
+                        f"MOSS segment {index}/{total}: reference acoustic closeness "
+                        f"{closeness.score:.0f}/100{baseline_text}"
+                    )
+                    if closeness.status == "drift-warning":
+                        message += " — possible voice drift; audition this segment."
+                    emit(
+                        "reference-closeness",
+                        level="warn" if closeness.status == "drift-warning" else "info",
+                        message=message,
+                        segment_index=index - 1,
+                        reference_closeness=closeness.score,
+                        reference_drift_status=closeness.status,
+                        reference_baseline=closeness.baseline,
+                    )
                 if selected_rate is not None and remaining_outlier is None:
                     speaking_rate_history.append(selected_rate)
                 gap_samples = 0
@@ -1794,6 +2086,8 @@ def synthesize(
                         "speaking_rate": selected_rate,
                         "pace_ratio": pace_ratio,
                         "pace_status": pace_status,
+                        "reference_closeness": reference_score,
+                        "reference_drift_status": reference_drift_status,
                         "updated_at": int(time.time() * 1000),
                     })
 
@@ -1900,6 +2194,7 @@ def rerun_review_segment(
     validate_duration_outlier_controls(0, duration_outlier_ratio)
     manifest_path = Path(review_manifest_path).expanduser().resolve()
     manifest = read_review_manifest(manifest_path)
+    upgrade_review_manifest(manifest)
     segments = manifest["segments"]
     if (
         isinstance(segment_index, bool)
@@ -1936,15 +2231,45 @@ def rerun_review_segment(
     import soundfile as sf  # type: ignore
     import torch  # type: ignore
 
+    reference_profile = (
+        load_reference_acoustic_profile(reference_audio, sf, np)
+        if reference_audio
+        else None
+    )
+    reference_closeness_history = [
+        float(item["reference_closeness"])
+        for index, item in enumerate(segments)
+        if index != segment_index and item.get("reference_closeness") is not None
+    ]
+
     segment = segments[segment_index]
     rolling_prefix: Optional[RollingPrefix] = None
-    if segment_index > 0:
+    reanchored = should_reanchor_to_reference(
+        segment_index,
+        bool(segment["starts_chapter"]),
+        reference_audio is not None,
+    )
+    if segment_index > 0 and not reanchored:
         previous = segments[segment_index - 1]
         previous_audio = _review_audio_path(
             manifest_path,
             previous["audio_file"],
         )
         rolling_prefix = RollingPrefix(previous["text"], str(previous_audio))
+    elif reanchored:
+        reanchor_reason = (
+            "chapter boundary"
+            if segment["starts_chapter"]
+            else f"every {DEFAULT_REANCHOR_EVERY_SEGMENTS} continuation segments"
+        )
+        emit(
+            "log",
+            level="info",
+            message=(
+                f"MOSS segment {segment_index + 1}/{len(segments)}: re-anchoring "
+                f"to the original reference ({reanchor_reason})."
+            ),
+        )
     emit(
         "progress",
         progress=0.12,
@@ -1985,6 +2310,38 @@ def rerun_review_segment(
         ) from exc
 
     rate = segment_speaking_rate(segment["text"], audio, sample_rate)
+    closeness = reference_closeness(
+        reference_profile,
+        audio,
+        sample_rate,
+        reference_closeness_history,
+        np,
+    )
+    reference_score: Optional[float] = None
+    reference_drift_status = "not-compared"
+    if closeness is not None:
+        reference_score = closeness.score
+        reference_drift_status = closeness.status
+        baseline_text = (
+            f" (recent baseline {closeness.baseline:.0f}/100)"
+            if closeness.baseline is not None
+            else ""
+        )
+        message = (
+            f"MOSS segment {segment_index + 1}/{len(segments)}: reference acoustic "
+            f"closeness {closeness.score:.0f}/100{baseline_text}"
+        )
+        if closeness.status == "drift-warning":
+            message += " — possible voice drift; audition this segment."
+        emit(
+            "reference-closeness",
+            level="warn" if closeness.status == "drift-warning" else "info",
+            message=message,
+            segment_index=segment_index,
+            reference_closeness=closeness.score,
+            reference_drift_status=closeness.status,
+            reference_baseline=closeness.baseline,
+        )
     destination = _review_audio_path(manifest_path, segment["audio_file"])
     temporary_path: Optional[Path] = None
     try:
@@ -2012,6 +2369,8 @@ def rerun_review_segment(
         "duration_seconds": int(audio.shape[1]) / float(sample_rate),
         "attempt": int(segment["attempt"]) + 1,
         "speaking_rate": rate,
+        "reference_closeness": reference_score,
+        "reference_drift_status": reference_drift_status,
         "updated_at": int(time.time() * 1000),
     })
     refresh_review_pace_metadata(segments, duration_outlier_ratio)
@@ -2025,6 +2384,8 @@ def rerun_review_segment(
         duration_seconds=segment["duration_seconds"],
         pace_ratio=segment["pace_ratio"],
         pace_status=segment["pace_status"],
+        reference_closeness=segment["reference_closeness"],
+        reference_drift_status=segment["reference_drift_status"],
     )
 
 
@@ -2256,6 +2617,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional JSON path for exact chapter start timings",
     )
     synth_parser.add_argument(
+        "--chapter-markers",
+        action="store_true",
+        help="Treat [CHAPTER] markers as non-spoken chapter/re-anchor boundaries",
+    )
+    synth_parser.add_argument(
         "--review-manifest",
         default=None,
         help="Optional JSON path for per-segment review artifacts",
@@ -2427,6 +2793,7 @@ def run(argv: Optional[Sequence[str]] = None) -> None:
             args.duration_outlier_retries,
             args.duration_outlier_ratio,
             args.review_manifest,
+            args.chapter_markers,
         )
         return
     if args.command == "rerun-segment":

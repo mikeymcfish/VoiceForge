@@ -423,10 +423,15 @@ checkpoint.
 
 Local long-text jobs use bounded rolling continuation. VoiceForge generates the
 first segment normally; a cloning job begins from the selected clean reference
-recording. Each later segment is conditioned on the exact transcript and
-generated audio from the immediately preceding segment. Keeping only one prior
-segment bounds the continuation context instead of allowing it to grow with the
-entire document, while carrying the recent voice and prosody forward.
+recording. Within a section, each later segment is conditioned on the exact
+transcript and generated audio from the immediately preceding segment. Keeping
+only one prior segment bounds the continuation context instead of allowing it to
+grow with the entire document, while carrying recent voice and prosody forward.
+For clone jobs, VoiceForge re-anchors to the original clean reference at every
+`[CHAPTER]` marker and after every six continuation segments. This prevents a
+bad take from being repeatedly used as the next continuation prompt. A marker is
+also honored as a non-spoken re-anchor boundary for cloned MOSS jobs that do not
+need embedded MP3 chapter metadata.
 
 The browser app enables **Review segments before compile** for Local MOSS by
 default. Each segment is generated once and retained as an individual WAV. When
@@ -442,6 +447,12 @@ automatically re-run anything. Short segments and text containing explicit
 `[pause …]` controls are not pace-compared. The default MOSS sampling controls
 are temperature `1.3`, top-p `0.75`, and top-k `25`. Turn the review option off
 to retain one-shot generation and compilation.
+
+For cloned local MOSS jobs, VoiceForge also reports a 0–100 **reference acoustic
+closeness** score for every generated segment to the terminal and job view, and
+marks a segment when its score is low or drops sharply from the recent baseline.
+It is an advisory timbre/pitch-feature drift check—not a biometric speaker
+verification model—and never re-runs or discards audio automatically.
 
 #### Comparing the local MOSS checkpoints
 

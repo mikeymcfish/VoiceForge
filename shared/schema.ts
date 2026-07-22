@@ -427,6 +427,10 @@ export const speechReviewSegmentSchema = z.object({
   paceStatus: z
     .enum(["typical", "unusually-fast", "unusually-slow", "not-compared"])
     .optional(),
+  referenceCloseness: z.number().min(0).max(100).optional(),
+  referenceDriftStatus: z
+    .enum(["typical", "drift-warning", "not-compared"])
+    .optional(),
   updatedAt: z.number().int().nonnegative(),
 });
 
@@ -463,6 +467,9 @@ export const speechJobStatusSchema = z.object({
   reviewSegmentCount: z.number().int().positive().optional(),
   reviewRevision: z.number().int().nonnegative().optional(),
   reviewError: z.string().optional(),
+  referenceCloseness: z.number().min(0).max(100).optional(),
+  referenceClosenessMin: z.number().min(0).max(100).optional(),
+  referenceDriftWarnings: z.number().int().nonnegative().optional(),
 });
 
 export type SpeechJobStatus = z.infer<typeof speechJobStatusSchema>;
